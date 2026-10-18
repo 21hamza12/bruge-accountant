@@ -24,6 +24,10 @@ jobs:
       - uses: astral-sh/setup-uv@v6
         with:
           enable-cache: true
+      # The service worker test runs sw.js under node and fails (not skips) when CI is set.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
       - run: uv sync --locked
       - name: pytest (80% coverage gate from pyproject)
         run: uv run pytest

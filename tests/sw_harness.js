@@ -38,6 +38,8 @@ const caches = {
 async function fakeFetch(req) {
   const url = absolute(req);
   if (!online) throw new TypeError("network down");
+  if (url.endsWith("/static/missing.js")) return new Response("missing " + url, { status: 404 });
+  if (url.endsWith("/static/broken.js")) return new Response("broken " + url, { status: 500 });
   return new Response("body of " + url, { status: 200 });
 }
 
@@ -61,10 +63,19 @@ async function lifecycle(name) {
 
 async function dispatchFetch(req) {
   let responded = null;
-  listeners.fetch({ request: req, respondWith: (p) => (responded = Promise.resolve(p)) });
+  const waited = [];
+  listeners.fetch({
+    request: req,
+    respondWith: (p) => (responded = Promise.resolve(p)),
+    waitUntil: (p) => waited.push(Promise.resolve(p)),
+  });
   if (responded === null) return { intercepted: false };
   const res = await responded;
-  return { intercepted: true, body: res ? await res.text() : null };
+  const result = { intercepted: true, body: res ? await res.text() : null };
+  if (res && res.status !== 200) result.status = res.status;
+  await Promise.all(waited);
+  result.waited = waited.length;
+  return result;
 }
 
 const settle = () => new Promise((resolve) => setTimeout(resolve, 20));
@@ -99,6 +110,10 @@ const cachedUrls = async () => {
   out.afterNavOnline = await cachedUrls();
   out.staticOnline = await dispatchFetch(sub("/static/new.js"));
   out.afterStaticOnline = await cachedUrls();
+  out.staticNotOk = await dispatchFetch(sub("/static/missing.js"));
+  out.afterStaticNotOk = await cachedUrls();
+  out.staticServerError = await dispatchFetch(sub("/static/broken.js"));
+  out.afterStaticServerError = await cachedUrls();
   out.post = await dispatchFetch(sub("/upload", "POST"));
   out.crossOrigin = await dispatchFetch(sub("/static/x.js", "GET", "https://cdn.other"));
   out.xhr = await dispatchFetch(sub("/api/data"));

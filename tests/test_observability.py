@@ -440,3 +440,14 @@ def test_reserved_fields_cannot_be_overwritten_by_extra() -> None:
     assert "exception" not in out
     assert out["safe"] == "kept"
     assert "forged" not in json.dumps(out)
+
+
+@pytest.mark.parametrize("path", ["/static/app.css", "/static/no-such-file-123.js"])
+def test_static_requests_are_logged_with_the_static_route_label(
+    obs_client: TestClient, caplog: pytest.LogCaptureFixture, path: str
+) -> None:
+    with caplog.at_level(logging.INFO, logger=REQUEST_LOGGER):
+        obs_client.get(path)
+    (rec,) = request_records(caplog)
+    assert rec.route == "static"  # type: ignore[attr-defined]
+    assert "no-such-file" not in json.dumps(render(rec))

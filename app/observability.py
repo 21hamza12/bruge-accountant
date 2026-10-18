@@ -16,6 +16,7 @@ from decimal import Decimal
 from typing import Any
 
 from starlette.datastructures import MutableHeaders
+from starlette.staticfiles import StaticFiles
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 REDACTED = "[REDACTED]"
@@ -38,6 +39,7 @@ _QUOTED_PAIR = re.compile(
     re.IGNORECASE,
 )
 UNMATCHED_ROUTE = "<unmatched>"
+STATIC_ROUTE = "static"
 HANDLER_MARK = "_bruge_json_handler"
 RESERVED_FIELDS = frozenset({"ts", "level", "logger", "message", "request_id", "exception"})
 MAX_DEPTH = 8
@@ -166,6 +168,16 @@ def configure_logging(level: int = logging.INFO) -> None:
     logging.getLogger("uvicorn.access").disabled = True
 
 
+def _route_label(scope: Scope) -> str:
+    """The route template, never the raw path; static files all share one label."""
+    path = getattr(scope.get("route"), "path", None)
+    if path:
+        return str(path)
+    if isinstance(scope.get("endpoint"), StaticFiles):
+        return STATIC_ROUTE
+    return UNMATCHED_ROUTE
+
+
 class RequestLogMiddleware:
     """Outermost layer: assigns the request id and logs one line when the response is done."""
 
@@ -191,7 +203,7 @@ class RequestLogMiddleware:
         try:
             await self.app(scope, receive, send_wrapper)
         finally:
-            route = getattr(scope.get("route"), "path", None) or UNMATCHED_ROUTE
+            route = _route_label(scope)
             request_log.info(
                 "request",
                 extra={

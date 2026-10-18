@@ -26,8 +26,10 @@ services:
         value: "true"
       - key: TRUSTED_PROXY_HOPS
         value: "1"  # to be confirmed in the runbook
+      # Dashboard: the real host Render assigns (e.g. bruge-accountant.onrender.com). Kept out of
+      # this file so a blueprint sync never resets it to a placeholder.
       - key: ALLOWED_HOSTS
-        value: replace-me.onrender.com  # placeholder: set the real host(s) first (runbook)
+        sync: false
       # Owner role. Render env vars apply to the running service, not only to preDeployCommand,
       # so the container holds it. The web process never reads it (only `init-db` and the admin
       # CLI do; a test pins that). Accepted for the pilot: docs/phase2-plan.md, decision 2.

@@ -58,7 +58,6 @@ def test_production_environment_flags(env_vars: dict[str, dict[str, Any]]) -> No
     assert env_vars["ENV"]["value"] == "production"
     assert env_vars["COOKIE_SECURE"]["value"] == "true"
     assert "ALLOWED_HOSTS" in env_vars
-    assert "*" not in str(env_vars["ALLOWED_HOSTS"]["value"])
     assert "CORS_ALLOWED_ORIGINS" not in env_vars or "*" not in str(
         env_vars["CORS_ALLOWED_ORIGINS"].get("value", "")
     )
@@ -86,11 +85,12 @@ def test_migration_database_url_points_at_the_declared_database(
     assert env_vars["MIGRATION_DATABASE_URL"]["fromDatabase"]["name"] == db["name"]
 
 
-def test_allowed_hosts_placeholder_is_loud_and_documented(
+def test_allowed_hosts_is_set_in_the_dashboard_and_documented(
     env_vars: dict[str, dict[str, Any]],
 ) -> None:
-    value = str(env_vars["ALLOWED_HOSTS"]["value"])
-    assert "replace-me" in value.lower()
+    # A literal value would be reset by every blueprint sync, wiping the real host set in the
+    # dashboard; so the host is dashboard-only, like the secrets.
+    assert env_vars["ALLOWED_HOSTS"] == {"key": "ALLOWED_HOSTS", "sync": False}
     assert "ALLOWED_HOSTS" in (ROOT / "docs" / "runbook.md").read_text(encoding="utf-8")
 
 

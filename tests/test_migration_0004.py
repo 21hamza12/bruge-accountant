@@ -10,29 +10,28 @@ from sqlalchemy import create_engine, text
 from sqlalchemy.engine import make_url
 from sqlalchemy.exc import IntegrityError
 
-from app.db import Base, make_engine
+from app.db import Base, make_engine, make_session_factory
+from app.repository import create_agency, get_agency_by_slug
 from tests.conftest import alembic_config
 
 ROOT = Path(__file__).resolve().parent.parent
 
 
 def _insert_agency(url: str, slug: str) -> None:
-    engine = create_engine(url)
+    """Through the repository, which also works under the row-level security of 0003."""
+    engine = make_engine(url)
     try:
-        with engine.begin() as conn:
-            conn.execute(
-                text("INSERT INTO agencies (slug, name, currency) VALUES (:s, 'Agence', 'MRU')"),
-                {"s": slug},
-            )
+        with make_session_factory(engine)() as session:
+            create_agency(session, slug, "Agence")
     finally:
         engine.dispose()
 
 
-def _slugs(url: str) -> list[str]:
-    engine = create_engine(url)
+def _exists(url: str, slug: str) -> bool:
+    engine = make_engine(url)
     try:
-        with engine.connect() as conn:
-            return [r[0] for r in conn.execute(text("SELECT slug FROM agencies ORDER BY id"))]
+        with make_session_factory(engine)() as session:
+            return get_agency_by_slug(session, slug) is not None
     finally:
         engine.dispose()
 
@@ -42,7 +41,8 @@ def test_an_empty_slug_is_refused_after_the_migration(db_url: str) -> None:
     _insert_agency(db_url, "agence-a")
     with pytest.raises(IntegrityError):
         _insert_agency(db_url, "")
-    assert _slugs(db_url) == ["agence-a"]
+    assert _exists(db_url, "agence-a")
+    assert not _exists(db_url, "")
 
 
 def test_upgrading_from_0003_keeps_the_data_and_adds_the_rule(db_url: str) -> None:
@@ -50,7 +50,7 @@ def test_upgrading_from_0003_keeps_the_data_and_adds_the_rule(db_url: str) -> No
     command.upgrade(cfg, "0003")
     _insert_agency(db_url, "existing")
     command.upgrade(cfg, "0004")
-    assert _slugs(db_url) == ["existing"]
+    assert _exists(db_url, "existing")
     with pytest.raises(IntegrityError):
         _insert_agency(db_url, "")
 
@@ -60,7 +60,7 @@ def test_downgrading_to_0003_removes_the_rule_again(db_url: str) -> None:
     command.upgrade(cfg, "head")
     command.downgrade(cfg, "0003")
     _insert_agency(db_url, "")  # allowed again, as under the previous release
-    assert _slugs(db_url) == [""]
+    assert _exists(db_url, "")
 
 
 def test_the_model_carries_the_same_rule_for_databases_built_from_it(db_url: str) -> None:
@@ -77,7 +77,8 @@ def test_the_previous_release_still_works_against_0004(db_url: str) -> None:
     command.upgrade(alembic_config(db_url), "head")
     _insert_agency(db_url, "a")
     _insert_agency(db_url, "b-2")
-    assert _slugs(db_url) == ["a", "b-2"]
+    assert _exists(db_url, "a")
+    assert _exists(db_url, "b-2")
 
 
 def test_the_migration_is_labelled_expand_only() -> None:
@@ -93,7 +94,9 @@ def _reloptions(url: str) -> list[str] | None:
     try:
         with engine.connect() as conn:
             value = conn.execute(
-                text("SELECT reloptions FROM pg_class WHERE relname = 'rate_limit_buckets'")
+                text(
+                    "SELECT reloptions FROM pg_class WHERE oid = to_regclass('rate_limit_buckets')"
+                )
             ).scalar()
     finally:
         engine.dispose()

@@ -10,7 +10,7 @@ from alembic import command
 from alembic.autogenerate import compare_metadata
 from alembic.config import Config
 from alembic.migration import MigrationContext
-from sqlalchemy import create_engine, func, inspect, select, text
+from sqlalchemy import create_engine, func, inspect, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -24,12 +24,7 @@ from app.repository import (
     tickets_awaiting_price,
 )
 from tests.builders import build_workbook, ticket_row
-from tests.conftest import SHA
-
-
-def allow_future_price_statuses(session: Session) -> None:
-    """Phase 3 extends the price_status CHECK; simulate a later status in Phase 1 tests."""
-    session.execute(text("PRAGMA ignore_check_constraints=ON"))
+from tests.conftest import SHA, allow_future_price_statuses
 
 
 def count(session: Session, **filters: object) -> int:

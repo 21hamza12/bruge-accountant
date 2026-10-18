@@ -42,3 +42,15 @@ uv run pytest                 # tests + 80% coverage gate
 uv run ruff check .
 uv run mypy                   # strict, over app, tests and migrations
 ```
+
+Tests run on a temporary SQLite file by default. To run the storage and CLI tests against
+Postgres, point `TEST_DATABASE_URL` at an empty database whose name contains `test` (each
+test drops and recreates its `public` schema):
+
+```bash
+TEST_DATABASE_URL=postgresql+psycopg://user:pw@localhost/bruge_test uv run pytest --no-cov tests/test_storage.py tests/test_storage_hardening.py tests/test_cli.py tests/test_postgres_concurrency.py
+```
+
+`tests/test_postgres_concurrency.py` (two connections importing overlapping tickets at once)
+only runs on Postgres. CI (`.github/workflows/ci.yml`) runs both: the full suite on SQLite,
+and the Alembic upgrade/downgrade/upgrade cycle plus those tests on `postgres:16`.

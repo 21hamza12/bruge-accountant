@@ -56,9 +56,12 @@ jobs:
           --health-timeout 5s
           --health-retries 10
     env:
-      DATABASE_URL: postgresql+psycopg://bruge:bruge@localhost:5432/bruge_test
-      TEST_DATABASE_URL: postgresql+psycopg://bruge:bruge@localhost:5432/bruge_test
-      # The non-owner role the application uses; row-level security tests connect as it.
+      # POSTGRES_USER above is a superuser, and superusers skip row-level security. So the tests
+      # connect as bruge_owner (owns the database, no superuser, no BYPASSRLS), created below.
+      DATABASE_URL: postgresql+psycopg://bruge_owner:bruge_owner@localhost:5432/bruge_test
+      TEST_DATABASE_URL: postgresql+psycopg://bruge_owner:bruge_owner@localhost:5432/bruge_test
+      # The separate application role; the RLS tests run once as it and once as the owner alone
+      # (single-role mode), so both ways of deploying are covered.
       TEST_APP_DATABASE_URL: postgresql+psycopg://bruge_app:bruge_app@localhost:5432/bruge_test
     steps:
       - uses: actions/checkout@v4
@@ -73,17 +76,27 @@ jobs:
         with:
           node-version: "22"
       - run: uv sync --locked
-      - name: alembic upgrade head
-        run: uv run alembic upgrade head
-      - name: alembic downgrade base
-        run: uv run alembic downgrade base
-      - name: alembic upgrade head (again)
-        run: uv run alembic upgrade head
-      - name: Create the application role (throwaway CI credentials)
-        run: >-
-          psql "postgresql://bruge:bruge@localhost:5432/bruge_test" --set ON_ERROR_STOP=1
-          --command "CREATE ROLE bruge_app LOGIN PASSWORD 'bruge_app' NOBYPASSRLS"
-      - name: Full test suite against Postgres
+      - name: Create the owner and application roles (throwaway CI credentials)
+        run: |
+          psql "postgresql://bruge:bruge@localhost:5432/bruge_test" --set ON_ERROR_STOP=1 <<'SQL'
+          CREATE ROLE bruge_owner LOGIN PASSWORD 'bruge_owner' NOSUPERUSER NOBYPASSRLS;
+          CREATE ROLE bruge_app LOGIN PASSWORD 'bruge_app' NOSUPERUSER NOBYPASSRLS;
+          ALTER DATABASE bruge_test OWNER TO bruge_owner;
+          SQL
+      - name: alembic upgrade, downgrade, upgrade (single-role mode, no APP_DB_ROLE)
+        run: |
+          uv run alembic upgrade head
+          uv run alembic downgrade base
+          uv run alembic upgrade head
+          uv run alembic downgrade base
+      - name: alembic upgrade, downgrade, upgrade (APP_DB_ROLE=bruge_app)
+        env:
+          APP_DB_ROLE: bruge_app
+        run: |
+          uv run alembic upgrade head
+          uv run alembic downgrade base
+          uv run alembic upgrade head
+      - name: Full test suite against Postgres (RLS tests in both modes)
         # The 80% coverage gate stays with the SQLite run; Postgres-only tests run here.
         run: uv run pytest --no-cov -rs
 

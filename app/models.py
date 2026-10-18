@@ -161,6 +161,8 @@ class User(Base):
     phone: Mapped[str] = mapped_column(String(20))
     role: Mapped[str] = mapped_column(String(16))
     password_hash: Mapped[str | None] = mapped_column(String(255))
+    # Added by migration 0003; what the manager typed when creating the account.
+    display_name: Mapped[str | None] = mapped_column(Text)
     must_change_password: Mapped[bool] = mapped_column(Boolean, default=True, server_default=true())
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, server_default=true())
     created_at: Mapped[datetime] = mapped_column(
@@ -268,6 +270,10 @@ class AuditEvent(Base):
         ),
         Index("ix_audit_events_agency_created_at", "agency_id", "created_at"),
         Index("ix_audit_events_created_at", "created_at"),
+        # A row without an agency is never readable (row-level security, migration 0003), and
+        # INSERT ... RETURNING needs SELECT on the new row. Without RETURNING, SQLAlchemy takes
+        # the id from the sequence first, so the ORM can still write such a row.
+        {"implicit_returning": False},
     )
 
     id: Mapped[int] = mapped_column(BigIntType, primary_key=True)

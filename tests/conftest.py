@@ -3,6 +3,8 @@ from __future__ import annotations
 import logging
 import os
 from collections.abc import Callable, Iterator
+from contextlib import contextmanager
+from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
@@ -16,6 +18,7 @@ from sqlalchemy.engine import make_url
 from sqlalchemy.orm import Session
 
 from app.db import Base, make_engine, make_session_factory
+from app.db_roles import ROLE_ENV_VAR
 from app.parsing.amadeus import ParsedReport, parse_report
 from app.settings import Settings
 from app.web.main import create_app
@@ -67,28 +70,34 @@ def select_app_database_url(owner_url: str, app_url: str | None) -> str:
     return app_url
 
 
-def grant_app_role_privileges_until_migration_0003(owner_url: str, app_url: str) -> None:
-    """Minimal grants so the app role can work; schema-level, so redone after every reset.
-
-    TODO(step 12): migration 0003 creates the RLS policies and the real grants (no DELETE on
-    tickets or uploads, narrow lookup access). Delete this helper then and let the migration do
-    the work.
-    """
-    role = make_url(app_url).username or ""
-    engine = create_engine(owner_url)
+@contextmanager
+def app_role_env(role: str | None) -> Iterator[None]:
+    """Set (or clear) APP_DB_ROLE for the migration, then put the old value back."""
+    previous = os.environ.get(ROLE_ENV_VAR)
+    if role is None:
+        os.environ.pop(ROLE_ENV_VAR, None)
+    else:
+        os.environ[ROLE_ENV_VAR] = role
     try:
-        quoted = engine.dialect.identifier_preparer.quote(role)
-        with engine.begin() as conn:
-            conn.execute(text("REVOKE CREATE ON SCHEMA public FROM PUBLIC"))
-            conn.execute(text(f"GRANT USAGE ON SCHEMA public TO {quoted}"))  # noqa: S608
-            conn.execute(
-                text(
-                    f"GRANT SELECT, INSERT, UPDATE ON ALL TABLES IN SCHEMA public TO {quoted}"  # noqa: S608
-                )
-            )
-            conn.execute(text(f"GRANT USAGE ON ALL SEQUENCES IN SCHEMA public TO {quoted}"))
+        yield
     finally:
-        engine.dispose()
+        if previous is None:
+            os.environ.pop(ROLE_ENV_VAR, None)
+        else:
+            os.environ[ROLE_ENV_VAR] = previous
+
+
+def alembic_config(url: str) -> Config:
+    cfg = Config(str(ROOT / "alembic.ini"))
+    cfg.set_main_option("script_location", str(ROOT / "migrations"))
+    cfg.set_main_option("sqlalchemy.url", url.replace("%", "%%"))
+    return cfg
+
+
+def migrate(owner_url: str, app_role: str | None = None, revision: str = "head") -> None:
+    """``alembic upgrade`` as the owner; with ``app_role`` the migration also grants to it."""
+    with app_role_env(app_role):
+        command.upgrade(alembic_config(owner_url), revision)
 
 
 def _reset_server_database(url: str) -> None:
@@ -134,17 +143,64 @@ def app_db_url(db_url: str) -> str:
     """The URL the application connects with, on a database migrated to head by the owner.
 
     SQLite: ``db_url`` itself, untouched (tests build the schema themselves there).
-    Postgres: ``alembic upgrade head`` as the owner, grants for the app role, then its URL.
+    Postgres: ``alembic upgrade head`` as the owner with APP_DB_ROLE set, so migration 0003
+    grants the app role its privileges; then the app role's URL.
     """
     url = select_app_database_url(db_url, os.environ.get(TEST_APP_DATABASE_URL_ENV))
     if url == db_url:
         return url
-    cfg = Config(str(ROOT / "alembic.ini"))
-    cfg.set_main_option("script_location", str(ROOT / "migrations"))
-    cfg.set_main_option("sqlalchemy.url", db_url.replace("%", "%%"))
-    command.upgrade(cfg, "head")
-    grant_app_role_privileges_until_migration_0003(db_url, url)
+    migrate(db_url, app_role=make_url(url).username)
     return url
+
+
+@dataclass(frozen=True)
+class RlsDatabase:
+    """A Postgres database migrated to head, in one of the two deployment modes.
+
+    ``app-role``: the application connects as a separate non-owner role (grants applied).
+    ``single-role``: no second role exists; the application connects as the owner and only
+    FORCE ROW LEVEL SECURITY protects the tenants from each other.
+    """
+
+    mode: str
+    owner_url: str
+    app_url: str
+
+
+def assert_subject_to_rls(url: str) -> None:
+    """A superuser or BYPASSRLS role skips every policy, which would make an RLS test vacuous."""
+    engine = create_engine(url)
+    try:
+        with engine.connect() as conn:
+            row = conn.execute(
+                text(
+                    "SELECT rolname, rolsuper, rolbypassrls FROM pg_roles "
+                    "WHERE rolname = current_user"
+                )
+            ).one()
+    finally:
+        engine.dispose()
+    if row.rolsuper or row.rolbypassrls:
+        raise pytest.UsageError(
+            f"role {row.rolname!r} is a superuser or has BYPASSRLS, so row-level security would "
+            "not apply to it; connect the tests as a plain role (see README)"
+        )
+
+
+@pytest.fixture(params=["app-role", "single-role"])
+def rls_db(request: pytest.FixtureRequest, db_url: str) -> RlsDatabase:
+    """Every RLS test runs twice: with a separate app role, and in single-role mode."""
+    if make_url(db_url).get_backend_name() != "postgresql":
+        pytest.skip("needs a real Postgres server: set TEST_DATABASE_URL")
+    mode: str = request.param
+    assert_subject_to_rls(db_url)
+    if mode == "single-role":
+        migrate(db_url, app_role=None)
+        return RlsDatabase(mode, owner_url=db_url, app_url=db_url)
+    app_url = select_app_database_url(db_url, os.environ.get(TEST_APP_DATABASE_URL_ENV))
+    assert_subject_to_rls(app_url)
+    migrate(db_url, app_role=make_url(app_url).username)
+    return RlsDatabase(mode, owner_url=db_url, app_url=app_url)
 
 
 @pytest.fixture

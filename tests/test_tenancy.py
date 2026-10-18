@@ -29,8 +29,9 @@ def test_set_config_statement_is_transaction_local_and_parameterised() -> None:
     assert set(compiled.params.values()) == {"app.agency_id", "7", True}
 
 
-def test_lookup_keys_are_exactly_the_two_documented_ones() -> None:
-    assert frozenset({"app.login_phone", "app.session_token_hash"}) == LOOKUP_KEYS
+def test_lookup_keys_are_exactly_the_three_documented_ones() -> None:
+    expected = {"app.login_phone", "app.session_token_hash", "app.agency_slug"}
+    assert frozenset(expected) == LOOKUP_KEYS
 
 
 # --- SQLite: no-ops -----------------------------------------------------------------

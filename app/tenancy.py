@@ -23,10 +23,10 @@ from sqlalchemy.orm import Session, SessionTransaction
 TENANT_SETTING = "app.agency_id"
 INFO_KEY = "bruge.agency_id"
 
-# The only other settings the application may set. They feed the narrow policies that let a
-# login (by exact phone) or a session lookup (by exact token hash) find one row before the
-# tenant is known.
-LOOKUP_KEYS = frozenset({"app.login_phone", "app.session_token_hash"})
+# The only other settings the application may set. They feed the narrow SELECT policies of
+# migration 0003 that let a login (exact phone), a session lookup (exact token hash) or the admin
+# CLI (exact agency slug) find one row before the tenant is known.
+LOOKUP_KEYS = frozenset({"app.login_phone", "app.session_token_hash", "app.agency_slug"})
 
 
 def set_config_statement(key: str, value: str) -> Any:

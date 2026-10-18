@@ -47,10 +47,33 @@ FAKE_HASH = "not-a-real-hash"
 def migrated(alembic_cfg: tuple[Config, str]) -> Iterator[Session]:
     cfg, url = alembic_cfg
     command.upgrade(cfg, "head")
+    disable_rls(url)
     engine = make_engine(url)
     with make_session_factory(engine)() as s:
         yield s
     engine.dispose()
+
+
+def disable_rls(url: str) -> None:
+    """These tests are about constraints, not tenancy: switch row-level security off.
+
+    From migration 0003 it also applies to the table owner on Postgres (that is tested in
+    tests/test_rls.py), and the constraint tests would otherwise have to bind a tenant first.
+    """
+    engine = create_engine(url)
+    try:
+        if engine.dialect.name == "postgresql":
+            with engine.begin() as conn:
+                tables = conn.execute(
+                    text(
+                        "SELECT relname FROM pg_class WHERE relrowsecurity "
+                        "AND relnamespace = 'public'::regnamespace"
+                    )
+                ).scalars()
+                for name in list(tables):
+                    conn.execute(text(f"ALTER TABLE {name} DISABLE ROW LEVEL SECURITY"))  # noqa: S608
+    finally:
+        engine.dispose()
 
 
 def make_agencies(s: Session) -> tuple[int, int]:
@@ -410,6 +433,7 @@ def test_upgrade_keeps_existing_rows(alembic_cfg: tuple[Config, str]) -> None:
         s.commit()
     engine.dispose()
     command.upgrade(cfg, "head")
+    disable_rls(url)
     engine = make_engine(url)
     with make_session_factory(engine)() as s:
         upload = s.scalars(select(Upload)).one()

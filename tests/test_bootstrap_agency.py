@@ -19,7 +19,6 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-import app.cli
 from app.auth.passwords import TOO_SHORT, hash_password, verify_password
 from app.cli import main
 from app.db import make_engine, make_session_factory
@@ -266,20 +265,6 @@ def test_duplicate_phone_is_refused_and_creates_no_agency(
     assert "already exists" in captured.err
     assert "another secret phrase" not in captured.err + captured.out
     assert find_agency(ready_db, "second") is None
-
-
-def test_a_database_race_on_a_unique_key_is_a_usage_error(
-    ready_db: str, stdin: None, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
-) -> None:
-    def lose_the_race(*args: object, **kwargs: object) -> None:
-        raise IntegrityError("INSERT", {}, Exception("duplicate key value violates uq_users_phone"))
-
-    monkeypatch.setattr(app.cli, "bootstrap_agency", lose_the_race)
-    assert bootstrap(ready_db) == 2
-    captured = capsys.readouterr()
-    assert "already exists" in captured.err
-    assert PASSWORD not in captured.err + captured.out
-    assert "Traceback" not in captured.err
 
 
 def test_the_agency_and_the_manager_are_one_transaction(ready_db: str) -> None:

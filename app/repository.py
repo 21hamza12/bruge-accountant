@@ -122,6 +122,7 @@ def bootstrap_agency(
     phone: str,
     display_name: str,
     password_hash: str,
+    operator: str | None = None,
 ) -> BootstrapResult:
     """Create an agency and its first manager in ONE transaction (all or nothing).
 
@@ -129,6 +130,10 @@ def bootstrap_agency(
     caller's job. The manager does not have to change the password (the operator chose it).
     Works under FORCEd row-level security: both lookups use the narrow policies, the id is taken
     from the sequence and bound as the tenant before the first INSERT.
+
+    An ``agency_bootstrapped`` audit event is written in the same transaction: the agency, the
+    new manager's id and the ``operator`` (the OS user who ran the command). Nobody is logged in
+    at that point, so there is no actor user; the event holds no password, hash or phone number.
     """
     previous = bound_tenant(session)
     try:
@@ -155,6 +160,19 @@ def bootstrap_agency(
             must_change_password=False,
         )
         session.add(user)
+        session.flush()
+        session.add(
+            AuditEvent(
+                agency_id=agency.id,
+                actor_user_id=None,
+                event_type="agency_bootstrapped",
+                details={
+                    "agency_slug": slug,
+                    "manager_user_id": user.id,
+                    "operator": operator or "unknown",
+                },
+            )
+        )
         session.flush()
         result = BootstrapResult(agency_id=agency.id, user_id=user.id)
         session.commit()

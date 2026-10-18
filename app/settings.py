@@ -55,6 +55,11 @@ class Settings(BaseSettings):
     db_max_overflow: int = Field(default=5, ge=0, le=50)
     # Largest request body accepted, headers aside: 10 MB upload plus 64 KB of form overhead.
     max_request_bytes: int = Field(default=10 * 1024 * 1024 + 64 * 1024, ge=1024)
+    # The parse sandbox (app/parsing/sandbox.py): seconds before the child is killed, and its
+    # address-space cap in MB (Linux only). RLIMIT_AS counts virtual memory, so it sits well above
+    # the resident size measured in docs/phase2-plan.md.
+    parse_timeout_s: int = Field(default=30, ge=1, le=300)
+    parse_memory_mb: int = Field(default=768, ge=128, le=8192)
     # Number of trusted reverse proxies in front of the app (Render: see the runbook). 0 means
     # X-Forwarded-* is ignored entirely, which is the safe default; render.yaml sets 1.
     trusted_proxy_hops: int = Field(default=0, ge=0, le=10)

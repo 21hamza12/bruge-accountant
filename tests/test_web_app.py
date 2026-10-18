@@ -1,17 +1,19 @@
 from __future__ import annotations
 
 import inspect
+from collections.abc import Callable
 
 import pytest
+from fastapi import FastAPI
 from fastapi.routing import APIRoute
 from fastapi.testclient import TestClient
 
 from app.settings import Settings
-from app.web.main import app, create_app
+from app.web.main import create_app
 
 
-def test_module_level_app_exists() -> None:
-    assert app.title
+def test_factory_builds_the_app(make_app: Callable[..., FastAPI], web_settings: Settings) -> None:
+    assert make_app(web_settings).title
 
 
 def test_healthz_ok(client: TestClient) -> None:
@@ -51,8 +53,10 @@ def test_all_endpoints_are_sync(client: TestClient) -> None:
     assert not [r.path for r in routes if inspect.iscoroutinefunction(r.endpoint)]
 
 
-def test_engine_and_sessionmaker_live_on_app_state(web_settings: Settings) -> None:
-    built = create_app(web_settings)
+def test_engine_and_sessionmaker_live_on_app_state(
+    make_app: Callable[..., FastAPI], web_settings: Settings
+) -> None:
+    built = make_app(web_settings)
     assert built.state.engine is not None
     assert built.state.sessionmaker is not None
 

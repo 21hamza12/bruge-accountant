@@ -28,11 +28,11 @@ Set on the web service, **Environment** tab.
 
 | Variable | Value | Notes |
 |---|---|---|
-| `DATABASE_URL` | the **Internal** connection string of `bruge-db` | `sync: false`. For now this is the owner URL (same as `MIGRATION_DATABASE_URL`). After PR 2 it becomes the non-owner `bruge_app` role. Never paste it into chat, tickets or the repo. |
+| `DATABASE_URL` | the **Internal** connection string of `bruge-db` | `sync: false`. Until PR 2 creates the `bruge_app` role, `DATABASE_URL` is the owner URL (same as `MIGRATION_DATABASE_URL`), so the web process runs with owner rights and row-level security does not protect anything yet. **No real agency data may be loaded before PR 2 and the switch to `bruge_app`** (PR 5, step 34). Never paste it into chat, tickets or the repo. |
 | `SENTRY_DSN` | leave empty for now | `sync: false`. Sentry is wired in PR 5. |
-| `ALLOWED_HOSTS` | the real public host name(s), comma separated, e.g. `bruge-accountant.onrender.com` | `render.yaml` ships the placeholder `replace-me.onrender.com`. **Replace it.** With the placeholder every request, health check included, is rejected with 400 and the deploy fails. No `*` (production refuses it). |
+| `ALLOWED_HOSTS` | the real public host name(s), comma separated, e.g. `bruge-accountant.onrender.com` | `render.yaml` ships the placeholder `replace-me.onrender.com`. **Replace it.** With the placeholder every request, health check included, is rejected with 400 and the deploy fails. No wildcards: production refuses `*` and `*.example.com`. |
 | `CORS_ALLOWED_ORIGINS` | leave unset | Same-origin app, so no CORS middleware is installed. Production refuses `*`. |
-| `MIGRATION_DATABASE_URL` | injected from the database | Do not edit. Used only by `preDeployCommand`. |
+| `MIGRATION_DATABASE_URL` | injected from the database | Do not edit. Render env vars apply to the running service, so this owner URL is present in the container; that is the accepted pilot trade-off (approved decision 2 in `docs/phase2-plan.md`). The web process never reads it; only `init-db` (the `preDeployCommand`) and the admin CLI do, and a test enforces that. |
 | `ENV`, `COOKIE_SECURE`, `TRUSTED_PROXY_HOPS` | already in `render.yaml` | `TRUSTED_PROXY_HOPS` is confirmed in section 4. |
 
 - [ ] `ALLOWED_HOSTS` set to the real host (note the exact `*.onrender.com` name Render assigned).

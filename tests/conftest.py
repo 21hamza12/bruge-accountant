@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import logging
 import os
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from pathlib import Path
 
 import pytest
 from alembic.config import Config
+from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from pydantic import SecretStr
 from sqlalchemy import create_engine, text
@@ -104,3 +106,30 @@ def web_settings(db_url: str, monkeypatch: pytest.MonkeyPatch) -> Settings:
 def client(web_settings: Settings) -> Iterator[TestClient]:
     with TestClient(create_app(web_settings), base_url="https://testserver") as c:
         yield c
+
+
+@pytest.fixture(autouse=True)
+def restore_logging() -> Iterator[None]:
+    """create_app() configures logging; undo it so tests stay independent."""
+    root = logging.getLogger()
+    handlers, level = list(root.handlers), root.level
+    access_disabled = logging.getLogger("uvicorn.access").disabled
+    yield
+    root.handlers[:] = handlers
+    root.setLevel(level)
+    logging.getLogger("uvicorn.access").disabled = access_disabled
+
+
+@pytest.fixture
+def make_app() -> Iterator[Callable[..., FastAPI]]:
+    """create_app() whose engines are disposed at teardown, even without a lifespan run."""
+    built: list[FastAPI] = []
+
+    def factory(settings: Settings | None = None, **kwargs: object) -> FastAPI:
+        app = create_app(settings, **kwargs)  # type: ignore[arg-type]
+        built.append(app)
+        return app
+
+    yield factory
+    for app in built:
+        app.state.engine.dispose()

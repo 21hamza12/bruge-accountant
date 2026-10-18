@@ -17,7 +17,7 @@ from app.web.templating import render
 
 log = logging.getLogger("app.web.errors")
 
-PAGES = {400, 401, 403, 404, 429, 500}
+PAGES = {400, 401, 403, 404, 405, 413, 429, 500, 503}
 # Only headers that help the client are copied from an HTTPException; nothing else.
 FORWARDED_HEADERS = ("allow", "retry-after")
 
@@ -80,6 +80,15 @@ class ErrorBoundaryMiddleware:
 
         try:
             await self.app(scope, receive, tracking_send)
+        except StarletteHTTPException as exc:
+            # Raised by a middleware: the router's exception handler is not in play there.
+            if started:
+                raise
+            kept = {k: v for k, v in (exc.headers or {}).items() if k.lower() in FORWARDED_HEADERS}
+            ref = new_reference()
+            if exc.status_code >= 500:
+                log.error("http %s ref=%s", exc.status_code, ref, extra=_context())
+            await error_response(exc.status_code, ref, kept)(scope, receive, send)
         except Exception:
             ref = new_reference()
             log.error("unhandled exception ref=%s", ref, exc_info=True, extra=_context())

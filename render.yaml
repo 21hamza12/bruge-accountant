@@ -28,11 +28,16 @@ services:
         value: "1"  # to be confirmed in the runbook
       - key: ALLOWED_HOSTS
         value: replace-me.onrender.com  # placeholder: set the real host(s) first (runbook)
-      - key: MIGRATION_DATABASE_URL  # owner role, used only by preDeployCommand
+      # Owner role. Render env vars apply to the running service, not only to preDeployCommand,
+      # so the container holds it. The web process never reads it (only `init-db` and the admin
+      # CLI do; a test pins that). Accepted for the pilot: docs/phase2-plan.md, decision 2.
+      - key: MIGRATION_DATABASE_URL
         fromDatabase:
           name: bruge-db
           property: connectionString
-      - key: DATABASE_URL  # dashboard: owner URL for now, the bruge_app role after PR 2
+      # Dashboard: the owner URL until PR 2 creates the bruge_app role, then bruge_app.
+      # No real agency data before that (docs/runbook.md).
+      - key: DATABASE_URL
         sync: false
       - key: SENTRY_DSN
         sync: false

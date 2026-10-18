@@ -1,0 +1,7 @@
+{% extends "base.html" %}
+{% block title %}{{ _("Fichier trop volumineux") }}{% endblock %}
+{% block content %}
+<h1>{{ _("Fichier trop volumineux") }}</h1>
+<p>{{ _("Le fichier dépasse la taille maximale autorisée. Réduisez-le ou découpez-le, puis réessayez.") }}</p>
+<p>{{ _("Référence") }} : <code>{{ ref }}</code></p>
+{% endblock %}

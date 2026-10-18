@@ -119,7 +119,9 @@ def test_dockerfile_cmd_is_shell_form_with_exec_and_the_required_flags(dockerfil
     assert len(cmds) == 1
     cmd = cmds[0]
     assert not cmd.startswith("["), "shell form is needed so $PORT expands"
-    assert cmd.startswith("exec uvicorn app.web.main:app"), "exec lets SIGTERM reach uvicorn"
+    assert cmd.startswith("exec uvicorn --factory app.web.main:create_app"), (
+        "exec lets SIGTERM reach uvicorn; --factory avoids import-time side effects"
+    )
     for fragment in (
         "--host 0.0.0.0",
         "--port ${PORT:-8000}",
@@ -185,3 +187,27 @@ def test_migration_0001_is_documented_as_frozen() -> None:
     text = (ROOT / "migrations" / "versions" / "0001_initial_schema.py").read_text(encoding="utf-8")
     assert "frozen" in text.lower()
     assert "never been deployed" not in text
+
+
+def test_render_yaml_does_not_claim_the_owner_url_is_confined_to_pre_deploy() -> None:
+    # Render env vars apply to the running service too, not only to preDeployCommand.
+    raw = (ROOT / "render.yaml").read_text(encoding="utf-8")
+    assert "used only by preDeployCommand" not in raw
+    assert "running service" in raw
+
+
+def test_runbook_documents_the_owner_url_and_the_no_real_data_rule() -> None:
+    runbook = " ".join((ROOT / "docs" / "runbook.md").read_text(encoding="utf-8").split())
+    assert "until pr 2 creates the `bruge_app` role" in runbook.lower()
+    assert "`DATABASE_URL` is the owner URL" in runbook
+    assert "no real agency data" in runbook.lower()
+    assert "decision 2" in runbook.lower()
+
+
+def test_only_the_cli_reads_the_owner_url() -> None:
+    hits = [
+        path.relative_to(ROOT).as_posix()
+        for path in (ROOT / "app").rglob("*.py")
+        if "migration_database_url" in path.read_text(encoding="utf-8").lower()
+    ]
+    assert sorted(hits) == ["app/cli.py", "app/settings.py"]

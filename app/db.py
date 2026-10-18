@@ -15,6 +15,8 @@ from sqlalchemy.types import JSON, TypeDecorator
 from app.settings import Settings
 
 DEFAULT_DATABASE_URL = "sqlite:///bruge.db"
+CONNECT_TIMEOUT_SECONDS = 3
+POOL_TIMEOUT_SECONDS = 5
 
 NAMING_CONVENTION = {
     "ix": "ix_%(column_0_label)s",
@@ -69,7 +71,17 @@ def normalize_database_url(url: str) -> str:
 
 def make_engine(url: str | None = None) -> Engine:
     url = normalize_database_url(url or default_database_url())
-    engine = create_engine(url, pool_pre_ping=not url.startswith("sqlite"))
+    if url.startswith("sqlite"):
+        engine = create_engine(url)
+    else:
+        # A dead database must fail a request in seconds, not hang a worker: 3 s to connect,
+        # 5 s waiting for a pooled connection.
+        engine = create_engine(
+            url,
+            pool_pre_ping=True,
+            pool_timeout=POOL_TIMEOUT_SECONDS,
+            connect_args={"connect_timeout": CONNECT_TIMEOUT_SECONDS},
+        )
     if engine.dialect.name == "sqlite":
 
         @event.listens_for(engine, "connect")

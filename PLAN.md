@@ -44,13 +44,30 @@ Deploy: one Docker container + managed Postgres.
 - columns I–N have no effect on output
 - importing the same file twice → still 48 tickets
 
+## Decisions
+
+- **report_date is fixed at first import.** A ticket belongs to the day it first appeared; a later
+  report containing the same ticket refreshes its Amadeus fields but never moves it to another day.
+- **Duplicate DOC NUMBER inside one file:** the first row is kept, the ticket gets the
+  `duplicate_in_file` flag (so it shows up in the question) and a warning is recorded.
+- **Blank RLOC:** the ticket is flagged `missing_booking_ref` and becomes its own question; blank
+  RLOCs are never merged into one group. A blank staff sign is flagged `missing_staff_sign`.
+- **Money in JSON is always a string** (`"746423"`, `"1234.50"`; whole amounts have no decimals);
+  `null` stays `null`.
+- Costs are stored with 2 decimals (half-up; `cost_rounded` flag when digits were lost); a cost of
+  10^12 or more is treated as missing.
+
 ## Later phases (not built yet)
 
-2. Auth, agencies, users, staff-sign ↔ person mapping, Postgres, upload API, first deploy
+2. Auth, agencies, users, staff-sign ↔ person mapping, Postgres, upload API, first deploy.
+   Before exposing uploads: `agency_id` only from the authenticated session; parse in a worker with
+   memory/time limits; separate migration vs app DB roles and a per-transaction `app.agency_id`
+   setting for Postgres RLS; sanitize upload filenames
 3. Text price chat (read-back + confirm; who/when stored in append-only price history).
    Open question: partner sales (P.B = fee only) vs direct sales (P.B = full price)
 4. Voice notes (speech-to-text → same confirmation flow)
-5. Daily / weekly / monthly reports: tickets, revenue, profit, margin
+5. Daily / weekly / monthly reports: tickets, revenue, profit, margin.
+   Any Excel/CSV export must neutralise cells starting with `=` `+` `-` `@` tab or CR (formula injection)
 6. "Usual" partner fee suggestion (never auto-applied), odd-price flags, manager escalation, push notifications
 7. Arabic / French UI, onboarding other agencies, billing
 

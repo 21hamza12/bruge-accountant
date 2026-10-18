@@ -21,7 +21,16 @@ uv run python -m app import tests/fixtures/1OCT.xlsx --agency bruge-voyages
 or updated, any parser warnings, and one price question per staff sign and booking reference.
 Importing the same file again updates the tickets in place and never resets their price status.
 
-- Database: set `DATABASE_URL` or pass `--db <url>` (default `sqlite:///bruge.db`).
+- Database: set `DATABASE_URL` (preferred) or pass `--db <url>` (default `sqlite:///bruge.db`).
+  A URL given with `--db` may contain a password and ends up in your shell history and in process
+  listings, so use the environment variable for anything but a throwaway SQLite file.
+- All money in the JSON output is a string (`"746423"`, `"1234.50"`; `null` when unknown), never a
+  float. Each question also has `known_cost_total` and `missing_cost_count`; `total_cost` is `null`
+  as soon as one ticket has no cost.
+- Database errors are reported as `error: ...` with exit code 1 (`run: init-db` only when the tables
+  are missing); no tracebacks for expected failures.
+- Limits: files up to 10 MB, 50,000 data rows, 30 MB uncompressed; larger or hostile workbooks are
+  rejected with a parse error.
 - Unknown agencies are rejected (exit code 2); create them first with `add-agency`.
 - Unreadable files are reported with exit code 1.
 - `--date YYYY-MM-DD` overrides the report date derived from the file.
@@ -31,5 +40,5 @@ Development checks:
 ```bash
 uv run pytest                 # tests + 80% coverage gate
 uv run ruff check .
-uv run mypy
+uv run mypy                   # strict, over app, tests and migrations
 ```

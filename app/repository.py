@@ -9,7 +9,7 @@ from sqlalchemy import func, select
 from sqlalchemy.dialects import postgresql, sqlite
 from sqlalchemy.orm import Session
 
-from app.models import PRICE_STATUS_AWAITING, Agency, Ticket, Upload
+from app.models import PRICE_STATUS_AWAITING, ROLE_MANAGER, Agency, Ticket, Upload, User
 from app.parsing.amadeus import ParsedReport, ParsedTicket
 from app.tenancy import bind_tenant, bound_tenant, lookup_scope, unbind_tenant
 
@@ -74,6 +74,73 @@ def create_agency(session: Session, slug: str, name: str, currency: str = "MRU")
         raise
     bind_tenant(session, agency.id)
     return agency
+
+
+class AlreadyExistsError(Exception):
+    """The agency slug or the manager's phone is taken. ``what`` is ``"slug"`` or ``"phone"``."""
+
+    def __init__(self, what: str) -> None:
+        super().__init__(f"the {what} is already taken")
+        self.what = what
+
+
+@dataclass(frozen=True)
+class BootstrapResult:
+    agency_id: int
+    user_id: int
+
+
+def bootstrap_agency(
+    session: Session,
+    slug: str,
+    name: str,
+    phone: str,
+    display_name: str,
+    password_hash: str,
+) -> BootstrapResult:
+    """Create an agency and its first manager in ONE transaction (all or nothing).
+
+    ``phone`` is E.164 and ``password_hash`` an Argon2 hash; validating and hashing is the
+    caller's job. The manager does not have to change the password (the operator chose it).
+    Works under FORCEd row-level security: both lookups use the narrow policies, the id is taken
+    from the sequence and bound as the tenant before the first INSERT.
+    """
+    previous = bound_tenant(session)
+    try:
+        if get_agency_by_slug(session, slug) is not None:
+            raise AlreadyExistsError("slug")
+        lookup_scope(session, "app.login_phone", phone)
+        if session.scalars(select(User.id).where(User.phone == phone)).first() is not None:
+            raise AlreadyExistsError("phone")
+        agency_id = _next_agency_id(session)
+        if agency_id is not None:
+            bind_tenant(session, agency_id)
+        agency = Agency(slug=slug, name=name)
+        if agency_id is not None:
+            agency.id = agency_id
+        session.add(agency)
+        session.flush()
+        bind_tenant(session, agency.id)
+        user = User(
+            agency_id=agency.id,
+            phone=phone,
+            role=ROLE_MANAGER,
+            display_name=display_name,
+            password_hash=password_hash,
+            must_change_password=False,
+        )
+        session.add(user)
+        session.flush()
+        result = BootstrapResult(agency_id=agency.id, user_id=user.id)
+        session.commit()
+    except Exception:
+        session.rollback()
+        if previous is None:
+            unbind_tenant(session)
+        else:
+            bind_tenant(session, previous)
+        raise
+    return result
 
 
 def get_agency_by_slug(session: Session, slug: str) -> Agency | None:

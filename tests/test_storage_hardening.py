@@ -11,14 +11,22 @@ from typing import Any
 import pytest
 from alembic import command
 from alembic.config import Config
-from sqlalchemy import create_engine, create_mock_engine, func, inspect, select, text
-from sqlalchemy.exc import IntegrityError, StatementError
+from sqlalchemy import (
+    String,
+    create_engine,
+    create_mock_engine,
+    func,
+    inspect,
+    select,
+    text,
+)
+from sqlalchemy.exc import DataError, IntegrityError, StatementError
 from sqlalchemy.orm import Session
 
 from app import repository
 from app.db import Base, make_engine, make_session_factory
 from app.models import Agency, Ticket, Upload
-from app.parsing.amadeus import ParsedReport, parse_report
+from app.parsing.amadeus import FIELD_LIMITS, ParsedReport, parse_report
 from app.questions import build_questions
 from app.repository import (
     create_agency,
@@ -362,7 +370,7 @@ def test_ticket_cannot_point_at_another_agencys_upload(
 
 @pytest.mark.parametrize(
     "overrides",
-    [{"price_status": "free"}, {"pax_type": "ADULT"}, {"pax_type": ""}],
+    [{"price_status": "free"}, {"pax_type": "ADX"}, {"pax_type": ""}],
     ids=["price_status", "pax_type", "pax_type_empty"],
 )
 def test_check_constraints_reject_bad_values(session: Session, overrides: dict[str, Any]) -> None:
@@ -371,6 +379,28 @@ def test_check_constraints_reject_bad_values(session: Session, overrides: dict[s
     upload = import_report(session, agency.id, parsed, "1.xlsx", SHA).upload_id
     session.add(Ticket(**_ticket_kwargs(upload, agency.id, **overrides)))
     with pytest.raises(IntegrityError):
+        session.commit()
+    session.rollback()
+
+
+def test_parser_field_limits_match_column_lengths() -> None:
+    # SQLite ignores VARCHAR lengths; Postgres rejects longer values, so the parser's
+    # truncation limits must never drift above the real columns.
+    for key, limit in FIELD_LIMITS.items():
+        column_type = Ticket.__table__.c[key].type
+        assert isinstance(column_type, String)
+        assert column_type.length == limit, key
+
+
+def test_server_rejects_text_longer_than_its_column(session: Session) -> None:
+    if session.get_bind().dialect.name == "sqlite":
+        pytest.skip("SQLite does not enforce VARCHAR lengths")
+    agency = create_agency(session, "a", "A")
+    upload = import_report(
+        session, agency.id, parse_report(build_workbook([ticket_row()])), "1.xlsx", SHA
+    ).upload_id
+    session.add(Ticket(**_ticket_kwargs(upload, agency.id, airline="X" * 9)))
+    with pytest.raises(DataError, match="too long"):
         session.commit()
     session.rollback()
 

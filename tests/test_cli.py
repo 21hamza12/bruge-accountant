@@ -16,11 +16,6 @@ from tests.builders import build_workbook, ticket_row
 
 
 @pytest.fixture
-def db_url(tmp_path: Path) -> str:
-    return f"sqlite:///{tmp_path / 'cli.db'}"
-
-
-@pytest.fixture
 def ready_db(db_url: str, capsys: pytest.CaptureFixture[str]) -> str:
     assert main(["init-db", "--db", db_url]) == 0
     assert main(["add-agency", "bruge-voyages", "Bruge Voyages", "--db", db_url]) == 0

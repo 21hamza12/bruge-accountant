@@ -17,6 +17,7 @@ dev = [
     "ruff>=0.6",
     "mypy>=1.11",
     "types-openpyxl>=3.1.5.20261017",
+    "psycopg[binary]>=3.2",
 ]
 
 [build-system]

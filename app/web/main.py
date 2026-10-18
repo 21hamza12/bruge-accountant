@@ -26,6 +26,7 @@ from app.web.errors import (
     http_exception_handler,
     validation_exception_handler,
 )
+from app.web.proxy import ProxyHeadersMiddleware
 from app.web.security import add_security_middleware
 from app.web.templating import TEMPLATES_DIR, render
 
@@ -59,6 +60,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.add_middleware(ErrorBoundaryMiddleware)
     add_security_middleware(app, settings)
     app.add_middleware(RequestLogMiddleware)
+    app.add_middleware(ProxyHeadersMiddleware, hops=settings.trusted_proxy_hops)
     app.mount("/static", StaticFiles(directory=TEMPLATES_DIR.parent / "static"), name="static")
 
     @app.get("/sw.js", include_in_schema=False)

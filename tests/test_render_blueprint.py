@@ -123,11 +123,24 @@ def test_dockerfile_cmd_is_shell_form_with_exec_and_the_required_flags(dockerfil
     for fragment in (
         "--host 0.0.0.0",
         "--port ${PORT:-8000}",
-        "--proxy-headers",
         "--no-server-header",
         "--workers 1",
     ):
         assert fragment in cmd
+
+
+def test_dockerfile_does_not_use_uvicorn_proxy_headers(dockerfile: str) -> None:
+    # Uvicorn would trust only 127.0.0.1; app.web.proxy counts TRUSTED_PROXY_HOPS instead.
+    assert "--proxy-headers" not in dockerfile
+    assert "--forwarded-allow-ips" not in dockerfile
+
+
+def test_trusted_proxy_hops_is_one_on_render_and_marked_for_confirmation(
+    env_vars: dict[str, dict[str, Any]],
+) -> None:
+    assert env_vars["TRUSTED_PROXY_HOPS"]["value"] == "1"
+    raw = (ROOT / "render.yaml").read_text(encoding="utf-8")
+    assert re.search(r"TRUSTED_PROXY_HOPS\s+value: \"1\".*confirm", raw)
 
 
 def test_dockerfile_copies_no_tests_or_venv(dockerfile: str) -> None:

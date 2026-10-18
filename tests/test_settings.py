@@ -37,7 +37,7 @@ def test_development_defaults() -> None:
     assert s.database_url.get_secret_value() == "sqlite:///bruge.db"
     assert s.cors_allowed_origins == []
     assert "localhost" in s.allowed_hosts
-    assert s.trusted_proxy_hops == 1
+    assert s.trusted_proxy_hops == 0  # fail safe: trust no proxy unless told
     assert s.is_production is False
     assert s.version == "dev"
 

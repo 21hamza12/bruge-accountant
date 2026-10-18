@@ -77,9 +77,18 @@ PY
 
 ## 4. How does `X-Forwarded-For` arrive, and what is `TRUSTED_PROXY_HOPS`?
 
-The login rate limiter (PR 3) uses the client IP. Uvicorn's `--proxy-headers` only trusts
-`127.0.0.1` by default, so the app itself reads the header and counts `TRUSTED_PROXY_HOPS` proxies
-from the right. We must know the real hop count and whether a client can forge the left side.
+The login rate limiter (PR 3) uses the client IP. The Dockerfile does **not** pass uvicorn's
+`--proxy-headers` (it would trust only `127.0.0.1`, so behind Render the scheme would stay `http`
+and every client would look like the proxy). Instead `app/web/proxy.py` applies these rules:
+
+- `TRUSTED_PROXY_HOPS=N` with N > 0: the client address is the N-th entry from the **right** of
+  `X-Forwarded-For` (the left side is client-supplied and never used). With fewer than N entries,
+  or an entry that is not an IP address, the socket peer is kept. The scheme is the rightmost
+  `X-Forwarded-Proto` value, only if it is `http` or `https`.
+- `TRUSTED_PROXY_HOPS=0` (the code default, the safe one): both headers are ignored.
+- `render.yaml` ships `TRUSTED_PROXY_HOPS=1`, which is a guess until this step confirms it.
+
+We must know the real hop count and whether a client can forge the left side.
 
 - [ ] The request log deliberately does not print headers. Ask the developer for a one-off
       debug commit on a **scratch branch** (never `main`) that logs `X-Forwarded-For`,

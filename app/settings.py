@@ -29,8 +29,9 @@ class Settings(BaseSettings):
     allowed_hosts: CsvList = Field(default_factory=list)
     cors_allowed_origins: CsvList = Field(default_factory=list)
     cookie_secure: bool = True
-    # Number of trusted reverse proxies in front of the app (Render: see the runbook).
-    trusted_proxy_hops: int = Field(default=1, ge=0, le=10)
+    # Number of trusted reverse proxies in front of the app (Render: see the runbook). 0 means
+    # X-Forwarded-* is ignored entirely, which is the safe default; render.yaml sets 1.
+    trusted_proxy_hops: int = Field(default=0, ge=0, le=10)
     sentry_dsn: SecretStr | None = None
     render_git_commit: str | None = None
 

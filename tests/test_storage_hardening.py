@@ -11,8 +11,7 @@ from typing import Any
 import pytest
 from alembic import command
 from alembic.config import Config
-from sqlalchemy import create_engine, func, inspect, select, text
-from sqlalchemy.dialects import postgresql, sqlite
+from sqlalchemy import create_engine, create_mock_engine, func, inspect, select, text
 from sqlalchemy.exc import IntegrityError, StatementError
 from sqlalchemy.orm import Session
 
@@ -209,8 +208,9 @@ def test_rows_are_upserted_in_ticket_number_order(
 # --- upsert statement / concurrency -------------------------------------------------------
 
 
-@pytest.mark.parametrize("dialect", [postgresql.dialect(), sqlite.dialect()], ids=["pg", "sqlite"])
-def test_upsert_statement_leaves_protected_columns_alone(dialect: Any) -> None:
+@pytest.mark.parametrize("dialect_name", ["postgresql", "sqlite"])
+def test_upsert_statement_leaves_protected_columns_alone(dialect_name: str) -> None:
+    dialect = create_mock_engine(f"{dialect_name}://", lambda *a, **k: None).dialect
     rows = [
         {
             "agency_id": 1,

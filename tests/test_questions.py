@@ -227,5 +227,5 @@ def test_flag_constants_have_one_definition() -> None:
     from app import questions
     from app.parsing import amadeus
 
-    assert questions.FLAG_MISSING_COST is amadeus.FLAG_MISSING_COST
-    assert questions.FLAG_MISSING_BOOKING_REF is amadeus.FLAG_MISSING_BOOKING_REF
+    assert vars(questions)["FLAG_MISSING_COST"] is amadeus.FLAG_MISSING_COST
+    assert vars(questions)["FLAG_MISSING_BOOKING_REF"] is amadeus.FLAG_MISSING_BOOKING_REF

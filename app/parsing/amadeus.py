@@ -247,7 +247,10 @@ def _open_sheet(data: bytes) -> Iterator[ReadOnlyWorksheet]:
 
 def _iter_rows(ws: ReadOnlyWorksheet) -> Iterator[tuple[Any, ...]]:
     try:
-        yield from ws.iter_rows(min_row=1, max_col=MAX_COLUMNS, values_only=True)
+        # types-openpyxl declares iter_rows with a Worksheet-only self type; it is a stub bug.
+        yield from ws.iter_rows(  # type: ignore[misc]
+            min_row=1, max_col=MAX_COLUMNS, values_only=True
+        )
     except Exception as exc:
         raise ParseError("worksheet is malformed or uses forbidden XML") from exc
 

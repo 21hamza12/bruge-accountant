@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import io
+from collections.abc import Callable
 from decimal import Decimal
 from pathlib import Path
 
 import openpyxl
 import pytest
+from openpyxl.worksheet.worksheet import Worksheet
 
 from app.parsing import amadeus
 from app.parsing.amadeus import ParsedReport, ParseError, parse_report
@@ -79,7 +81,7 @@ def test_fixture_ticket_numbers_unique(report: ParsedReport) -> None:
 # --- columns I..N must have zero effect ---------------------------------------------
 
 
-def _variant(tmp_path: Path, name: str, mutate) -> Path:  # type: ignore[no-untyped-def]
+def _variant(tmp_path: Path, name: str, mutate: Callable[[Worksheet], None]) -> Path:
     wb = openpyxl.load_workbook(FIXTURE, data_only=False)
     ws = wb.active
     assert ws is not None
@@ -89,20 +91,20 @@ def _variant(tmp_path: Path, name: str, mutate) -> Path:  # type: ignore[no-unty
     return path
 
 
-def _clear(ws) -> None:  # type: ignore[no-untyped-def]
+def _clear(ws: Worksheet) -> None:
     for row in ws.iter_rows(min_col=9, max_col=14):
         for cell in row:
             cell.value = None
 
 
-def _junk(ws) -> None:  # type: ignore[no-untyped-def]
-    formulas = ["=SUM(D6:D53)", "=1/0", "=NOPE()", "garbage", 12.5, "=D6*2"]
+def _junk(ws: Worksheet) -> None:
+    formulas: list[str | float] = ["=SUM(D6:D53)", "=1/0", "=NOPE()", "garbage", 12.5, "=D6*2"]
     for r in range(1, 60):
         for i, col in enumerate(range(9, 15)):
             ws.cell(row=r, column=col, value=formulas[(r + i) % len(formulas)])
 
 
-def _delete(ws) -> None:  # type: ignore[no-untyped-def]
+def _delete(ws: Worksheet) -> None:
     ws.delete_cols(9, 6)
 
 
@@ -110,7 +112,7 @@ def _delete(ws) -> None:  # type: ignore[no-untyped-def]
 def test_hand_typed_columns_have_no_effect(
     tmp_path: Path,
     report: ParsedReport,
-    mutate,  # type: ignore[no-untyped-def]
+    mutate: Callable[[Worksheet], None],
 ) -> None:
     other = parse_report(_variant(tmp_path, "v.xlsx", mutate))
     assert other.header == report.header

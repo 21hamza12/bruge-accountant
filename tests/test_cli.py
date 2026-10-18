@@ -303,7 +303,7 @@ def test_main_survives_streams_without_reconfigure(
     db_url: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     class Plain(io.StringIO):
-        reconfigure = None  # type: ignore[assignment]
+        reconfigure = None
 
     monkeypatch.setattr(sys, "stdout", Plain())
     monkeypatch.setattr(sys, "stderr", Plain())

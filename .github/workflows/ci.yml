@@ -121,9 +121,17 @@ jobs:
           --health-retries 10
     env:
       # postgres:// on purpose: it exercises the URL normalization the Render URLs rely on.
-      DB_URL: postgres://bruge:bruge@localhost:5432/bruge_smoke
+      # bruge_owner is not a superuser: the app refuses to start in production as a superuser or
+      # BYPASSRLS role (they skip row-level security), and POSTGRES_USER above is a superuser.
+      DB_URL: postgres://bruge_owner:bruge_owner@localhost:5432/bruge_smoke
     steps:
       - uses: actions/checkout@v4
+      - name: Create the non-superuser owner role (throwaway CI credentials)
+        run: |
+          psql "postgresql://bruge:bruge@localhost:5432/bruge_smoke" --set ON_ERROR_STOP=1 <<'SQL'
+          CREATE ROLE bruge_owner LOGIN PASSWORD 'bruge_owner' NOSUPERUSER NOBYPASSRLS;
+          ALTER DATABASE bruge_smoke OWNER TO bruge_owner;
+          SQL
       - name: Build the image
         run: docker build --tag bruge-accountant:ci .
       - name: init-db inside the image (same command as preDeployCommand)

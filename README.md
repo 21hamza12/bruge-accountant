@@ -38,6 +38,13 @@ Importing the same file again updates the tickets in place and never resets thei
   and exits with code 2 when the slug or the phone already exists.
 - On Postgres, `add-agency` and `bootstrap-agency` need the owner connection (the app role may not
   insert agencies): run them with `DATABASE_URL` set to `MIGRATION_DATABASE_URL`.
+- Non-interactive password: `--password-stdin` (the only way from a pipe or script on Windows).
+  A command line error prints the usage, never the tokens typed; `-p` and `--password...` are
+  refused. Ctrl-C at the prompt exits with code 130.
+- `grant-app-role <role>` (owner connection) re-applies the app role's privileges, idempotently,
+  for a role created after migration 0003; it refuses a superuser or BYPASSRLS role.
+- `purge-expired` deletes expired sessions and temporary passwords and audit events older than
+  400 days, and prints the counts.
 - Unreadable files are reported with exit code 1.
 - `--date YYYY-MM-DD` overrides the report date derived from the file.
 
@@ -98,6 +105,9 @@ privileges) and once without it (single-role mode: the app connects as `bruge_ow
 APP_DB_ROLE=bruge_app uv run python -m app init-db      # grants bruge_app its privileges (the role must exist)
 uv run python -m app init-db                            # no APP_DB_ROLE: single-role mode, a warning is logged
 ```
+
+Each test on Postgres takes a session-level advisory lock first, so two test runs against the
+same server take turns instead of wiping each other's schema.
 
 Without `TEST_DATABASE_URL`, the Postgres-only tests are skipped.
 `tests/test_postgres_concurrency.py` (two connections importing overlapping tickets at once)

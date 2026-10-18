@@ -24,12 +24,27 @@ User decisions: host on **Render** (Frankfurt, Docker web service plus managed P
    - The login form uses a double-submit cookie.
    - Origin/Referer are checked against the allowlist.
 4. **Row-level security** on every agency-scoped table (migration 0003, built in PR 2):
+   - **0003 is a deliberate *contract* migration, not expand-only.** Once it has run, a release
+     that does no tenant binding (the previous one) sees zero rows and cannot insert. So it
+     ships in the same release as the tenant-binding code (PR 2) and can never be deployed
+     ahead of it. Rolling back past it means `alembic downgrade 0002` *before* redeploying the
+     previous release (runbook section 5; `tests/test_rollback_invariant.py` proves it).
+   - What RLS buys: it contains **IDOR and forgotten-filter bugs** (a query that forgot
+     `WHERE agency_id = ...` still sees one agency). It does **not** contain SQL injection: a
+     query an attacker controls can run `set_config` and pick its own tenant. The SQL injection
+     control is ORM-only code plus the AST code guard, which also bans `set_config` outside
+     `app/tenancy.py`.
    - ENABLE **and FORCE** row-level security, so the policies also bind the table owner.
    - Policy `agency_id = app_current_agency_id()` (`id = …` on `agencies`), set per transaction
      with `set_config('app.agency_id', …, true)`. An unset tenant means zero rows (fails closed).
    - Login, session and CLI lookups use narrow SELECT policies keyed on an exact phone, token
      hash or agency slug. `audit_events` is append-only; a row with no agency (failed login for
      an unknown phone) can be inserted by anyone and is never readable.
+   - Three narrow DELETE-only purge policies let `purge-expired` (any session, no tenant bound)
+     remove expired or revoked sessions, used or expired temporary passwords, and audit events
+     older than 400 days. Nothing else can be deleted from `audit_events`.
+   - The migration refuses an `APP_DB_ROLE` that is a superuser or has BYPASSRLS, and the web app
+     refuses to start in production connected as one (both would skip every policy).
    - No admin bypass setting exists: even the CLI binds a tenant (a new agency gets its id from
      the sequence first, and is bound to it before the INSERT).
    - **Two deployment modes, same isolation code:**
@@ -41,7 +56,10 @@ User decisions: host on **Render** (Frankfurt, Docker web service plus managed P
        granted, and the app connects as the owner. FORCE RLS still isolates tenants. Residual
        risk: the owner can run `ALTER TABLE … NO FORCE ROW LEVEL SECURITY` or `DISABLE`, so an
        attacker with code execution on the server defeats it, and the owner keeps DELETE and DDL
-       rights. SQL injection and IDOR bugs in the application remain contained.
+       rights. Residual risk in this mode, listed plainly: the owner can also `TRUNCATE
+       audit_events` and `ALTER ... NO FORCE`. Shipping audit events out of the database is
+       PR 5. IDOR and forgotten-filter bugs in the application remain contained; SQL injection
+       is not an RLS matter (see above).
 5. **Tenant binding** lives in the SQLAlchemy session (an `after_begin` listener re-applies it in
    every transaction). It does nothing on SQLite.
 6. **Status codes:** another agency's record returns 404; a role violation in your own agency
@@ -85,8 +103,10 @@ User decisions: host on **Render** (Frankfurt, Docker web service plus managed P
       `temporary_passwords`, `audit_events`, `rate_limit_buckets`.
     - `uploads` gains inserted/updated counts and the uploader.
 11. Tenant binding (`bind_tenant`, `lookup_scope`, after_begin listener).
-12. Migration 0003: RLS policies and grants for the app role.
+12. Migration 0003: RLS policies and grants for the app role (a contract migration, decision 4).
     - The app role cannot DELETE tickets or uploads.
+    - Purge policies, the privileged-role guard and the `grant-app-role` / `purge-expired`
+      commands.
     - A guard test fails CI if any future agency-scoped table lacks RLS.
 13. Repository and CLI working under RLS; all Phase 1 tests still green on both engines.
 14. Phone normalization (+222) and passwords:
@@ -140,9 +160,20 @@ User decisions: host on **Render** (Frankfurt, Docker web service plus managed P
       runs migration 0003, set `APP_DB_ROLE` and point `DATABASE_URL` at it. Otherwise stay in
       single-role mode (runbook section 3).
     - Run `bootstrap-agency`, then smoke-test.
-35. Rollback drill (N+1 → N → N+1) with expand-only migrations, plus production `EXPLAIN ANALYZE`.
+35. Rollback drill, plus production `EXPLAIN ANALYZE`.
+    - **Both releases of the drill pair must include 0003** (N+1 → N → N+1, where N is already
+      the tenant-binding release): a rollback to a release without the tenant-binding code is
+      not possible by redeploy alone.
+    - The one rollback that crosses 0003 is drilled separately and includes the downgrade:
+      `alembic downgrade 0002`, then redeploy the pre-0003 release, then upgrade again.
     - Recorded in `docs/release-checklist-phase2.md`.
 36. Docs: decisions, roles, the expand/contract migration rule, and a PR checkbox.
+    - The rule: a migration is **expand-only** (additions, all nullable or new) so the previous
+      release keeps working against it and a rollback is a redeploy. A **contract** migration
+      (anything the previous release cannot work against: 0003's row-level security) is allowed
+      only when it ships in the same release as the code that needs it, is labelled as such in
+      its docstring, and its rollback is `alembic downgrade <previous revision>` before
+      redeploying the previous release. A contract migration is never deployed ahead of its code.
 
 ## Release checklist mapping
 
@@ -166,7 +197,7 @@ User decisions: host on **Render** (Frankfurt, Docker web service plus managed P
    Accepted for the pilot and documented. With a separate app role, `DATABASE_URL` is the app
    role and `MIGRATION_DATABASE_URL` the owner, which only `init-db` and the admin CLI read (the
    admin commands `add-agency` and `bootstrap-agency` need it: run them with
-   `DATABASE_URL="$MIGRATION_DATABASE_URL"`). In single-role mode both URLs are the owner, so the
+   `DATABASE_URL="$MIGRATION_DATABASE_URL"`; `grant-app-role` too). In single-role mode both URLs are the owner, so the
    web process holds owner rights and relies on FORCE RLS alone (see decision 4).
 3. Postgres version: the newest Render offers in Frankfurt, with CI set to match; avoid
    PG18-only features.
@@ -182,12 +213,15 @@ User decisions: host on **Render** (Frankfurt, Docker web service plus managed P
 - Render Postgres may not allow `CREATE ROLE` (checked in step 8). PR 2 no longer depends on it:
   without a second role the app runs in single-role mode with FORCE RLS (decision 4).
 - A role created after migration 0003 has run gets no grants (the migration only grants when
-  `APP_DB_ROLE` is set while it runs). Create the role first, or add a grant-only step.
+  `APP_DB_ROLE` is set while it runs). Run `python -m app grant-app-role <role>` as the owner: it
+  validates the name, refuses a superuser or BYPASSRLS role and is safe to repeat.
 - The memory cap needs tuning on the 512 MB instance.
 - X-Forwarded-For spoofing (use the rightmost-hop IP and also limit per phone).
 - htmx versus a strict CSP.
 - A future table could miss RLS (guard test).
-- A rollback runs old code against the new schema (expand-only migrations).
+- A rollback runs old code against the new schema. Expand-only migrations make that safe; 0003
+  is the deliberate exception and needs `alembic downgrade 0002` first (decision 4, runbook
+  section 5).
 - Env vars are not rolled back (safe defaults).
 
 ## Cost (Render Frankfurt, check current prices)

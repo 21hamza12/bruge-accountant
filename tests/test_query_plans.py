@@ -333,7 +333,7 @@ def explain(w: World, hot: Hot, statement: str, parameters: Any) -> list[dict[st
         s.rollback()
     plans = json.loads(document) if isinstance(document, str) else document
     assert isinstance(plans, list)
-    return plans  # type: ignore[no-any-return]
+    return plans
 
 
 def walk(node: Any) -> Iterator[dict[str, Any]]:

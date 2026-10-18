@@ -10,17 +10,22 @@ import pytest
 from fastapi import Depends, FastAPI
 from fastapi.responses import JSONResponse
 from fastapi.testclient import TestClient
-from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.auth import sessions
-from app.db import make_engine, make_session_factory
-from app.models import User
 from app.settings import Settings
-from app.tenancy import bound_tenant, lookup_scope
+from app.tenancy import bound_tenant
 from app.web.cookies import session_cookie_name
 from app.web.deps import AuthContext, get_auth, get_session
-from tests.web_support import PHONE_A, FakeClock, Seeded, WebDb, make_client, seed
+from tests.web_support import (
+    PHONE_A,
+    FakeClock,
+    Seeded,
+    WebDb,
+    make_client,
+    seed,
+    session_cookie_for,
+)
 
 Factory = Callable[[], TestClient]
 
@@ -49,18 +54,7 @@ def env(web_db: WebDb) -> tuple[Factory, FakeClock, Seeded, WebDb]:
 
 
 def _cookie_for_manager_a(web_db: WebDb, clock: FakeClock, settings: Settings) -> str:
-    engine = make_engine(web_db.app_url)
-    try:
-        with make_session_factory(engine)() as s:
-            lookup_scope(s, "app.login_phone", PHONE_A)
-            user = s.scalars(select(User).where(User.phone == PHONE_A)).one()
-            created = sessions.create_session(
-                s, user, clock(), sessions.SessionPolicy.from_settings(settings)
-            )
-            s.commit()
-            return created.token
-    finally:
-        engine.dispose()
+    return session_cookie_for(web_db, clock, settings, PHONE_A)
 
 
 def _settings(factory: Factory) -> Settings:

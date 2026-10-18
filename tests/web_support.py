@@ -16,7 +16,7 @@ from sqlalchemy.orm import Session
 
 from app.auth.passwords import hash_password
 from app.db import make_engine, make_session_factory
-from app.models import ROLE_STAFF, User
+from app.models import ROLE_STAFF, AuditEvent, User
 from app.repository import bootstrap_agency, create_agency
 from app.settings import Settings
 from app.tenancy import rebind_tenant
@@ -164,3 +164,50 @@ def csrf_for(client: TestClient, path: str = "/") -> str:
     page = client.get(path)
     assert page.status_code == 200, page.status_code
     return page_token(page)
+
+
+def session_cookie_for(db: WebDb, clock: FakeClock, settings: Settings, phone: str) -> str:
+    """Create a session row for the user with ``phone`` and return the cookie token."""
+    from sqlalchemy import select
+
+    from app.auth import sessions
+    from app.tenancy import lookup_scope
+
+    engine = make_engine(db.app_url)
+    try:
+        with make_session_factory(engine)() as s:
+            lookup_scope(s, "app.login_phone", phone)
+            user = s.scalars(select(User).where(User.phone == phone)).one()
+            created = sessions.create_session(
+                s, user, clock(), sessions.SessionPolicy.from_settings(settings)
+            )
+            s.commit()
+            return created.token
+    finally:
+        engine.dispose()
+
+
+def audit_events(owner_url: str, agency_id: int, event_type: str | None = None) -> list[AuditEvent]:
+    """The agency's audit events, read through its own tenant (agency-less rows are unreadable)."""
+    from sqlalchemy import select
+
+    with owner_session(owner_url) as s:
+        rebind_tenant(s, agency_id)
+        query = select(AuditEvent).order_by(AuditEvent.id)
+        if event_type:
+            query = query.where(AuditEvent.event_type == event_type)
+        return list(s.scalars(query))
+
+
+def audit_sequence(owner_url: str) -> int:
+    """How many audit rows were ever written, in any agency or none (the id sequence)."""
+    from sqlalchemy import func, select
+
+    with owner_session(owner_url) as s:
+        if s.get_bind().dialect.name == "sqlite":
+            return int(s.scalar(select(func.count()).select_from(AuditEvent)) or 0)
+        from sqlalchemy import column, table
+
+        seq = table("audit_events_id_seq", column("last_value"), column("is_called"))
+        row = s.execute(select(seq.c.last_value, seq.c.is_called)).one()
+        return int(row.last_value) if row.is_called else 0

@@ -9,7 +9,10 @@ Order inside ``authenticate`` (the route has already passed CSRF and the rate li
 
 1. the exact-phone lookup (the narrow ``login_lookup`` policy; nothing is bound yet),
 2. only when a user was found is the tenant bound to the user's agency,
-3. the password is verified.
+3. the transaction is ended (``commit``), so no database connection is held while Argon2 runs
+   (about 45 ms and 19 MiB per verification; a login flood must not pin the connection pool),
+4. the password is verified,
+5. a new transaction starts for what follows (``after_begin`` re-applies the tenant binding).
 """
 
 from __future__ import annotations
@@ -62,13 +65,16 @@ def authenticate(db: Session, phone: str | None, password: str, now: datetime) -
         return _fail(REASON_INVALID_PHONE)
     user = find_user_by_phone(db, phone)
     if user is None:
+        db.commit()  # end the lookup transaction: nothing is held during the dummy verification
         verify_dummy()
         return _fail(REASON_UNKNOWN_PHONE)
     bind_tenant(db, user.agency_id)  # the user is known now
     if not user.is_active:
+        db.commit()
         verify_dummy()
         return _fail(REASON_INACTIVE, user)
     if user.password_hash is not None:
+        db.commit()  # release the connection; the user object stays usable (no expire on commit)
         if not verify_password(password, user.password_hash):
             return _fail(REASON_BAD_PASSWORD, user)
         if needs_rehash(user.password_hash):
@@ -84,6 +90,7 @@ def _credential_free_login(db: Session, user: User, password: str, now: datetime
     temporary password. The spend itself is atomic and honours the 30-minute expiry.
     """
     temp = temp_passwords.latest_unused(db, user)
+    db.commit()  # release the connection before Argon2 runs
     if temp is None:
         verify_dummy()
         return _fail(REASON_NO_CREDENTIALS, user)

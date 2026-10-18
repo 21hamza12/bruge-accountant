@@ -25,6 +25,7 @@ import app.db as db
 from app.db import make_engine
 from app.observability import JsonFormatter, RequestLogMiddleware, request_id_var
 from app.settings import Settings
+from app.web.bodylimit import RequestBodyLimitMiddleware
 from app.web.deps import get_session, get_settings
 from app.web.errors import ErrorBoundaryMiddleware
 from app.web.proxy import ProxyHeadersMiddleware
@@ -130,44 +131,121 @@ def with_spy_session(app: FastAPI) -> SpySession:
     return spy
 
 
-def test_healthz_uses_the_dependencies_so_they_can_be_overridden(
+class SpyConnection:
+    def __init__(self, events: list[str], fail: bool = False) -> None:
+        self.events = events
+        self.fail = fail
+
+    def __enter__(self) -> SpyConnection:
+        self.events.append("connect")
+        return self
+
+    def __exit__(self, *_a: object) -> None:
+        self.events.append("close")
+
+    def execute(self, *_a: object, **_k: object) -> None:
+        self.events.append("execute")
+        if self.fail:
+            raise OperationalError("select 1", {}, Exception("down: password=P1"))
+
+
+class SpyEngine:
+    def __init__(self, fail: bool = False) -> None:
+        self.events: list[str] = []
+        self.fail = fail
+
+    def connect(self) -> SpyConnection:
+        return SpyConnection(self.events, self.fail)
+
+    def dispose(self) -> None:
+        pass
+
+
+def test_healthz_reads_settings_through_the_overridable_dependency(
     make_app: MakeApp, web_settings: Settings
 ) -> None:
     app = make_app(web_settings)
-    spy = SpySession()
-    app.dependency_overrides[get_session] = lambda: spy
     app.dependency_overrides[get_settings] = lambda: web_settings.model_copy(
         update={"render_git_commit": "from-override"}
     )
     with TestClient(app, base_url="https://testserver") as c:
         resp = c.get("/healthz")
     assert resp.json() == {"status": "ok", "version": "from-override"}
-    assert spy.events == ["execute"]
 
 
-def test_healthz_is_503_when_the_overridden_session_fails(
-    make_app: MakeApp, web_settings: Settings
-) -> None:
-    class Broken(SpySession):
-        def execute(self, *_a: object, **_k: object) -> None:
-            raise OperationalError("select 1", {}, Exception("down: password=P1"))
-
-    app = make_app(web_settings)
-    app.dependency_overrides[get_session] = lambda: Broken()
-    with TestClient(app, base_url="https://testserver") as c:
-        resp = c.get("/healthz")
-    assert resp.status_code == 503
-    assert resp.json() == {"status": "error"}
-
-
-def test_healthz_stays_cheap_one_statement_and_nothing_else(
+def test_healthz_does_not_touch_the_request_session_dependency(
     make_app: MakeApp, web_settings: Settings
 ) -> None:
     app = make_app(web_settings)
     spy = with_spy_session(app)
     with TestClient(app, base_url="https://testserver") as c:
         assert c.get("/healthz").status_code == 200
-    assert spy.events == ["execute", "close"]
+    assert spy.events == []
+
+
+def test_healthz_is_503_when_the_database_fails(make_app: MakeApp, web_settings: Settings) -> None:
+    app = make_app(web_settings)
+    app.state.engine = SpyEngine(fail=True)
+    with TestClient(app, base_url="https://testserver") as c:
+        resp = c.get("/healthz")
+    assert resp.status_code == 503
+    assert resp.json() == {"status": "error"}
+    assert "P1" not in resp.text
+
+
+def test_healthz_stays_cheap_one_statement_and_nothing_else(
+    make_app: MakeApp, web_settings: Settings
+) -> None:
+    app = make_app(web_settings)
+    spy = SpyEngine()
+    app.state.engine = spy
+    with TestClient(app, base_url="https://testserver") as c:
+        assert c.get("/healthz").status_code == 200
+    assert spy.events == ["connect", "execute", "close"]
+
+
+def test_healthz_gives_up_after_two_seconds(
+    make_app: MakeApp, web_settings: Settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import threading
+    import time
+
+    from app.web import main as main_module
+
+    release = threading.Event()
+
+    class Slow(SpyEngine):
+        def connect(self) -> SpyConnection:
+            release.wait(5)
+            return super().connect()
+
+    monkeypatch.setattr(main_module, "HEALTH_TIMEOUT_SECONDS", 0.2)
+    app = make_app(web_settings)
+    app.state.engine = Slow()
+    with TestClient(app, base_url="https://testserver") as c:
+        started = time.monotonic()
+        resp = c.get("/healthz")
+        elapsed = time.monotonic() - started
+        release.set()
+    assert resp.status_code == 503
+    assert elapsed < 2
+
+
+def test_the_pool_is_sized_from_the_settings(web_settings: Settings) -> None:
+    captured: dict[str, Any] = {}
+    real = sa.create_engine
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(db, "create_engine", lambda url, **kw: (captured.update(kw), real(url, **kw))[1])
+        engine = make_engine("postgres://u:p@localhost/db", pool_size=3, max_overflow=1)
+    try:
+        assert (captured["pool_size"], captured["max_overflow"]) == (3, 1)
+        assert engine.pool.size() == 3  # type: ignore[attr-defined]
+    finally:
+        engine.dispose()
+    defaults = Settings(database_url=web_settings.database_url)
+    assert (defaults.db_pool_size, defaults.db_max_overflow) == (5, 5)
+    with pytest.raises(ValueError):
+        Settings(db_pool_size=0)
 
 
 def test_session_dependency_closes_after_a_successful_request(
@@ -270,6 +348,7 @@ def test_middleware_order_is_pinned(make_app: MakeApp, web_settings: Settings) -
         DefaultCacheControlMiddleware,
         AllowedHostMiddleware,
         ErrorBoundaryMiddleware,
+        RequestBodyLimitMiddleware,
     ]
 
 
@@ -285,6 +364,7 @@ def test_cors_sits_between_cache_control_and_host_check(
         CORSMiddleware,
         AllowedHostMiddleware,
         ErrorBoundaryMiddleware,
+        RequestBodyLimitMiddleware,
     ]
 
 
@@ -311,7 +391,7 @@ def mw_client(make_app: MakeApp, web_settings: Settings) -> Iterator[TestClient]
 
 def test_extra_middleware_runs_innermost(make_app: MakeApp, web_settings: Settings) -> None:
     app = make_app(web_settings, extra_middleware=[Middleware(Misbehaving)])
-    assert stack(app)[-2:] == [ErrorBoundaryMiddleware, Misbehaving]
+    assert stack(app)[-3:] == [ErrorBoundaryMiddleware, RequestBodyLimitMiddleware, Misbehaving]
 
 
 @pytest.mark.parametrize(

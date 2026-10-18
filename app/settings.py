@@ -49,6 +49,12 @@ class Settings(BaseSettings):
     # Server-side sessions (docs/phase2-plan.md decision 2): 12 h idle, 7 d absolute.
     session_idle_hours: int = Field(default=12, ge=1, le=24 * 30)
     session_absolute_days: int = Field(default=7, ge=1, le=90)
+    # SQLAlchemy connection pool (Postgres). The default 5 + 5 overflow keeps one 512 MB web
+    # instance well under Postgres's connection limit; raise it only with a bigger plan.
+    db_pool_size: int = Field(default=5, ge=1, le=50)
+    db_max_overflow: int = Field(default=5, ge=0, le=50)
+    # Largest request body accepted, headers aside: 10 MB upload plus 64 KB of form overhead.
+    max_request_bytes: int = Field(default=10 * 1024 * 1024 + 64 * 1024, ge=1024)
     # Number of trusted reverse proxies in front of the app (Render: see the runbook). 0 means
     # X-Forwarded-* is ignored entirely, which is the safe default; render.yaml sets 1.
     trusted_proxy_hops: int = Field(default=0, ge=0, le=10)

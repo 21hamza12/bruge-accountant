@@ -19,14 +19,14 @@ from app.settings import Settings
 from app.web.cookies import session_cookie_name
 from app.web.errors import ResponseException, error_response, new_reference
 
-UNKNOWN_IP = "unknown"
 
-
-def get_settings(request: Request) -> Settings:
+# The trivial dependencies are ``async def``: they do no I/O, so they run on the event loop and
+# never take one of the 40 shared worker threads (a sync dependency costs a thread hop each).
+async def get_settings(request: Request) -> Settings:
     return cast(Settings, request.app.state.settings)
 
 
-def get_clock(request: Request) -> Clock:
+async def get_clock(request: Request) -> Clock:
     return cast(Clock, request.app.state.clock)
 
 
@@ -46,12 +46,14 @@ def get_session(request: Request) -> Iterator[Session]:
         session.close()
 
 
-def client_ip(request: Request) -> str:
-    """The client address as ``ProxyHeadersMiddleware`` set it (trusted hops only).
+def client_ip(request: Request) -> str | None:
+    """The client address as ``ProxyHeadersMiddleware`` set it (trusted hops only), or None when
+    the connection carries none (a unix socket, a misbehaving proxy).
 
-    Never parse ``X-Forwarded-For`` here: the middleware already took the right entry.
+    Never parse ``X-Forwarded-For`` here: the middleware already took the right entry. None is
+    never turned into a shared placeholder: callers skip the per-IP limit for it.
     """
-    return request.client.host if request.client else UNKNOWN_IP
+    return request.client.host if request.client else None
 
 
 @dataclass(frozen=True)
@@ -124,6 +126,7 @@ def current_user(
 def require_manager(
     request: Request,
     db: Annotated[Session, Depends(get_session)],
+    clock: Annotated[Clock, Depends(get_clock)],
     auth: Annotated[AuthContext, Depends(current_user)],
 ) -> AuthContext:
     """A manager; staff get the 403 page and a ``permission_denied`` audit event."""
@@ -135,6 +138,7 @@ def require_manager(
             actor_user_id=auth.user.id,
             ip=client_ip(request),
             details={"path": request.url.path, "method": request.method},
+            now=clock(),
         )
         raise HTTPException(status_code=403)
     return auth

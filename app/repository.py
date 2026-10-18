@@ -2,7 +2,7 @@
 
 import logging
 from collections.abc import Iterator, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
 from typing import Any, cast
 
@@ -10,6 +10,7 @@ from sqlalchemy import Boolean, CursorResult, String, column, delete, func, or_,
 from sqlalchemy.dialects import postgresql, sqlite
 from sqlalchemy.orm import Session
 
+from app.auth.temp_passwords import issue_temporary_password
 from app.models import (
     PRICE_STATUS_AWAITING,
     ROLE_MANAGER,
@@ -33,6 +34,7 @@ from app.tenancy import (
 
 log = logging.getLogger("app.repository")
 UPSERT_CHUNK = 200
+PURGE_CHUNK = 10_000  # rows per DELETE statement where the statement can be limited (see below)
 
 # Amadeus-owned columns refreshed on re-import. Deliberately absent: price_status (staff
 # owned), first_upload_id and created_at (history), and report_date (a ticket belongs to the
@@ -175,6 +177,64 @@ def bootstrap_agency(
         )
         session.flush()
         result = BootstrapResult(agency_id=agency.id, user_id=user.id)
+        session.commit()
+    except Exception:
+        _abandon(session, previous)
+        raise
+    return result
+
+
+class ResetRefusedError(Exception):
+    """No password can be reset: ``reason`` is ``"unknown"`` (no such phone) or ``"inactive"``."""
+
+    def __init__(self, reason: str) -> None:
+        super().__init__(reason)
+        self.reason = reason
+
+
+@dataclass(frozen=True)
+class ResetResult:
+    user_id: int
+    agency_id: int
+    role: str
+    # Shown once by the command that asked for it; never part of a repr, a log or the database.
+    temporary_password: str = field(repr=False)
+
+
+def reset_user_password(
+    session: Session, phone: str, now: datetime, operator: str | None = None
+) -> ResetResult:
+    """Issue a temporary password to ANY active user (a manager included) and revoke their
+    sessions. For the platform owner's ``reset-password`` command; the web only lets a manager
+    reset staff.
+
+    ``phone`` is E.164. The user is found with the narrow phone lookup, then the tenant is bound
+    and the row locked ``FOR UPDATE``. The ``temp_password_issued`` audit event has no actor (it
+    was the owner, not a logged-in user) and names the ``operator`` (the OS user who ran it).
+    Commits; raises :class:`ResetRefusedError` and leaves nothing behind otherwise.
+    """
+    previous = bound_tenant(session)
+    try:
+        lookup_scope(session, "app.login_phone", phone)
+        found = session.scalars(select(User).where(User.phone == phone)).one_or_none()
+        if found is None:
+            raise ResetRefusedError("unknown")
+        rebind_tenant(session, found.agency_id)
+        user = session.scalars(
+            select(User)
+            .where(User.agency_id == found.agency_id, User.id == found.id)
+            .with_for_update()
+        ).one()
+        if not user.is_active:
+            raise ResetRefusedError("inactive")
+        plaintext = issue_temporary_password(
+            session,
+            user,
+            now,
+            actor_user_id=None,
+            audit_details={"via": "cli", "operator": operator or "unknown"},
+        )
+        result = ResetResult(user.id, user.agency_id, user.role, plaintext)
         session.commit()
     except Exception:
         _abandon(session, previous)
@@ -369,6 +429,19 @@ def _require_forced_rls(session: Session) -> None:
         )
 
 
+def _delete_in_chunks(session: Session, model: Any, condition: Any) -> int:
+    """Delete the rows matching ``condition``, ``PURGE_CHUNK`` per statement (SQLite)."""
+    total = 0
+    while True:
+        oldest = select(model.id).where(condition).limit(PURGE_CHUNK)
+        result = session.execute(delete(model).where(model.id.in_(oldest)))
+        removed = cast("CursorResult[Any]", result).rowcount
+        session.commit()
+        total += removed
+        if removed < PURGE_CHUNK:
+            return total
+
+
 def purge_expired(session: Session) -> PurgeCounts:
     """Delete expired or revoked sessions, used or expired temporary passwords and audit events
     older than AUDIT_RETENTION_DAYS, for every agency. Works with no tenant bound, in both
@@ -378,7 +451,13 @@ def purge_expired(session: Session) -> PurgeCounts:
     carry no WHERE clause (one would need SELECT access to rows that nothing lets anybody read).
     That makes an unqualified DELETE dangerous anywhere those policies are missing or a tenant
     is bound (its own policy would then apply too), so both are refused. SQLite has no
-    row-level security, so there the same conditions are an ordinary WHERE clause.
+    row-level security, so there the same conditions are an ordinary WHERE clause, and the delete
+    runs in chunks of ``PURGE_CHUNK`` rows with a commit after each.
+
+    Why Postgres is not chunked: a DELETE that says ``LIMIT``, or picks ids with a subquery,
+    reads the table, and nothing grants a read of those rows (adding a SELECT policy would expose
+    expired sessions and old audit rows of every agency). The hourly cron job keeps each run
+    small instead: it only ever finds what expired since the previous run.
     """
     if bound_tenant(session) is not None:
         raise TenantBindingError(
@@ -401,8 +480,11 @@ def purge_expired(session: Session) -> PurgeCounts:
     try:
         deleted: list[int] = []
         for model, condition in conditions.items():
-            statement = delete(model) if postgres else delete(model).where(condition)
-            deleted.append(cast("CursorResult[Any]", session.execute(statement)).rowcount)
+            if postgres:
+                result = session.execute(delete(model))
+                deleted.append(cast("CursorResult[Any]", result).rowcount)
+            else:
+                deleted.append(_delete_in_chunks(session, model, condition))
         session.commit()
     except Exception:
         session.rollback()

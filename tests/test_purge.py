@@ -180,6 +180,39 @@ def test_sqlite_purge_deletes_exactly_the_expired_rows(db_url: str) -> None:
     check_purge(db_url, db_url)
 
 
+def test_sqlite_purge_deletes_in_chunks_not_in_one_statement(
+    db_url: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from sqlalchemy import event
+
+    import app.repository as repository
+
+    if not db_url.startswith("sqlite"):
+        pytest.skip("SQLite only: Postgres lets the row-level security policies pick the rows")
+    monkeypatch.setattr(repository, "PURGE_CHUNK", 1)
+    engine = make_engine(db_url)
+    Base.metadata.create_all(engine)
+    engine.dispose()
+    seed_agency(db_url, "agency-a", "+22211111111", 0x100)
+    seed_agency(db_url, "agency-b", "+22222222222", 0x200)
+    statements: list[str] = []
+    engine = make_engine(db_url)
+
+    @event.listens_for(engine, "before_cursor_execute")
+    def _spy(_c: object, _cur: object, statement: str, *_a: object) -> None:
+        if statement.lstrip().upper().startswith("DELETE"):
+            statements.append(statement)
+
+    try:
+        with make_session_factory(engine)() as s:
+            counts = purge_expired(s)
+    finally:
+        engine.dispose()
+    assert counts == PurgeCounts(user_sessions=4, temporary_passwords=4, audit_events=2)
+    # 4 + 4 + 2 rows, one row per statement, plus the final empty check of each table
+    assert len(statements) == 10 + 3
+
+
 # --- Postgres, in both deployment modes -------------------------------------------------
 
 

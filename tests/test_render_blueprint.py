@@ -28,7 +28,14 @@ def blueprint() -> dict[str, Any]:
 
 @pytest.fixture(scope="module")
 def web(blueprint: dict[str, Any]) -> dict[str, Any]:
-    (service,) = blueprint["services"]
+    (service,) = [s for s in blueprint["services"] if s["type"] == "web"]
+    assert isinstance(service, dict)
+    return service
+
+
+@pytest.fixture(scope="module")
+def purge(blueprint: dict[str, Any]) -> dict[str, Any]:
+    (service,) = [s for s in blueprint["services"] if s["type"] == "cron"]
     assert isinstance(service, dict)
     return service
 
@@ -92,6 +99,50 @@ def test_allowed_hosts_is_set_in_the_dashboard_and_documented(
     # dashboard; so the host is dashboard-only, like the secrets.
     assert env_vars["ALLOWED_HOSTS"] == {"key": "ALLOWED_HOSTS", "sync": False}
     assert "ALLOWED_HOSTS" in (ROOT / "docs" / "runbook.md").read_text(encoding="utf-8")
+
+
+# --- the hourly purge (a Render cron job) -------------------------------------------------------
+
+
+def test_the_blueprint_has_exactly_one_web_service_and_one_cron_job(
+    blueprint: dict[str, Any],
+) -> None:
+    assert sorted(s["type"] for s in blueprint["services"]) == ["cron", "web"]
+
+
+def test_purge_cron_runs_the_purge_command_hourly_from_the_same_image(
+    web: dict[str, Any], purge: dict[str, Any]
+) -> None:
+    assert purge["schedule"] == "0 * * * *"
+    assert purge["dockerCommand"] == "python -m app purge-expired"
+    assert purge["runtime"] == "docker"
+    assert purge["dockerfilePath"] == web["dockerfilePath"] == "./Dockerfile"
+    assert purge["region"] == web["region"] == "frankfurt"
+    assert purge["plan"] == "starter"
+    assert purge.get("autoDeploy") is False
+    # a cron job has no port: none of the web-only keys belong here
+    assert "healthCheckPath" not in purge
+    assert "preDeployCommand" not in purge
+
+
+def test_purge_cron_mirrors_the_web_environment(web: dict[str, Any], purge: dict[str, Any]) -> None:
+    web_env = {item["key"]: item for item in web["envVars"]}
+    cron_env = {item["key"]: item for item in purge["envVars"]}
+    # same keys, same literal values, same dashboard-only keys; only the owner URL is left out
+    # (the purge never reads it, and a cron job should not hold more than it needs)
+    assert cron_env == {k: v for k, v in web_env.items() if k != "MIGRATION_DATABASE_URL"}
+    assert "MIGRATION_DATABASE_URL" not in cron_env
+    dashboard_only = sorted(k for k, v in cron_env.items() if v.get("sync") is False)
+    assert dashboard_only == ["ALLOWED_HOSTS", "DATABASE_URL", "SENTRY_DSN"]
+    assert cron_env["DATABASE_URL"] == {"key": "DATABASE_URL", "sync": False}
+
+
+def test_runbook_documents_the_cron_job_and_the_owner_reset_command() -> None:
+    runbook = " ".join((ROOT / "docs" / "runbook.md").read_text(encoding="utf-8").split())
+    assert "bruge-purge" in runbook
+    assert "0 * * * *" in runbook
+    assert "reset-password" in runbook
+    assert "locked-out manager" in runbook.lower()
 
 
 # --- Dockerfile -------------------------------------------------------------------------------

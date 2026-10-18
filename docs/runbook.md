@@ -11,9 +11,13 @@ and the branch you want to deploy merged or selected in the blueprint.
 ## 1. Create the services from the blueprint
 
 - [ ] Render dashboard, **New**, **Blueprint**, pick this repository and branch. Render reads
-      `render.yaml` and proposes a web service `bruge-accountant` and a Postgres `bruge-db`.
-- [ ] Check the plan before confirming: web **Starter**, database **Basic-256mb**, both region
-      **Frankfurt**. The database must show no public access (`ipAllowList: []`).
+      `render.yaml` and proposes a web service `bruge-accountant`, a cron job `bruge-purge` (the
+      hourly purge, see "Routine housekeeping") and a Postgres `bruge-db`.
+- [ ] Check the plan before confirming: web **Starter**, cron **Starter**, database
+      **Basic-256mb**, all region **Frankfurt**. (Render's current Blueprint reference lists plan
+      ids such as `free` and `0.5c-512mb` and no longer mentions `starter`; the names in
+      `render.yaml` are the older ones. If the dashboard rejects or renames a plan, change the web
+      and the cron plan together and note it in Results. Unverified until the first sync.) The database must show no public access (`ipAllowList: []`).
 - [ ] The dashboard asks for the `sync: false` variables (next section). Fill them in before the
       first deploy; otherwise the first deploy fails on purpose rather than starting
       half-configured.
@@ -36,6 +40,11 @@ Set on the web service, **Environment** tab.
 | `MIGRATION_DATABASE_URL` | injected from the database | Do not edit. Render env vars apply to the running service, so this owner URL is present in the container; that is the accepted pilot trade-off (approved decision 2 in `docs/phase2-plan.md`). The web process never reads it; only `init-db` (the `preDeployCommand`) and the admin CLI do, and a test enforces that. |
 | `ENV`, `COOKIE_SECURE`, `TRUSTED_PROXY_HOPS` | already in `render.yaml` | `TRUSTED_PROXY_HOPS` is confirmed in section 4. |
 
+- [ ] The cron job `bruge-purge` needs the same `sync: false` variables, entered on **its** own
+      Environment tab (a cron job does not share the web service's variables): `ALLOWED_HOSTS`,
+      `DATABASE_URL` (the same app-role URL as the web service) and `SENTRY_DSN`. Production
+      settings refuse to load without `ALLOWED_HOSTS` and `DATABASE_URL`, so a missing value makes
+      the purge fail on purpose. It gets no `MIGRATION_DATABASE_URL`: the purge never reads it.
 - [ ] `ALLOWED_HOSTS` set to the real host (note the exact `*.onrender.com` name Render assigned).
 - [ ] `DATABASE_URL` set (internal URL).
 - [ ] If the service refuses to start, read the deploy log: the settings validator prints which
@@ -177,8 +186,53 @@ refused.
 ### Routine housekeeping
 
 `python -m app purge-expired` (any connection, no tenant) deletes expired or revoked sessions,
-used or expired temporary passwords, and audit events older than 400 days, and prints the counts.
-Run it daily (a Render cron job; set up in PR 5) or by hand until then.
+used or expired temporary passwords, audit events older than 400 days and finished rate-limit
+windows, and prints the counts.
+
+**It runs hourly as the Render cron job `bruge-purge`** (`render.yaml`: `type: cron`,
+`schedule: "0 * * * *"`, `dockerCommand: python -m app purge-expired`, the same Dockerfile and the
+same environment as the web service, minus the owner URL). Hourly keeps each run small: the
+rate-limit table gets a row per login attempt window, and the job deletes in chunks of 10 000 rows
+(one statement and one commit per chunk) so a backlog never holds a long lock. The three
+row-level-security tables are deleted by their DELETE-only policies in one statement each (a
+chunked DELETE would need read access the policies deliberately do not grant); an hourly run only
+ever finds what expired since the last one.
+
+- [ ] After the first deploy, open `bruge-purge` in the dashboard, **Trigger Run**, and check the
+      log for the JSON counts and exit code 0. Then wait for one scheduled run.
+- [ ] Cost: a cron job is billed for the time it runs (a few seconds an hour), with a monthly
+      minimum for its plan. Confirm the figure on the pricing page; it is not in the cost estimate
+      in `docs/phase2-plan.md`.
+- Schema keys used for the cron service (`type`, `schedule`, `dockerCommand`, `dockerfilePath`,
+  `runtime`, `region`, `plan`, `autoDeploy`, `envVars`) were checked against Render's Blueprint
+  Reference. Two things could **not** be confirmed without a real sync and stay unverified: that
+  the plan name `starter` is still accepted for a cron job (see the plan note in section 1), and
+  that `dockerCommand` overrides the image's `CMD` for a cron job the same way it does for a web
+  service.
+
+### A manager is locked out (forgot the password)
+
+A manager can reset **staff** passwords from the web (page "Equipe", button "Emettre un mot de
+passe temporaire"), never another manager's and never their own. A manager who is locked out is
+reset by you, the platform owner, from the Render Shell of the web service, with the owner
+connection (like `bootstrap-agency`):
+
+```bash
+DATABASE_URL="$MIGRATION_DATABASE_URL" python -m app reset-password --phone "+222 12 34 56 78"
+```
+
+It prints one JSON line on standard output with `temporary_password` (and the user id, role and
+masked phone), and a reminder on standard error. **Read it from the terminal and hand it to the
+manager over a channel you trust (a phone call, not a group chat); it is never printed again.**
+The password is valid for 30 minutes and works once; the manager must choose a new password at
+login, and has 30 minutes from logging in to do so. The command revokes all of that user's
+sessions and records a `temp_password_issued` audit event (no actor, `via: cli`, the OS user who
+ran it, no password). It works for staff too, and refuses (exit code 2, nothing changed) an
+unknown phone number or a deactivated account. There is no password option: the value is
+generated, never typed.
+
+- [ ] Rehearse once on a scratch database: reset a test manager, log in with the printed password,
+      change it, and check the audit row (Results).
 
 ## 4. How does `X-Forwarded-For` arrive, and what is `TRUSTED_PROXY_HOPS`?
 
@@ -316,4 +370,6 @@ Fill in as you go. Leave "not done" until you have really checked it.
 | Offline page in a real browser | | not done | |
 | Rollback across 0003 (`downgrade 0002`, redeploy N, upgrade again) | | not done | section 5 |
 | Restore drill (managed backup restored, counts non-zero, login works) | | not done | section 8 |
-| `purge-expired` scheduled | | not done | section 3 |
+| `purge-expired` hourly cron (`bruge-purge`) triggered by hand, then once on schedule | | not done | section 3 |
+| `reset-password` rehearsed for a locked-out manager | | not done | section 3 |
+| Plan names in `render.yaml` still accepted (web, cron) | | not done | section 1 |

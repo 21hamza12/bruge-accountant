@@ -25,6 +25,7 @@ from app.web.errors import (
     http_exception_handler,
     validation_exception_handler,
 )
+from app.web.security import add_security_middleware
 from app.web.templating import TEMPLATES_DIR, render
 
 log = logging.getLogger("app.web")
@@ -54,6 +55,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.add_exception_handler(RequestValidationError, validation_exception_handler)
     # Catches unhandled exceptions (the "Exception" handler); innermost, see the class docstring.
     app.add_middleware(ErrorBoundaryMiddleware)
+    add_security_middleware(app, settings)
     app.mount("/static", StaticFiles(directory=TEMPLATES_DIR.parent / "static"), name="static")
 
     @app.get("/offline", include_in_schema=False)

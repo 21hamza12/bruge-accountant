@@ -173,7 +173,7 @@ User decisions: host on **Render** (Frankfurt, Docker web service plus managed P
 #### PR 4 as built (measured results and deviations)
 
 - **Sandbox memory (step 25).** Peak resident memory of the spawned child, measured on Windows
-  (Python 3.14, `PeakWorkingSetSize`, `tests` measured with a wrapper around `parse_report`):
+  (Python 3.14, `PeakWorkingSetSize`, read inside the child around `parse_report`):
   about **31 MB** for the 48-ticket synthetic fixture, about **49 MB** for a synthetic 20,000-row
   report (0.7 MB file). The interpreter plus openpyxl is most of it (about 31 MB before parsing).
   A 50,000-row workbook cannot be built as a valid test file: it expands past the 30 MB

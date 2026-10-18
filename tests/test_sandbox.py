@@ -159,7 +159,7 @@ def test_the_child_environment_is_a_small_allowlist(monkeypatch: pytest.MonkeyPa
     assert "PYTHONPATH" not in env
     assert env["PYTHONNOUSERSITE"] == "1"
     allowed = {"PYTHONNOUSERSITE", "PYTHONDONTWRITEBYTECODE", "PYTHONUTF8"} | (
-        {"SYSTEMROOT", "SYSTEMDRIVE", "PATH", "PATHEXT", "COMSPEC"}
+        {"SYSTEMROOT", "SYSTEMDRIVE", "PATH"}
         if sys.platform == "win32"
         else {"PATH", "LANG", "LC_ALL"}
     )

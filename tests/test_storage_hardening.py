@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import threading
 from datetime import UTC, date, datetime, timedelta, timezone
 from decimal import Decimal
@@ -474,9 +475,13 @@ def test_server_default_fills_timestamps_on_raw_insert(session: Session) -> None
 
 
 def test_long_names_are_stored_in_full(session: Session) -> None:
+    # The parser caps names at 200 characters; the storage layer itself must not truncate.
     agency = create_agency(session, "a", "A")
     long_name = "N" * 1000
-    parsed = parse_report(build_workbook([ticket_row(name=long_name)]))
+    parsed = parse_report(build_workbook([ticket_row(name="N")]))
+    parsed = dataclasses.replace(
+        parsed, tickets=(dataclasses.replace(parsed.tickets[0], passenger_name=long_name),)
+    )
     result = import_report(session, agency.id, parsed, "f" * 1000, SHA)
     upload = session.get(Upload, result.upload_id)
     assert upload is not None and upload.filename == "f" * 1000

@@ -43,6 +43,35 @@ def environment_is_production() -> bool:
     return os.environ.get("ENV", "").strip().lower() == "production"
 
 
+# What a parse child gets from the environment: what the interpreter needs to start, nothing else.
+_CHILD_ENV_WINDOWS = ("SYSTEMROOT", "SYSTEMDRIVE", "PATH")
+_CHILD_ENV_POSIX = ("PATH", "LANG", "LC_ALL")
+
+
+def child_environment() -> dict[str, str]:
+    """The environment of the parse sandbox's child process (``app.parsing.sandbox``).
+
+    An allowlist, built from scratch: ``PATH`` and ``SYSTEMROOT``/``SYSTEMDRIVE`` on Windows,
+    ``PATH``/``LANG``/``LC_ALL`` elsewhere, plus ``PYTHON*`` isolation variables. Everything else
+    (``DATABASE_URL``, the owner database URL, ``SENTRY_DSN``, any ``TEST_*``, API keys) is
+    simply not there. It lives here because this module is the only one that reads the
+    environment (a code guard checks that).
+    """
+    env: dict[str, str] = {
+        "PYTHONNOUSERSITE": "1",
+        "PYTHONDONTWRITEBYTECODE": "1",
+        "PYTHONUTF8": "1",
+    }
+    windows = os.name == "nt"
+    for key in _CHILD_ENV_WINDOWS if windows else _CHILD_ENV_POSIX:
+        value = os.environ.get(key)
+        if value is not None:
+            env[key] = value
+    if not windows:
+        env.setdefault("LANG", "C.UTF-8")
+    return env
+
+
 class Settings(BaseSettings):
     # hide_input_in_errors: a validation error must never echo a URL with a password in it.
     model_config = SettingsConfigDict(

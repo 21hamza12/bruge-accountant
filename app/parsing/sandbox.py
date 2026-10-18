@@ -8,7 +8,7 @@ How it works
 ------------
 * The child is ``python -I -c <bootstrap>`` started with :class:`subprocess.Popen` and a MINIMAL
   environment (``child_environment``): the interpreter's own needs (``PATH``, ``SYSTEMROOT`` on
-  Windows, ``LANG`` on Linux) and nothing else. ``DATABASE_URL``, ``MIGRATION_DATABASE_URL``,
+  Windows, ``LANG`` on Linux) and nothing else. ``DATABASE_URL``, the owner database URL,
   ``SENTRY_DSN`` and every other variable of the web process are simply not there. ``-I`` makes
   the interpreter ignore ``PYTHON*`` variables, the user site directory and the current directory.
 * The bytes go to the child's stdin, its answer comes back on stdout (``app.parsing.worker``).
@@ -37,7 +37,6 @@ from __future__ import annotations
 
 import contextlib
 import logging
-import os
 import subprocess
 import sys
 import threading
@@ -53,6 +52,7 @@ from app.parsing.wire import (
     decode_report,
     encode_report,
 )
+from app.settings import child_environment
 
 __all__ = [
     "SandboxBusy",
@@ -100,26 +100,6 @@ def slots(size: int) -> threading.BoundedSemaphore:
         if semaphore is None:
             semaphore = _SLOTS[size] = threading.BoundedSemaphore(size)
         return semaphore
-
-
-def child_environment() -> dict[str, str]:
-    """The environment of the child: what Python needs to start, and nothing of ours."""
-    env: dict[str, str] = {
-        "PYTHONNOUSERSITE": "1",
-        "PYTHONDONTWRITEBYTECODE": "1",
-        "PYTHONUTF8": "1",
-    }
-    if sys.platform == "win32":
-        wanted = ("SYSTEMROOT", "SYSTEMDRIVE", "PATH", "PATHEXT", "COMSPEC")
-    else:
-        wanted = ("PATH", "LANG", "LC_ALL")
-    for key in wanted:
-        value = os.environ.get(key)
-        if value is not None:
-            env[key] = value
-    if sys.platform != "win32":
-        env.setdefault("LANG", "C.UTF-8")
-    return env
 
 
 def _target_spec(target: Callable[[bytes], ParsedReport]) -> str:

@@ -46,10 +46,10 @@ def test_fixture_acceptance(parsed_fixture: ParsedReport) -> None:
 def test_fixture_mixed_airline_groups(parsed_fixture: ParsedReport) -> None:
     sv = staff(build_questions(parsed_fixture.tickets), "0004SV")
     by_ref = {q.booking_ref: q for q in sv.questions}
-    assert by_ref["QA0011"].airlines == ["235", "495"]
+    assert by_ref["QA0011"].airlines == ("235", "495")
     assert by_ref["QA0011"].ticket_count == 2
     assert by_ref["QA0011"].total_cost == Decimal(14160 + 42284)
-    assert by_ref["QA0013"].airlines == ["157", "199"]
+    assert by_ref["QA0013"].airlines == ("157", "199")
     assert by_ref["QA0013"].ticket_count == 3
     assert [p.name for p in by_ref["QA0013"].passengers] == ["PAX24/GIVEN24"] * 3
 
@@ -111,14 +111,14 @@ def test_missing_cost_makes_total_none_and_flags_group() -> None:
     assert bad.total_cost is None
     assert "missing_cost" in bad.flags
     assert good.total_cost == Decimal(200)
-    assert good.flags == []
+    assert good.flags == ()
     assert sv.total_cost is None
     assert sv.ticket_count == 3
 
 
 def test_missing_cost_flag_added_even_if_ticket_flag_absent() -> None:
     q = build_questions([make(cost=None)])[0].questions[0]
-    assert q.flags == ["missing_cost"]
+    assert q.flags == ("missing_cost",)
 
 
 def test_flags_are_a_sorted_union() -> None:
@@ -126,7 +126,7 @@ def test_flags_are_a_sorted_union() -> None:
         make(ticket_no="1", flags=("unknown_trnc",)),
         make(ticket_no="2", flags=("missing_cost", "unknown_trnc"), cost=None),
     ]
-    assert build_questions(tickets)[0].questions[0].flags == ["missing_cost", "unknown_trnc"]
+    assert build_questions(tickets)[0].questions[0].flags == ("missing_cost", "unknown_trnc")
 
 
 def test_passengers_sorted_by_ticket_no() -> None:
@@ -142,3 +142,90 @@ def test_works_on_synthetic_report_with_unicode() -> None:
     q = build_questions(parsed.tickets)[0].questions[0]
     assert q.passengers[0].name == "ÉLODIE/BÉBÉ 😀"
     assert q.passengers[0].pax_type == "INF"
+
+
+# --- totals ---------------------------------------------------------------------------
+
+
+def test_known_total_and_missing_count_exposed() -> None:
+    tickets = [
+        make(ticket_no="1", cost=Decimal(500)),
+        make(ticket_no="2", cost=None),
+        make(ticket_no="3", booking_ref="OTHER", cost=Decimal(200)),
+    ]
+    sv = build_questions(tickets)[0]
+    bad = next(q for q in sv.questions if q.booking_ref == "AAAAAA")
+    good = next(q for q in sv.questions if q.booking_ref == "OTHER")
+    assert (bad.total_cost, bad.known_cost_total, bad.missing_cost_count) == (None, Decimal(500), 1)
+    assert (good.total_cost, good.known_cost_total, good.missing_cost_count) == (
+        Decimal(200),
+        Decimal(200),
+        0,
+    )
+    assert (sv.total_cost, sv.known_cost_total, sv.missing_cost_count) == (None, Decimal(700), 1)
+
+
+def test_all_costs_missing_known_total_is_zero() -> None:
+    q = build_questions([make(cost=None)])[0]
+    assert (q.total_cost, q.known_cost_total, q.missing_cost_count) == (None, Decimal(0), 1)
+
+
+def test_results_are_immutable_tuples(parsed_fixture: ParsedReport) -> None:
+    staff_q = build_questions(parsed_fixture.tickets)[0]
+    q = staff_q.questions[0]
+    assert isinstance(staff_q.questions, tuple)
+    assert isinstance(q.passengers, tuple)
+    assert isinstance(q.airlines, tuple)
+    assert isinstance(q.flags, tuple)
+
+
+# --- blank booking reference / staff sign -----------------------------------------------
+
+
+def test_blank_booking_refs_are_never_merged() -> None:
+    tickets = [
+        make(ticket_no="3", booking_ref="", flags=("missing_booking_ref",)),
+        make(ticket_no="1", booking_ref="", flags=("missing_booking_ref",)),
+        make(ticket_no="2", booking_ref="REAL"),
+        make(ticket_no="4", booking_ref="REAL"),
+    ]
+    sv = build_questions(tickets)[0]
+    assert sv.group_count == 3
+    blanks = [q for q in sv.questions if q.booking_ref == ""]
+    assert [q.passengers[0].ticket_no for q in blanks] == ["1", "3"]
+    assert all(q.ticket_count == 1 for q in blanks)
+    assert all("missing_booking_ref" in q.flags for q in blanks)
+    real = next(q for q in sv.questions if q.booking_ref == "REAL")
+    assert real.ticket_count == 2 and "missing_booking_ref" not in real.flags
+
+
+def test_blank_booking_ref_flag_added_even_if_ticket_lacks_it() -> None:
+    q = build_questions([make(booking_ref="")])[0].questions[0]
+    assert "missing_booking_ref" in q.flags
+
+
+def test_blank_staff_sign_grouped_under_empty_sign() -> None:
+    tickets = [
+        make(ticket_no="1", staff_sign="", booking_ref="", flags=("missing_staff_sign",)),
+        make(ticket_no="2", staff_sign="", booking_ref="", flags=("missing_staff_sign",)),
+        make(ticket_no="3", staff_sign="", booking_ref="SAME"),
+        make(ticket_no="4", staff_sign="", booking_ref="SAME"),
+    ]
+    result = build_questions(tickets)
+    assert [s.staff_sign for s in result] == [""]
+    assert result[0].group_count == 3
+    assert result[0].ticket_count == 4
+
+
+def test_deterministic_with_blank_refs() -> None:
+    tickets = [make(ticket_no=str(i), booking_ref="") for i in range(5)]
+    expected = build_questions(tickets)
+    assert build_questions(list(reversed(tickets))) == expected
+
+
+def test_flag_constants_have_one_definition() -> None:
+    from app import questions
+    from app.parsing import amadeus
+
+    assert questions.FLAG_MISSING_COST is amadeus.FLAG_MISSING_COST
+    assert questions.FLAG_MISSING_BOOKING_REF is amadeus.FLAG_MISSING_BOOKING_REF

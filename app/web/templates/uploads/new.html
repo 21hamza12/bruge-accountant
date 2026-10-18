@@ -1,0 +1,14 @@
+{% extends "base.html" %}
+{% block title %}{{ _("Envoyer un rapport") }}{% endblock %}
+{% block content %}
+<h1>{{ _("Envoyer un rapport") }}</h1>
+<p><a href="/">{{ _("Accueil") }}</a> · <a href="/uploads">{{ _("Rapports récents") }}</a></p>
+{% if error %}<p class="error" role="alert">{{ error }}</p>{% endif %}
+<p>{{ _("Choisissez le rapport quotidien des ventes Amadeus (fichier .xlsx, 10 Mo au maximum).") }}</p>
+<form method="post" action="/uploads" enctype="multipart/form-data">
+  {% include "_csrf.html" %}
+  <label for="file">{{ _("Fichier Excel (.xlsx)") }}</label>
+  <input id="file" name="file" type="file" required accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet">
+  <button type="submit">{{ _("Envoyer") }}</button>
+</form>
+{% endblock %}

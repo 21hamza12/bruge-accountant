@@ -41,6 +41,7 @@ from app.web.routes import auth as auth_routes
 from app.web.routes import home as home_routes
 from app.web.routes import password as password_routes
 from app.web.routes import staff as staff_routes
+from app.web.routes import uploads as upload_routes
 from app.web.templating import TEMPLATES_DIR, render
 
 log = logging.getLogger("app.web")
@@ -129,6 +130,7 @@ def create_app(
     app.include_router(home_routes.router)
     app.include_router(password_routes.router)
     app.include_router(staff_routes.router)
+    app.include_router(upload_routes.router)
     app.mount("/static", StaticAssets(directory=TEMPLATES_DIR.parent / "static"), name="static")
 
     @app.get("/sw.js", include_in_schema=False)

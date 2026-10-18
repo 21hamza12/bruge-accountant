@@ -2,10 +2,14 @@ from __future__ import annotations
 
 import logging
 import os
+import time
 from collections.abc import Callable, Iterator
+from contextlib import contextmanager
+from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
+from alembic import command
 from alembic.config import Config
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -15,6 +19,7 @@ from sqlalchemy.engine import make_url
 from sqlalchemy.orm import Session
 
 from app.db import Base, make_engine, make_session_factory
+from app.db_roles import ROLE_ENV_VAR
 from app.parsing.amadeus import ParsedReport, parse_report
 from app.settings import Settings
 from app.web.main import create_app
@@ -23,6 +28,12 @@ FIXTURE = Path(__file__).parent / "fixtures" / "1OCT.xlsx"
 SHA = "a" * 64
 ROOT = Path(__file__).resolve().parent.parent
 TEST_DATABASE_URL_ENV = "TEST_DATABASE_URL"
+TEST_APP_DATABASE_URL_ENV = "TEST_APP_DATABASE_URL"
+# Every test wipes and rebuilds the schema, so two test runs on one server would corrupt each
+# other. Each test takes this (session-level) advisory lock first; the second run waits its turn.
+ADVISORY_LOCK_KEY = 7_283_200_017
+LOCK_WAIT_SECONDS = 900.0
+LOCK_POLL_SECONDS = 0.5
 
 
 def select_test_database_url(tmp_path: Path) -> str:
@@ -36,6 +47,87 @@ def select_test_database_url(tmp_path: Path) -> str:
             "every test drops and recreates its schema"
         )
     return url
+
+
+def select_app_database_url(owner_url: str, app_url: str | None) -> str:
+    """The URL the application connects with: the owner's on SQLite, else $TEST_APP_DATABASE_URL.
+
+    On Postgres the app must be a different (non-owner) role on the same database as the owner,
+    otherwise row-level security tests would run as the table owner and prove nothing.
+    """
+    owner = make_url(owner_url)
+    if owner.get_backend_name() != "postgresql":
+        return owner_url
+    if not app_url:
+        raise pytest.UsageError(
+            f"{TEST_APP_DATABASE_URL_ENV} must be set when {TEST_DATABASE_URL_ENV} is Postgres: "
+            "the connection of the non-owner application role (see README)"
+        )
+    app = make_url(app_url)
+    if app.username == owner.username:
+        raise pytest.UsageError(
+            f"{TEST_APP_DATABASE_URL_ENV} must use a different role than {TEST_DATABASE_URL_ENV}"
+        )
+    if (app.host, app.port, app.database) != (owner.host, owner.port, owner.database):
+        raise pytest.UsageError(
+            f"{TEST_APP_DATABASE_URL_ENV} must point at the same database as "
+            f"{TEST_DATABASE_URL_ENV}"
+        )
+    return app_url
+
+
+@contextmanager
+def app_role_env(role: str | None) -> Iterator[None]:
+    """Set (or clear) APP_DB_ROLE for the migration, then put the old value back."""
+    previous = os.environ.get(ROLE_ENV_VAR)
+    if role is None:
+        os.environ.pop(ROLE_ENV_VAR, None)
+    else:
+        os.environ[ROLE_ENV_VAR] = role
+    try:
+        yield
+    finally:
+        if previous is None:
+            os.environ.pop(ROLE_ENV_VAR, None)
+        else:
+            os.environ[ROLE_ENV_VAR] = previous
+
+
+def alembic_config(url: str) -> Config:
+    cfg = Config(str(ROOT / "alembic.ini"))
+    cfg.set_main_option("script_location", str(ROOT / "migrations"))
+    cfg.set_main_option("sqlalchemy.url", url.replace("%", "%%"))
+    return cfg
+
+
+def migrate(owner_url: str, app_role: str | None = None, revision: str = "head") -> None:
+    """``alembic upgrade`` as the owner; with ``app_role`` the migration also grants to it."""
+    with app_role_env(app_role):
+        command.upgrade(alembic_config(owner_url), revision)
+
+
+@contextmanager
+def database_lock(url: str) -> Iterator[None]:
+    """Hold the test-run advisory lock on the server for the duration of the block."""
+    engine = create_engine(url, isolation_level="AUTOCOMMIT")
+    try:
+        with engine.connect() as conn:
+            deadline = time.monotonic() + LOCK_WAIT_SECONDS
+            while not conn.execute(
+                text("SELECT pg_try_advisory_lock(:k)"), {"k": ADVISORY_LOCK_KEY}
+            ).scalar():
+                if time.monotonic() >= deadline:
+                    raise pytest.UsageError(
+                        "another test run has used this database for "
+                        f"{LOCK_WAIT_SECONDS:.0f} s; stop it, or wait for it to finish"
+                    )
+                time.sleep(LOCK_POLL_SECONDS)
+            try:
+                yield
+            finally:
+                conn.execute(text("SELECT pg_advisory_unlock(:k)"), {"k": ADVISORY_LOCK_KEY})
+    finally:
+        engine.dispose()
 
 
 def _reset_server_database(url: str) -> None:
@@ -68,12 +160,80 @@ def parsed_fixture() -> ParsedReport:
 
 
 @pytest.fixture
-def db_url(tmp_path: Path) -> str:
-    """An empty database for this test only."""
+def db_url(tmp_path: Path) -> Iterator[str]:
+    """An empty database for this test only. On a server, the test also holds the run lock."""
     url = select_test_database_url(tmp_path)
-    if not url.startswith("sqlite"):
+    if url.startswith("sqlite"):
+        yield url
+        return
+    with database_lock(url):
         _reset_server_database(url)
+        yield url
+
+
+@pytest.fixture
+def app_db_url(db_url: str) -> str:
+    """The URL the application connects with, on a database migrated to head by the owner.
+
+    SQLite: ``db_url`` itself, untouched (tests build the schema themselves there).
+    Postgres: ``alembic upgrade head`` as the owner with APP_DB_ROLE set, so migration 0003
+    grants the app role its privileges; then the app role's URL.
+    """
+    url = select_app_database_url(db_url, os.environ.get(TEST_APP_DATABASE_URL_ENV))
+    if url == db_url:
+        return url
+    migrate(db_url, app_role=make_url(url).username)
     return url
+
+
+@dataclass(frozen=True)
+class RlsDatabase:
+    """A Postgres database migrated to head, in one of the two deployment modes.
+
+    ``app-role``: the application connects as a separate non-owner role (grants applied).
+    ``single-role``: no second role exists; the application connects as the owner and only
+    FORCE ROW LEVEL SECURITY protects the tenants from each other.
+    """
+
+    mode: str
+    owner_url: str
+    app_url: str
+
+
+def assert_subject_to_rls(url: str) -> None:
+    """A superuser or BYPASSRLS role skips every policy, which would make an RLS test vacuous."""
+    engine = create_engine(url)
+    try:
+        with engine.connect() as conn:
+            row = conn.execute(
+                text(
+                    "SELECT rolname, rolsuper, rolbypassrls FROM pg_roles "
+                    "WHERE rolname = current_user"
+                )
+            ).one()
+    finally:
+        engine.dispose()
+    if row.rolsuper or row.rolbypassrls:
+        raise pytest.UsageError(
+            f"role {row.rolname!r} is a superuser or has BYPASSRLS, so row-level security would "
+            "not apply to it; connect the tests as a plain role (see README)"
+        )
+
+
+@pytest.fixture(params=["app-role", "single-role"])
+def rls_db(request: pytest.FixtureRequest, db_url: str) -> RlsDatabase:
+    """Every RLS test runs twice: with a separate app role, and in single-role mode."""
+    if make_url(db_url).get_backend_name() != "postgresql":
+        pytest.skip("needs a real Postgres server: set TEST_DATABASE_URL")
+    mode: str = request.param
+    assert_subject_to_rls(db_url)
+    if mode == "single-role":
+        migrate(db_url, app_role=None)
+        return RlsDatabase(mode, owner_url=db_url, app_url=db_url)
+    app_url = select_app_database_url(db_url, os.environ.get(TEST_APP_DATABASE_URL_ENV))
+    assert_subject_to_rls(app_url)
+    migrate(db_url, app_role=make_url(app_url).username)
+    return RlsDatabase(mode, owner_url=db_url, app_url=app_url)
 
 
 @pytest.fixture

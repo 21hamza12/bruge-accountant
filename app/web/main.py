@@ -15,13 +15,14 @@ from fastapi import Depends, FastAPI
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
-from sqlalchemy import select
+from sqlalchemy import Engine, select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.middleware import Middleware
 from starlette.responses import Response
 
+from app import db_roles
 from app.db import make_engine, make_session_factory
 from app.observability import configure_logging
 from app.settings import Settings
@@ -43,6 +44,17 @@ class StaticAssets(StaticFiles):
         return response
 
 
+def _check_database_role(engine: Engine, settings: Settings) -> None:
+    """A superuser or BYPASSRLS role skips every row-level security policy: refuse to start in
+    production as one (Postgres only), warn elsewhere."""
+    problem = db_roles.check_connecting_role(engine)
+    if problem is None:
+        return
+    if settings.is_production:
+        raise db_roles.PrivilegedRoleError(db_roles.privileged_startup_message(problem))
+    log.warning("%s. Tolerated outside production only.", problem)
+
+
 def create_app(
     settings: Settings | None = None, extra_middleware: Sequence[Middleware] = ()
 ) -> FastAPI:
@@ -54,6 +66,7 @@ def create_app(
     @asynccontextmanager
     async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
         try:
+            _check_database_role(engine, settings)
             yield
         finally:
             engine.dispose()

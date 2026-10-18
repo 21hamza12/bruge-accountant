@@ -23,6 +23,7 @@ from app.repository import (
     import_report,
     tickets_awaiting_price,
 )
+from app.tenancy import rebind_tenant
 from tests.builders import build_workbook, ticket_row
 from tests.conftest import SHA, allow_future_price_statuses
 
@@ -116,7 +117,9 @@ def test_import_twice_is_idempotent(session: Session, parsed_fixture: ParsedRepo
 def test_two_agencies_are_isolated(session: Session, parsed_fixture: ParsedReport) -> None:
     a = create_agency(session, "a", "A")
     b = create_agency(session, "b", "B")
+    rebind_tenant(session, a.id)  # create_agency left the session bound to b
     import_report(session, a.id, parsed_fixture, "1OCT.xlsx", SHA)
+    rebind_tenant(session, b.id)  # a session never moves to another agency by itself
     result = import_report(session, b.id, parsed_fixture, "1OCT.xlsx", SHA)
     assert result.inserted == 48
     assert count(session) == 96
@@ -127,6 +130,7 @@ def test_two_agencies_are_isolated(session: Session, parsed_fixture: ParsedRepor
     b_uploads = {
         t.last_upload_id for t in session.scalars(select(Ticket).filter_by(agency_id=b.id))
     }
+    rebind_tenant(session, a.id)
     import_report(session, a.id, parsed_fixture, "1OCT.xlsx", SHA)
     session.expire_all()
     assert {
@@ -215,12 +219,17 @@ def test_large_import_spans_lookup_chunks(session: Session) -> None:
 def test_tickets_awaiting_price_filters(session: Session, parsed_fixture: ParsedReport) -> None:
     a = create_agency(session, "a", "A")
     b = create_agency(session, "b", "B")
+    rebind_tenant(session, a.id)
     import_report(session, a.id, parsed_fixture, "1OCT.xlsx", SHA)
+    rebind_tenant(session, b.id)
     import_report(session, b.id, parsed_fixture, "1OCT.xlsx", SHA)
     day = date(2026, 10, 1)
+    rebind_tenant(session, a.id)
     assert len(tickets_awaiting_price(session, a.id, day)) == 48
     assert tickets_awaiting_price(session, a.id, date(2026, 10, 2)) == []
+    rebind_tenant(session, 999)
     assert tickets_awaiting_price(session, 999, day) == []
+    rebind_tenant(session, a.id)
     allow_future_price_statuses(session)
     victim = tickets_awaiting_price(session, a.id, day)[0]
     victim.price_status = "priced"

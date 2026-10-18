@@ -32,6 +32,19 @@ Importing the same file again updates the tickets in place and never resets thei
 - Limits: files up to 10 MB, 50,000 data rows, 30 MB uncompressed; larger or hostile workbooks are
   rejected with a parse error.
 - Unknown agencies are rejected (exit code 2); create them first with `add-agency`.
+- `bootstrap-agency <slug> <name> --manager-phone <phone> --manager-name <name>` creates an agency
+  and its first manager in one transaction (`--password-stdin` reads the password from standard
+  input; otherwise it is asked twice at a prompt, never taken as an argument). It prints ids only
+  and exits with code 2 when the slug or the phone already exists.
+- On Postgres, `add-agency` and `bootstrap-agency` need the owner connection (the app role may not
+  insert agencies): run them with `DATABASE_URL` set to `MIGRATION_DATABASE_URL`.
+- Non-interactive password: `--password-stdin` (the only way from a pipe or script on Windows).
+  A command line error prints the usage, never the tokens typed; `-p` and `--password...` are
+  refused. Ctrl-C at the prompt exits with code 130.
+- `grant-app-role <role>` (owner connection) re-applies the app role's privileges, idempotently,
+  for a role created after migration 0003; it refuses a superuser or BYPASSRLS role.
+- `purge-expired` deletes expired sessions and temporary passwords and audit events older than
+  400 days, and prints the counts.
 - Unreadable files are reported with exit code 1.
 - `--date YYYY-MM-DD` overrides the report date derived from the file.
 
@@ -63,14 +76,41 @@ uv run ruff check .
 uv run mypy                   # strict, over app, tests and migrations
 ```
 
-Tests run on a temporary SQLite file by default. To run the storage and CLI tests against
-Postgres, point `TEST_DATABASE_URL` at an empty database whose name contains `test` (each
-test drops and recreates its `public` schema):
+Tests run on a temporary SQLite file by default. To run the whole suite against Postgres, point
+`TEST_DATABASE_URL` at an empty database whose name contains `test` (each test drops and
+recreates its `public` schema) and `TEST_APP_DATABASE_URL` at the same database as a second,
+non-owner role. Both roles must be plain: a superuser or `BYPASSRLS` role skips every
+row-level security policy (the fixtures refuse to run with one).
 
-```bash
-TEST_DATABASE_URL=postgresql+psycopg://user:pw@localhost/bruge_test uv run pytest --no-cov tests/test_storage.py tests/test_storage_hardening.py tests/test_cli.py tests/test_postgres_concurrency.py
+Two roles on a local Postgres (run as a superuser; pick your own passwords, never commit them):
+
+```sql
+CREATE ROLE bruge_owner LOGIN PASSWORD '<owner-password>';       -- runs migrations, owns the tables
+CREATE ROLE bruge_app LOGIN PASSWORD '<app-password>' NOBYPASSRLS;  -- what the application uses
+CREATE DATABASE bruge_test OWNER bruge_owner;
 ```
 
+```bash
+export TEST_DATABASE_URL='postgresql+psycopg://bruge_owner:<owner-password>@localhost/bruge_test'
+export TEST_APP_DATABASE_URL='postgresql+psycopg://bruge_app:<app-password>@localhost/bruge_test'
+uv run pytest --no-cov -rs
+```
+
+Row-level security (migration 0003) is tested in **both** deployment modes: the fixtures migrate
+once with `APP_DB_ROLE=bruge_app` (the app connects as `bruge_app`, which holds only the granted
+privileges) and once without it (single-role mode: the app connects as `bruge_owner` and only
+`FORCE ROW LEVEL SECURITY` isolates the agencies). To migrate a real database yourself:
+
+```bash
+APP_DB_ROLE=bruge_app uv run python -m app init-db      # grants bruge_app its privileges (the role must exist)
+uv run python -m app init-db                            # no APP_DB_ROLE: single-role mode, a warning is logged
+```
+
+Each test on Postgres takes a session-level advisory lock first, so two test runs against the
+same server take turns instead of wiping each other's schema.
+
+Without `TEST_DATABASE_URL`, the Postgres-only tests are skipped.
 `tests/test_postgres_concurrency.py` (two connections importing overlapping tickets at once)
-only runs on Postgres. CI (`.github/workflows/ci.yml`) runs both: the full suite on SQLite,
-and the Alembic upgrade/downgrade/upgrade cycle plus those tests on `postgres:16`.
+only runs on Postgres. CI (`.github/workflows/ci.yml`) runs the full suite on SQLite (with the
+coverage gate), and on `postgres:16` the Alembic upgrade/downgrade/upgrade cycle (with and
+without `APP_DB_ROLE`) plus the full suite with both roles.

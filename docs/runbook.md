@@ -28,7 +28,8 @@ Set on the web service, **Environment** tab.
 
 | Variable | Value | Notes |
 |---|---|---|
-| `DATABASE_URL` | the **Internal** connection string of `bruge-db` | `sync: false`. Until PR 2 creates the `bruge_app` role, `DATABASE_URL` is the owner URL (same as `MIGRATION_DATABASE_URL`), so the web process runs with owner rights and row-level security does not protect anything yet. **No real agency data may be loaded before PR 2 and the switch to `bruge_app`** (PR 5, step 34). Never paste it into chat, tickets or the repo. |
+| `DATABASE_URL` | the **Internal** connection string of `bruge-db` | `sync: false`. Separate role: the `bruge_app` URL. Single-role mode: the owner URL (same as `MIGRATION_DATABASE_URL`); row-level security is then FORCEd but the web process holds owner rights (section 3 lists the residual risk). **No real agency data may be loaded before migration 0003 has run.** Never paste it into chat, tickets or the repo. |
+| `APP_DB_ROLE` | the app role name (e.g. `bruge_app`), or unset | Read only by migration 0003 (`init-db`, and its downgrade), never by the web process. Set: grants that role its privileges, and fails if the role is missing, a superuser or BYPASSRLS. Unset: single-role mode with a warning. Section 3. |
 | `SENTRY_DSN` | leave empty for now | `sync: false`. Sentry is wired in PR 5. |
 | `ALLOWED_HOSTS` | the real public host name(s), comma separated, e.g. `bruge-accountant.onrender.com` | `sync: false` in `render.yaml`, so the blueprint asks for it and a sync never resets it. If it is missing the app refuses to start; if it is wrong every request, health check included, is rejected with 400 and the deploy fails. No wildcards: production refuses `*` and `*.example.com`. |
 | `CORS_ALLOWED_ORIGINS` | leave unset | Same-origin app, so no CORS middleware is installed. Production refuses `*`. |
@@ -44,13 +45,45 @@ Health check host: Render's health checker may call `/healthz` with a Host heade
 public name. If the deploy keeps failing on the health check while `ALLOWED_HOSTS` is correct,
 record the Host it sends (section 4 shows how) and add it to `ALLOWED_HOSTS`.
 
-## 3. Can the default Render Postgres user `CREATE ROLE`?
+## 3. Database roles: separate app role, or single-role mode
 
-PR 2 needs a second, non-owner database role (`bruge_app`) so row-level security applies. This
-check decides whether that design works on Render. Use **Shell** on the web service (the database
-is not reachable from your laptop).
+Tenant isolation is row-level security (migration 0003), FORCEd so it binds the table owner too.
+It works in two modes; pick one with the check below. The application code is the same.
 
-- [ ] Open Render Shell on `bruge-accountant` and run:
+| | Separate role (preferred) | Single-role mode |
+|---|---|---|
+| Needs `CREATE ROLE` | yes | no |
+| `APP_DB_ROLE` | the role name, e.g. `bruge_app` | unset |
+| `DATABASE_URL` (web app) | the app role | the owner (same as `MIGRATION_DATABASE_URL`) |
+| `MIGRATION_DATABASE_URL` | the owner | the owner |
+| What the web process can do | only what 0003 granted: no DELETE on tickets or uploads, no CREATE, read-only agencies | everything the owner can |
+| Isolation between agencies | RLS, and the role cannot switch it off | RLS (FORCE), but the owner can switch it off |
+
+**What row-level security protects against, and what it does not.** It contains **IDOR and
+forgotten-filter bugs**: a query that forgot `WHERE agency_id = ...` still sees one agency. It does
+**not** contain SQL injection: a query an attacker controls can run `set_config('app.agency_id',
+...)` and pick its own tenant. The control for SQL injection is different: all SQL goes through
+the ORM, and a code guard test bans raw SQL (`text(`, `exec_driver_sql`, ...) and `set_config`
+outside `app/tenancy.py`.
+
+**Residual risk of single-role mode.** The owner can run `ALTER TABLE ... NO FORCE ROW LEVEL
+SECURITY` or `DISABLE ROW LEVEL SECURITY`, and can `TRUNCATE audit_events` (no policy applies to
+TRUNCATE). So an attacker who gets code execution on the server (and with it the owner
+credentials) defeats the isolation and can erase the audit trail; the owner can also DELETE
+tickets and change the schema. Shipping audit events out of the database (so a database owner
+cannot erase them) is PR 5; until then treat the audit table as evidence only against bugs, not
+against an attacker holding the owner credentials. In separate-role mode the app role can do
+none of this.
+
+**Privileged roles are refused.** A superuser or BYPASSRLS role skips every policy. Migration
+0003 and `grant-app-role` refuse such an `APP_DB_ROLE`, and in production the web app refuses to
+start when `DATABASE_URL` connects as one (it prints which rule failed, never the URL). If your
+host only provides a superuser, you cannot get isolation from RLS there.
+
+Record in the Results table which mode is in use.
+
+- [ ] Find out whether the default Postgres user can `CREATE ROLE`. Open Render Shell on
+      `bruge-accountant` and run:
 
 ```bash
 python - <<'PY'
@@ -72,8 +105,80 @@ PY
 
   (`psycopg` accepts a plain `postgresql://` URL here. This prints no password.)
 
-- [ ] Record the output in Results. If it says FAILED, stop and tell the developer: PR 2 needs a
-      different plan (for example a Render-provided second user, or a different host).
+- [ ] Record the output in Results.
+
+### If CREATE ROLE works (separate role)
+
+Do this **before the release that runs migration 0003**: the migration only grants privileges to
+the role named by `APP_DB_ROLE` while it runs. A role created afterwards has no grants until you
+run `python -m app grant-app-role bruge_app` as the owner (below); it is safe to repeat.
+
+1. In Render Shell, create the role. Never build the `CREATE ROLE` statement with string
+   formatting (a password with a quote would break it, and the password would sit in shell
+   history). Let psql ask for it, which also keeps it out of history and logs:
+
+```bash
+psql "$MIGRATION_DATABASE_URL" -c "CREATE ROLE bruge_app LOGIN NOSUPERUSER NOBYPASSRLS"
+psql "$MIGRATION_DATABASE_URL"        # then, at the psql prompt:  \password bruge_app
+```
+
+   `\password` asks twice and sends only a hash. If you must script it, pass the password as a
+   psql variable and let psql quote it (`:'var'`). A `-v` value is visible in the process list,
+   which is acceptable in your own Render Shell but not on a shared machine, so prefer
+   `\password` when in doubt:
+
+```bash
+PGPASSWORD_NEW="$(python -c 'import secrets; print(secrets.token_urlsafe(32))')"
+printf '%s\n' "ALTER ROLE bruge_app PASSWORD :'newpw'" |
+  psql "$MIGRATION_DATABASE_URL" -v "newpw=$PGPASSWORD_NEW"
+echo "$PGPASSWORD_NEW"   # build the app URL (user bruge_app) from this, then forget it
+```
+
+2. Dashboard, web service environment: set `APP_DB_ROLE=bruge_app` and change `DATABASE_URL` to the
+   same internal URL with the user `bruge_app` and the new password. Keep `MIGRATION_DATABASE_URL`.
+3. Deploy. `preDeployCommand: python -m app init-db` runs 0003 as the owner and grants `bruge_app`
+   its privileges; the migration fails loudly if `APP_DB_ROLE` names a role that does not exist.
+4. Check: the deploy log shows no "single-role mode" warning, and `/healthz` is 200.
+5. A role created after the migration ran (or one that lost its grants): as the owner,
+   `DATABASE_URL="$MIGRATION_DATABASE_URL" python -m app grant-app-role bruge_app`. It validates
+   the name, refuses a superuser or BYPASSRLS role, and can be run again at any time.
+
+### If CREATE ROLE is refused (single-role mode)
+
+Leave `APP_DB_ROLE` unset. `DATABASE_URL` stays the owner URL. The migration logs a warning
+("APP_DB_ROLE is not set: single-role mode"); that is expected. Isolation relies on FORCE RLS alone
+(residual risk above). Revisit if Render or another host offers a second role.
+
+### Creating the first agency and manager
+
+`add-agency` and `bootstrap-agency` insert into `agencies`, which the app role may not do, so run
+them with the owner connection, from Render Shell (the password is read from a prompt, asked
+twice; it is never an argument and never printed):
+
+```bash
+DATABASE_URL="$MIGRATION_DATABASE_URL" python -m app bootstrap-agency bruge-voyages "Bruge Voyages" \
+    --manager-phone "+222 12 34 56 78" --manager-name "Full Name"
+```
+
+It prints the new agency and user ids, nothing else, and records an `agency_bootstrapped` audit
+event (agency, new manager id, the OS user who ran it; no password, hash or phone number). It
+refuses (exit code 2) when the slug or the phone number already exists, or when the password is
+too short, too common (a bundled list of common passwords, any case) or one repeated character.
+The manager does not have to change the password at first login (you chose it); pick a long one.
+`import` runs with the normal `DATABASE_URL`.
+
+Prompts: Ctrl-C or end of input at the prompt ends cleanly (exit code 130 / 2), nothing created.
+**Non-interactive use (scripts, pipes, and anything on Windows): `--password-stdin`** reads the
+first line of standard input. The Windows prompt reads the console keyboard and ignores
+redirected input, so a script must use `--password-stdin`. A command line mistake prints the usage
+and "invalid command line (exit code 2)", never the tokens you typed; `-p` and `--password...` are
+refused.
+
+### Routine housekeeping
+
+`python -m app purge-expired` (any connection, no tenant) deletes expired or revoked sessions,
+used or expired temporary passwords, and audit events older than 400 days, and prints the counts.
+Run it daily (a Render cron job; set up in PR 5) or by hand until then.
 
 ## 4. How does `X-Forwarded-For` arrive, and what is `TRUSTED_PROXY_HOPS`?
 
@@ -106,6 +211,28 @@ We must know the real hop count and whether a client can forge the left side.
 Render has zero-downtime deploys and one-click rollback, but not true blue/green. We need to know
 exactly what a rollback does before PR 5's drill.
 
+**Migration 0003 is a contract migration, not expand-only.** After it has run, a release that
+does not bind a tenant (release N, before this one) sees zero rows and cannot insert: every
+policy compares `agency_id` with a setting only the new code sets. Consequences:
+
+- 0003 can only ship in the same release as the tenant-binding code. It is never deployed ahead
+  of that code, and no earlier release can be run against a database that already has it.
+- **Rolling back past it:** run `alembic downgrade 0002` as the owner *before* redeploying release
+  N (never the other way round: a released N against an un-downgraded database is a total
+  outage). In Render Shell, with the same `APP_DB_ROLE` the upgrade used, so the grants are
+  revoked too:
+
+```bash
+DATABASE_URL="$MIGRATION_DATABASE_URL" APP_DB_ROLE=bruge_app python -m alembic downgrade 0002
+```
+
+  Leave `APP_DB_ROLE` unset in single-role mode. Then roll the service back in the dashboard.
+  To go forward again, redeploy the new release (`init-db` upgrades to head).
+- A rollback between two releases that both include 0003 is an ordinary redeploy: nothing to
+  downgrade. Later migrations must be expand-only (plan step 36).
+- Proof: `tests/test_rollback_invariant.py` shows an unbound session seeing 0 rows after 0003,
+  and working again after `downgrade 0002`, in both deployment modes.
+
 - [ ] Deploy twice (any harmless change, version N then N+1). Confirm `/healthz` shows the new
       commit: `curl https://<host>/healthz` returns `{"status":"ok","version":"<git sha>"}`.
 - [ ] In the dashboard, **Rollback** to N. Record:
@@ -115,6 +242,9 @@ exactly what a rollback does before PR 5's drill.
   - are environment variables restored to their old values, or do they stay current? (Render
     keeps current env vars; confirm.)
 - [ ] Roll forward again to N+1 and confirm `/healthz`.
+- [ ] Drill the rollback that crosses 0003 (once, on a scratch database): `alembic downgrade 0002`,
+      redeploy the previous release, confirm it works, then redeploy the new release and confirm
+      `init-db` upgrades again. Record the output in Results.
 - [ ] Failure path: set `ALLOWED_HOSTS` to something invalid on a scratch deploy and confirm the
       failed deploy leaves the previous version serving traffic and sends the deploy-failure email.
 
@@ -139,6 +269,31 @@ exactly what a rollback does before PR 5's drill.
       activated; with the network set to Offline, reloading any page shows the offline page. (The
       worker logic is unit-tested under node; the browser behaviour is only verified here.)
 
+## 8. Backups and data migrations
+
+**Backups.** Forced row-level security applies to `pg_dump` too. Run as the table owner, `pg_dump`
+either fails ("query would be affected by row-level security policy") or, depending on the
+settings, dumps **empty tables** without an error. Do not trust a dump taken with the web or
+owner credentials.
+
+- Use the host's managed backups (Render Postgres snapshots and point-in-time recovery on paid
+  plans), which work at the storage level and are not affected by RLS; or
+- create a dedicated maintenance role with `BYPASSRLS` (and nothing else: `NOLOGIN` until a dump
+  is taken, no use by the application) and dump as that role. Never give BYPASSRLS to the owner
+  or the app role: both would then skip every policy, and the guards above refuse it.
+
+**Data migrations** (an Alembic migration or a script that rewrites tenant rows) run under the
+same policies. They must either bind one agency at a time (`bind_tenant`/`rebind_tenant` per
+agency, in a loop over agencies found with the slug lookup or the owner CLI), or run as the
+maintenance role above. A data migration that "works" as the owner without binding silently
+changes zero rows. Test it on a copy with at least two agencies.
+
+- [ ] **Restore drill** (once before go-live, then after every change to the backup setup):
+      restore the latest managed backup into a scratch database; check `alembic_version`, that
+      the row counts of `agencies`, `users`, `uploads` and `tickets` are not zero when the
+      source is not empty (an empty restore is the RLS symptom), and that a login and an import
+      work against it. Record the date and the counts in Results.
+
 ## Results
 
 Fill in as you go. Leave "not done" until you have really checked it.
@@ -149,6 +304,7 @@ Fill in as you go. Leave "not done" until you have really checked it.
 | Postgres major version used | | not done | |
 | First deploy healthy (`/healthz` 200) | | not done | |
 | Default Postgres user can `CREATE ROLE` | | not done | paste the Shell output |
+| Mode in use: separate role or single-role | | not done | section 3 |
 | `X-Forwarded-For` format and rightmost hop | | not done | |
 | `TRUSTED_PROXY_HOPS` confirmed value | | not done | |
 | `X-Forwarded-Proto` value | | not done | |
@@ -158,3 +314,6 @@ Fill in as you go. Leave "not done" until you have really checked it.
 | Uptime monitor created, alert and recovery received | | not done | |
 | Deploy-failure email received | | not done | |
 | Offline page in a real browser | | not done | |
+| Rollback across 0003 (`downgrade 0002`, redeploy N, upgrade again) | | not done | section 5 |
+| Restore drill (managed backup restored, counts non-zero, login works) | | not done | section 8 |
+| `purge-expired` scheduled | | not done | section 3 |

@@ -16,3 +16,4 @@ MAX_DB_ID = 2**63 - 1
 
 UserId = Annotated[int, Path(ge=1, le=MAX_DB_ID)]
 SignId = Annotated[int, Path(ge=1, le=MAX_DB_ID)]
+UploadId = Annotated[int, Path(ge=1, le=MAX_DB_ID)]

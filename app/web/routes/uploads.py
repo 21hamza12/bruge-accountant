@@ -42,10 +42,12 @@ from app.ingest import (
 )
 from app.parsing.amadeus import MAX_FILE_BYTES, ParsedReport, ParseError
 from app.parsing.sandbox import SandboxBusy, parse_in_sandbox
+from app.repository import get_upload, recent_uploads, user_names
 from app.settings import Settings
 from app.web.csrf import csrf_protect
 from app.web.deps import AuthContext, client_ip, current_user, get_clock, get_session, get_settings
 from app.web.pages import page
+from app.web.params import UploadId
 
 log = logging.getLogger("app.web.uploads")
 
@@ -53,6 +55,8 @@ router = APIRouter(prefix="/uploads", dependencies=[Depends(csrf_protect)])
 
 Parser = Callable[[bytes], ParsedReport]
 BUSY_RETRY_SECONDS = "5"
+MAX_WARNINGS_SHOWN = 50
+RECENT_UPLOADS = 50
 
 MSG_NO_FILE = "Choisissez un fichier .xlsx."
 MSG_EMPTY = "Le fichier est vide."
@@ -76,6 +80,40 @@ def _form(auth: AuthContext, *, error: str | None = None, status_code: int = 200
 @router.get("/new")
 def upload_form(auth: Annotated[AuthContext, Depends(current_user)]) -> Response:
     return _form(auth)
+
+
+@router.get("")
+def upload_list(
+    db: Annotated[Session, Depends(get_session)],
+    auth: Annotated[AuthContext, Depends(current_user)],
+) -> Response:
+    agency_id = auth.user.agency_id
+    uploads = recent_uploads(db, agency_id, RECENT_UPLOADS)
+    names = user_names(db, agency_id, [u.uploaded_by_user_id for u in uploads])
+    return page("uploads/list.html", uploads=uploads, names=names, csrf_token=auth.csrf_token)
+
+
+@router.get("/{upload_id}")
+def upload_result(
+    upload_id: UploadId,
+    db: Annotated[Session, Depends(get_session)],
+    auth: Annotated[AuthContext, Depends(current_user)],
+) -> Response:
+    agency_id = auth.user.agency_id
+    upload = get_upload(db, agency_id, upload_id)
+    if upload is None:  # missing and "another agency's" look the same
+        raise HTTPException(status_code=404)
+    names = user_names(db, agency_id, [upload.uploaded_by_user_id])
+    warnings = list(upload.warnings)
+    return page(
+        "uploads/show.html",
+        headers={"Cache-Control": "no-store"},
+        upload=upload,
+        uploader=names.get(upload.uploaded_by_user_id or 0),
+        warnings=warnings[:MAX_WARNINGS_SHOWN],
+        more_warnings=max(0, len(warnings) - MAX_WARNINGS_SHOWN),
+        csrf_token=auth.csrf_token,
+    )
 
 
 def _failed(

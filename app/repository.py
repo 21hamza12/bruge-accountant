@@ -381,6 +381,43 @@ def tickets_awaiting_price(session: Session, agency_id: int, report_date: date) 
     return list(session.scalars(stmt))
 
 
+def get_upload(session: Session, agency_id: int, upload_id: int) -> Upload | None:
+    """One upload of this agency; another agency's id is None, like a missing one."""
+    bind_tenant(session, agency_id)
+    return session.scalars(
+        select(Upload).where(Upload.agency_id == agency_id, Upload.id == upload_id)
+    ).one_or_none()
+
+
+def recent_uploads(session: Session, agency_id: int, limit: int = 50) -> list[Upload]:
+    """The agency's newest uploads first (``ORDER BY id DESC``)."""
+    bind_tenant(session, agency_id)
+    stmt = (
+        select(Upload).where(Upload.agency_id == agency_id).order_by(Upload.id.desc()).limit(limit)
+    )
+    return list(session.scalars(stmt))
+
+
+def user_names(session: Session, agency_id: int, user_ids: Sequence[int | None]) -> dict[int, str]:
+    """Display names (the phone when none was given) of some users of this agency."""
+    wanted = {i for i in user_ids if i is not None}
+    if not wanted:
+        return {}
+    bind_tenant(session, agency_id)
+    rows = session.execute(
+        select(User.id, User.display_name, User.phone).where(
+            User.agency_id == agency_id, User.id.in_(wanted)
+        )
+    )
+    return {row.id: row.display_name or row.phone for row in rows}
+
+
+def latest_report_date(session: Session, agency_id: int) -> date | None:
+    """The newest report date that has tickets (None when the agency has none)."""
+    bind_tenant(session, agency_id)
+    return session.scalar(select(func.max(Ticket.report_date)).where(Ticket.agency_id == agency_id))
+
+
 # --- purging expired rows ----------------------------------------------------------------------
 
 AUDIT_RETENTION_DAYS = 400  # keep in step with the retention_purge policy of migration 0003

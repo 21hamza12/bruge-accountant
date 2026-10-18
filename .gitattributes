@@ -1,0 +1,2 @@
+app/web/static/htmx.min.js -text
+app/web/static/*.png binary

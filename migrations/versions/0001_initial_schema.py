@@ -4,8 +4,9 @@ Revision ID: 0001
 Revises:
 Create Date: 2026-10-18 05:36:38.938585
 
-This migration has never been deployed, so it is edited in place instead of stacking a
-second revision on top of it. Keep it in step with app/models.py (a test compares them).
+FROZEN from the first deploy (Phase 2, PR 1): production databases are created from this
+revision, so never edit it again. Every later schema change goes into a new revision. Until
+then keep it in step with app/models.py (a test compares them).
 """
 
 from collections.abc import Sequence

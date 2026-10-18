@@ -1,0 +1,7 @@
+{% extends "base.html" %}
+{% block title %}{{ _("Requête invalide") }}{% endblock %}
+{% block content %}
+<h1>{{ _("Requête invalide") }}</h1>
+<p>{{ _("Cette requête n'a pas pu être traitée. Vérifiez et réessayez.") }}</p>
+<p>{{ _("Référence") }} : <code>{{ ref }}</code></p>
+{% endblock %}

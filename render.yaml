@@ -1,0 +1,45 @@
+# Render Blueprint: one Docker web service plus a private managed Postgres, both in Frankfurt.
+# Secrets are never written here: `sync: false` values are entered in the dashboard and
+# `fromDatabase` values are injected by Render. Setup steps: docs/runbook.md.
+databases:
+  - name: bruge-db
+    region: frankfurt
+    plan: basic-256mb
+    databaseName: bruge
+    postgresMajorVersion: "16"
+    ipAllowList: []  # no public access; reach it from the web service (Render Shell)
+
+services:
+  - type: web
+    name: bruge-accountant
+    runtime: docker
+    region: frankfurt
+    plan: starter
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /healthz
+    preDeployCommand: python -m app init-db
+    autoDeploy: false
+    envVars:
+      - key: ENV
+        value: production
+      - key: COOKIE_SECURE
+        value: "true"
+      - key: TRUSTED_PROXY_HOPS
+        value: "1"  # to be confirmed in the runbook
+      # Dashboard: the real host Render assigns (e.g. bruge-accountant.onrender.com). Kept out of
+      # this file so a blueprint sync never resets it to a placeholder.
+      - key: ALLOWED_HOSTS
+        sync: false
+      # Owner role. Render env vars apply to the running service, not only to preDeployCommand,
+      # so the container holds it. The web process never reads it (only `init-db` and the admin
+      # CLI do; a test pins that). Accepted for the pilot: docs/phase2-plan.md, decision 2.
+      - key: MIGRATION_DATABASE_URL
+        fromDatabase:
+          name: bruge-db
+          property: connectionString
+      # Dashboard: the owner URL until PR 2 creates the bruge_app role, then bruge_app.
+      # No real agency data before that (docs/runbook.md).
+      - key: DATABASE_URL
+        sync: false
+      - key: SENTRY_DSN
+        sync: false

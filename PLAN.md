@@ -60,6 +60,8 @@ Deploy: one Docker container + managed Postgres.
 ## Later phases (not built yet)
 
 2. Auth, agencies, users, staff-sign ↔ person mapping, Postgres, upload API, first deploy.
+   **In progress — detailed plan: [docs/phase2-plan.md](docs/phase2-plan.md)** (Render, manager-created
+   accounts, any staff can upload).
    Before exposing uploads: `agency_id` only from the authenticated session; parse in a worker with
    memory/time limits; separate migration vs app DB roles and a per-transaction `app.agency_id`
    setting for Postgres RLS; sanitize upload filenames

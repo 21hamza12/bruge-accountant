@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 import sqlite3
 from datetime import UTC, datetime
 from typing import Any
@@ -13,7 +12,11 @@ from sqlalchemy.engine import Dialect
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 from sqlalchemy.types import JSON, TypeDecorator
 
+from app.settings import Settings
+
 DEFAULT_DATABASE_URL = "sqlite:///bruge.db"
+CONNECT_TIMEOUT_SECONDS = 3
+POOL_TIMEOUT_SECONDS = 5
 
 NAMING_CONVENTION = {
     "ix": "ix_%(column_0_label)s",
@@ -54,11 +57,31 @@ class UTCDateTime(TypeDecorator[datetime]):
 
 
 def default_database_url() -> str:
-    return os.environ.get("DATABASE_URL") or DEFAULT_DATABASE_URL
+    """DATABASE_URL as read (and validated) by Settings, else the local SQLite file."""
+    return Settings().database_url.get_secret_value() or DEFAULT_DATABASE_URL
+
+
+def normalize_database_url(url: str) -> str:
+    """Render hands out ``postgres://`` / ``postgresql://``; we use the psycopg 3 driver."""
+    for prefix in ("postgresql://", "postgres://"):
+        if url.startswith(prefix):
+            return "postgresql+psycopg://" + url[len(prefix) :]
+    return url
 
 
 def make_engine(url: str | None = None) -> Engine:
-    engine = create_engine(url or default_database_url())
+    url = normalize_database_url(url or default_database_url())
+    if url.startswith("sqlite"):
+        engine = create_engine(url)
+    else:
+        # A dead database must fail a request in seconds, not hang a worker: 3 s to connect,
+        # 5 s waiting for a pooled connection.
+        engine = create_engine(
+            url,
+            pool_pre_ping=True,
+            pool_timeout=POOL_TIMEOUT_SECONDS,
+            connect_args={"connect_timeout": CONNECT_TIMEOUT_SECONDS},
+        )
     if engine.dialect.name == "sqlite":
 
         @event.listens_for(engine, "connect")

@@ -56,6 +56,22 @@ async def validation_exception_handler(request: Request, exc: Exception) -> Resp
     return error_response(400, new_reference())
 
 
+class ResponseException(Exception):  # noqa: N818 - it carries a response, it is not an error
+    """Raised by a dependency to answer with a ready-made response (a redirect, a 401 with
+    ``HX-Redirect``). Registered as an exception handler, so the response still passes through
+    every middleware (security headers, request log)."""
+
+    def __init__(self, response: Response) -> None:
+        super().__init__("response")
+        self.response = response
+
+
+async def response_exception_handler(request: Request, exc: Exception) -> Response:
+    if isinstance(exc, ResponseException):
+        return exc.response
+    return error_response(500, new_reference())  # pragma: no cover - registered for this type
+
+
 class ErrorBoundaryMiddleware:
     """Turns an unhandled exception into the 500 page.
 

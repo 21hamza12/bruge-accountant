@@ -193,7 +193,7 @@ def audit_events(owner_url: str, agency_id: int, event_type: str | None = None) 
 
     with owner_session(owner_url) as s:
         rebind_tenant(s, agency_id)
-        query = select(AuditEvent).order_by(AuditEvent.id)
+        query = select(AuditEvent).where(AuditEvent.agency_id == agency_id).order_by(AuditEvent.id)
         if event_type:
             query = query.where(AuditEvent.event_type == event_type)
         return list(s.scalars(query))

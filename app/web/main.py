@@ -28,8 +28,15 @@ from app.db import make_engine, make_session_factory
 from app.observability import configure_logging
 from app.settings import Settings
 from app.web.deps import get_session, get_settings
-from app.web.errors import http_exception_handler, validation_exception_handler
+from app.web.errors import (
+    ResponseException,
+    http_exception_handler,
+    response_exception_handler,
+    validation_exception_handler,
+)
 from app.web.middleware import build_middleware
+from app.web.routes import auth as auth_routes
+from app.web.routes import home as home_routes
 from app.web.templating import TEMPLATES_DIR, render
 
 log = logging.getLogger("app.web")
@@ -89,6 +96,9 @@ def create_app(
 
     app.add_exception_handler(StarletteHTTPException, http_exception_handler)
     app.add_exception_handler(RequestValidationError, validation_exception_handler)
+    app.add_exception_handler(ResponseException, response_exception_handler)
+    app.include_router(auth_routes.router)
+    app.include_router(home_routes.router)
     app.mount("/static", StaticAssets(directory=TEMPLATES_DIR.parent / "static"), name="static")
 
     @app.get("/sw.js", include_in_schema=False)

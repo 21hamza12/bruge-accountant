@@ -72,3 +72,11 @@ def phone_digit_forms(phone: str) -> set[str]:
     if digits.startswith(DEFAULT_COUNTRY_CODE) and len(digits) == 11:
         forms.add(digits[len(DEFAULT_COUNTRY_CODE) :])
     return forms
+
+
+def mask_phone(phone: str) -> str:
+    """``+22212345612`` -> ``+222******12``; logs and audit events never hold a full number."""
+    head, tail = 4, 2
+    if len(phone) <= head + tail:
+        return "*" * len(phone)
+    return phone[:head] + "*" * (len(phone) - head - tail) + phone[-tail:]

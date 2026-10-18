@@ -8,6 +8,7 @@ from typing import Annotated, cast
 
 from fastapi import Depends, Request
 from sqlalchemy.orm import Session
+from starlette.responses import RedirectResponse
 
 from app.auth import sessions
 from app.auth.sessions import SessionPolicy
@@ -15,6 +16,7 @@ from app.clock import Clock
 from app.models import User, UserSession
 from app.settings import Settings
 from app.web.cookies import session_cookie_name
+from app.web.errors import ResponseException
 
 UNKNOWN_IP = "unknown"
 
@@ -75,3 +77,10 @@ def get_auth(
     if found is None:
         return None
     return AuthContext(found.user, found.session)
+
+
+def current_user(auth: Annotated[AuthContext | None, Depends(get_auth)]) -> AuthContext:
+    """The logged-in user; an anonymous request is sent to the login page."""
+    if auth is None:
+        raise ResponseException(RedirectResponse("/login", status_code=303))
+    return auth

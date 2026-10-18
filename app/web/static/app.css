@@ -15,3 +15,13 @@ main {
 }
 h1 { margin-block: 0 0.5rem; }
 code { font-size: 1.1em; }
+label { display: block; margin-block-start: 0.75rem; font-weight: 600; }
+input, select { display: block; inline-size: 100%; box-sizing: border-box; padding: 0.5rem; margin-block-start: 0.25rem; }
+button { margin-block-start: 1rem; padding-block: 0.5rem; padding-inline: 1rem; }
+.error { color: #9b1c1c; font-weight: 600; }
+.notice { background: #eef5fb; padding: 0.75rem; }
+.secret { font-size: 1.5rem; letter-spacing: 0.05em; }
+table { border-collapse: collapse; inline-size: 100%; }
+th, td { text-align: start; padding-block: 0.25rem; padding-inline: 0.5rem; border-block-end: 1px solid #ddd; }
+.inline-form { display: inline; }
+.inline-form input { display: inline; inline-size: auto; }

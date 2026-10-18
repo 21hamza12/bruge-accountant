@@ -10,18 +10,22 @@ point at another agency's upload.
 
 from datetime import UTC, date, datetime
 from decimal import Decimal
+from typing import Any
 
 from sqlalchemy import (
+    Boolean,
     CheckConstraint,
     Date,
     ForeignKey,
     ForeignKeyConstraint,
     Index,
+    Integer,
     Numeric,
     String,
     Text,
     UniqueConstraint,
     func,
+    true,
 )
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -52,8 +56,18 @@ class Upload(Base):
         # Target of the tickets' composite foreign keys.
         UniqueConstraint("agency_id", "id", name="uq_uploads_agency_id_id"),
         CheckConstraint("ticket_count >= 0", name="ticket_count_nonneg"),
+        # A NULL count (not recorded yet) passes these checks; only a negative number fails.
+        CheckConstraint("inserted_count >= 0", name="inserted_count_nonneg"),
+        CheckConstraint("updated_count >= 0", name="updated_count_nonneg"),
+        ForeignKeyConstraint(
+            ["agency_id", "uploaded_by_user_id"],
+            ["users.agency_id", "users.id"],
+            name="fk_uploads_agency_uploaded_by_user",
+            ondelete="RESTRICT",
+        ),
         Index("ix_uploads_agency_sha256", "agency_id", "sha256"),
         Index("ix_uploads_agency_report_date", "agency_id", "report_date"),
+        Index("ix_uploads_agency_uploaded_by", "agency_id", "uploaded_by_user_id"),
     )
 
     id: Mapped[int] = mapped_column(BigIntType, primary_key=True)
@@ -68,6 +82,10 @@ class Upload(Base):
     uploaded_at: Mapped[datetime] = mapped_column(
         UTCDateTime, default=_now, server_default=func.now()
     )
+    # Added by migration 0002; import_report does not write them yet (Phase 2, step 13).
+    inserted_count: Mapped[int | None] = mapped_column(Integer)
+    updated_count: Mapped[int | None] = mapped_column(Integer)
+    uploaded_by_user_id: Mapped[int | None] = mapped_column(BigIntType)
 
 
 class Ticket(Base):
@@ -117,3 +135,161 @@ class Ticket(Base):
     updated_at: Mapped[datetime] = mapped_column(
         UTCDateTime, default=_now, onupdate=_now, server_default=func.now()
     )
+
+
+ROLE_MANAGER = "manager"
+ROLE_STAFF = "staff"
+
+
+class User(Base):
+    """A login. The phone (E.164) is unique across the whole platform (login has no agency)."""
+
+    __tablename__ = "users"
+    __table_args__ = (
+        # Target of the composite foreign keys of every table that points at a user.
+        UniqueConstraint("agency_id", "id", name="uq_users_agency_id_id"),
+        UniqueConstraint("phone", name="uq_users_phone"),
+        CheckConstraint("role IN ('manager', 'staff')", name="role"),
+        # Shape only (+ and 8-15 digits); the digits are validated by app.auth.phone.
+        CheckConstraint(
+            "substr(phone, 1, 1) = '+' AND length(phone) BETWEEN 9 AND 16", name="phone_e164"
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigIntType, primary_key=True)
+    agency_id: Mapped[int] = mapped_column(ForeignKey("agencies.id", ondelete="RESTRICT"))
+    phone: Mapped[str] = mapped_column(String(20))
+    role: Mapped[str] = mapped_column(String(16))
+    password_hash: Mapped[str | None] = mapped_column(String(255))
+    must_change_password: Mapped[bool] = mapped_column(Boolean, default=True, server_default=true())
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, server_default=true())
+    created_at: Mapped[datetime] = mapped_column(
+        UTCDateTime, default=_now, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        UTCDateTime, default=_now, onupdate=_now, server_default=func.now()
+    )
+
+
+class StaffSignLink(Base):
+    """Which Amadeus staff sign (``tickets.staff_sign``) belongs to which user."""
+
+    __tablename__ = "staff_sign_links"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["agency_id", "user_id"],
+            ["users.agency_id", "users.id"],
+            name="fk_staff_sign_links_agency_user",
+            ondelete="RESTRICT",
+        ),
+        UniqueConstraint("agency_id", "staff_sign", name="uq_staff_sign_links_agency_staff_sign"),
+        CheckConstraint("length(staff_sign) BETWEEN 2 AND 32", name="staff_sign_length"),
+        Index("ix_staff_sign_links_agency_user", "agency_id", "user_id"),
+    )
+
+    id: Mapped[int] = mapped_column(BigIntType, primary_key=True)
+    agency_id: Mapped[int] = mapped_column(ForeignKey("agencies.id", ondelete="RESTRICT"))
+    user_id: Mapped[int] = mapped_column(BigIntType)
+    staff_sign: Mapped[str] = mapped_column(String(32))
+    created_at: Mapped[datetime] = mapped_column(
+        UTCDateTime, default=_now, server_default=func.now()
+    )
+
+
+class UserSession(Base):
+    """A server-side session; only the sha256 of the cookie token is stored."""
+
+    __tablename__ = "user_sessions"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["agency_id", "user_id"],
+            ["users.agency_id", "users.id"],
+            name="fk_user_sessions_agency_user",
+            ondelete="RESTRICT",
+        ),
+        UniqueConstraint("token_hash", name="uq_user_sessions_token_hash"),
+        CheckConstraint("length(token_hash) = 64", name="token_hash_length"),
+        Index("ix_user_sessions_agency_user", "agency_id", "user_id"),
+        Index("ix_user_sessions_absolute_expires_at", "absolute_expires_at"),
+    )
+
+    id: Mapped[int] = mapped_column(BigIntType, primary_key=True)
+    agency_id: Mapped[int] = mapped_column(ForeignKey("agencies.id", ondelete="RESTRICT"))
+    user_id: Mapped[int] = mapped_column(BigIntType)
+    token_hash: Mapped[str] = mapped_column(String(64))
+    csrf_token: Mapped[str] = mapped_column(String(64))
+    created_at: Mapped[datetime] = mapped_column(
+        UTCDateTime, default=_now, server_default=func.now()
+    )
+    last_seen_at: Mapped[datetime] = mapped_column(
+        UTCDateTime, default=_now, server_default=func.now()
+    )
+    idle_expires_at: Mapped[datetime] = mapped_column(UTCDateTime)
+    absolute_expires_at: Mapped[datetime] = mapped_column(UTCDateTime)
+    revoked_at: Mapped[datetime | None] = mapped_column(UTCDateTime)
+
+
+class TemporaryPassword(Base):
+    """A manager-issued, single-use, short-lived password (only its Argon2 hash is stored)."""
+
+    __tablename__ = "temporary_passwords"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["agency_id", "user_id"],
+            ["users.agency_id", "users.id"],
+            name="fk_temporary_passwords_agency_user",
+            ondelete="RESTRICT",
+        ),
+        Index("ix_temporary_passwords_agency_user", "agency_id", "user_id"),
+    )
+
+    id: Mapped[int] = mapped_column(BigIntType, primary_key=True)
+    agency_id: Mapped[int] = mapped_column(ForeignKey("agencies.id", ondelete="RESTRICT"))
+    user_id: Mapped[int] = mapped_column(BigIntType)
+    password_hash: Mapped[str] = mapped_column(String(255))
+    created_at: Mapped[datetime] = mapped_column(
+        UTCDateTime, default=_now, server_default=func.now()
+    )
+    expires_at: Mapped[datetime] = mapped_column(UTCDateTime)
+    used_at: Mapped[datetime | None] = mapped_column(UTCDateTime)
+
+
+class AuditEvent(Base):
+    """Security-relevant events. ``agency_id`` is NULL for events before a tenant is known."""
+
+    __tablename__ = "audit_events"
+    __table_args__ = (
+        # Both columns are nullable: the key is only enforced once an agency and actor are set.
+        ForeignKeyConstraint(
+            ["agency_id", "actor_user_id"],
+            ["users.agency_id", "users.id"],
+            name="fk_audit_events_agency_actor",
+            ondelete="RESTRICT",
+        ),
+        Index("ix_audit_events_agency_created_at", "agency_id", "created_at"),
+        Index("ix_audit_events_created_at", "created_at"),
+    )
+
+    id: Mapped[int] = mapped_column(BigIntType, primary_key=True)
+    agency_id: Mapped[int | None] = mapped_column(ForeignKey("agencies.id", ondelete="RESTRICT"))
+    actor_user_id: Mapped[int | None] = mapped_column(BigIntType)
+    event_type: Mapped[str] = mapped_column(String(64))
+    ip: Mapped[str | None] = mapped_column(String(45))
+    details: Mapped[dict[str, Any]] = mapped_column(JSONType, default=dict)
+    created_at: Mapped[datetime] = mapped_column(
+        UTCDateTime, default=_now, server_default=func.now()
+    )
+
+
+class RateLimitBucket(Base):
+    """Fixed-window counters shared by every instance. Not agency-scoped (keys hold no tenant)."""
+
+    __tablename__ = "rate_limit_buckets"
+    __table_args__ = (
+        CheckConstraint("count >= 0", name="count_nonneg"),
+        Index("ix_rate_limit_buckets_window_start", "window_start"),
+    )
+
+    key: Mapped[str] = mapped_column(String(200), primary_key=True)
+    window_start: Mapped[datetime] = mapped_column(UTCDateTime, primary_key=True)
+    count: Mapped[int] = mapped_column(Integer, default=0, server_default="0")

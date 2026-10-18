@@ -331,7 +331,9 @@ def test_migration_and_models_agree_on_checks(alembic_cfg: tuple[Config, str]) -
     names = {c["name"] for c in inspect(engine).get_check_constraints("tickets")}
     assert names == {"ck_tickets_price_status", "ck_tickets_pax_type"}
     assert {c["name"] for c in inspect(engine).get_check_constraints("uploads")} == {
-        "ck_uploads_ticket_count_nonneg"
+        "ck_uploads_ticket_count_nonneg",
+        "ck_uploads_inserted_count_nonneg",
+        "ck_uploads_updated_count_nonneg",
     }
     engine.dispose()
 

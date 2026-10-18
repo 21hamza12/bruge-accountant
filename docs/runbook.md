@@ -28,7 +28,8 @@ Set on the web service, **Environment** tab.
 
 | Variable | Value | Notes |
 |---|---|---|
-| `DATABASE_URL` | the **Internal** connection string of `bruge-db` | `sync: false`. Until PR 2 creates the `bruge_app` role, `DATABASE_URL` is the owner URL (same as `MIGRATION_DATABASE_URL`), so the web process runs with owner rights and row-level security does not protect anything yet. **No real agency data may be loaded before PR 2 and the switch to `bruge_app`** (PR 5, step 34). Never paste it into chat, tickets or the repo. |
+| `DATABASE_URL` | the **Internal** connection string of `bruge-db` | `sync: false`. Separate role: the `bruge_app` URL. Single-role mode: the owner URL (same as `MIGRATION_DATABASE_URL`); row-level security is then FORCEd but the web process holds owner rights (section 3 lists the residual risk). **No real agency data may be loaded before migration 0003 has run.** Never paste it into chat, tickets or the repo. |
+| `APP_DB_ROLE` | the app role name (e.g. `bruge_app`), or unset | Read only by migration 0003 (`init-db`), never by the web process. Set: grants that role its privileges and fails if the role is missing. Unset: single-role mode with a warning. Section 3. |
 | `SENTRY_DSN` | leave empty for now | `sync: false`. Sentry is wired in PR 5. |
 | `ALLOWED_HOSTS` | the real public host name(s), comma separated, e.g. `bruge-accountant.onrender.com` | `sync: false` in `render.yaml`, so the blueprint asks for it and a sync never resets it. If it is missing the app refuses to start; if it is wrong every request, health check included, is rejected with 400 and the deploy fails. No wildcards: production refuses `*` and `*.example.com`. |
 | `CORS_ALLOWED_ORIGINS` | leave unset | Same-origin app, so no CORS middleware is installed. Production refuses `*`. |
@@ -44,13 +45,29 @@ Health check host: Render's health checker may call `/healthz` with a Host heade
 public name. If the deploy keeps failing on the health check while `ALLOWED_HOSTS` is correct,
 record the Host it sends (section 4 shows how) and add it to `ALLOWED_HOSTS`.
 
-## 3. Can the default Render Postgres user `CREATE ROLE`?
+## 3. Database roles: separate app role, or single-role mode
 
-PR 2 needs a second, non-owner database role (`bruge_app`) so row-level security applies. This
-check decides whether that design works on Render. Use **Shell** on the web service (the database
-is not reachable from your laptop).
+Tenant isolation is row-level security (migration 0003), FORCEd so it binds the table owner too.
+It works in two modes; pick one with the check below. The application code is the same.
 
-- [ ] Open Render Shell on `bruge-accountant` and run:
+| | Separate role (preferred) | Single-role mode |
+|---|---|---|
+| Needs `CREATE ROLE` | yes | no |
+| `APP_DB_ROLE` | the role name, e.g. `bruge_app` | unset |
+| `DATABASE_URL` (web app) | the app role | the owner (same as `MIGRATION_DATABASE_URL`) |
+| `MIGRATION_DATABASE_URL` | the owner | the owner |
+| What the web process can do | only what 0003 granted: no DELETE on tickets or uploads, no CREATE, read-only agencies | everything the owner can |
+| Isolation between agencies | RLS, and the role cannot switch it off | RLS (FORCE), but the owner can switch it off |
+
+**Residual risk of single-role mode.** The owner can run `ALTER TABLE ... NO FORCE ROW LEVEL
+SECURITY` or `DISABLE ROW LEVEL SECURITY`. So an attacker who gets code execution on the server
+(and with it the owner credentials) defeats the isolation, and the owner can also DELETE tickets and
+change the schema. What FORCE RLS still contains: an SQL injection or an IDOR bug in the
+application, because those can only issue queries, not DDL, and every query sees one agency.
+Record in the Results table which mode is in use.
+
+- [ ] Find out whether the default Postgres user can `CREATE ROLE`. Open Render Shell on
+      `bruge-accountant` and run:
 
 ```bash
 python - <<'PY'
@@ -72,8 +89,55 @@ PY
 
   (`psycopg` accepts a plain `postgresql://` URL here. This prints no password.)
 
-- [ ] Record the output in Results. If it says FAILED, stop and tell the developer: PR 2 needs a
-      different plan (for example a Render-provided second user, or a different host).
+- [ ] Record the output in Results.
+
+### If CREATE ROLE works (separate role)
+
+Do this **before the release that runs migration 0003**: the migration only grants privileges to
+the role named by `APP_DB_ROLE` while it runs. A role created afterwards has no grants (there is
+no grant-only step yet; ask the developer).
+
+1. In Render Shell, create the role with a long random password (generate it, do not type one
+   you reuse; do not paste it anywhere but the environment variable):
+
+```bash
+python - <<'PY'
+import os, secrets
+import psycopg
+password = secrets.token_urlsafe(32)
+with psycopg.connect(os.environ["MIGRATION_DATABASE_URL"], autocommit=True) as conn:
+    conn.execute(f"CREATE ROLE bruge_app LOGIN NOSUPERUSER NOBYPASSRLS PASSWORD '{password}'")
+print("role created; build the app URL from the owner URL with user bruge_app and this password:")
+print(password)
+PY
+```
+
+2. Dashboard, web service environment: set `APP_DB_ROLE=bruge_app` and change `DATABASE_URL` to the
+   same internal URL with the user `bruge_app` and the new password. Keep `MIGRATION_DATABASE_URL`.
+3. Deploy. `preDeployCommand: python -m app init-db` runs 0003 as the owner and grants `bruge_app`
+   its privileges; the migration fails loudly if `APP_DB_ROLE` names a role that does not exist.
+4. Check: the deploy log shows no "single-role mode" warning, and `/healthz` is 200.
+
+### If CREATE ROLE is refused (single-role mode)
+
+Leave `APP_DB_ROLE` unset. `DATABASE_URL` stays the owner URL. The migration logs a warning
+("APP_DB_ROLE is not set: single-role mode"); that is expected. Isolation relies on FORCE RLS alone
+(residual risk above). Revisit if Render or another host offers a second role.
+
+### Creating the first agency and manager
+
+`add-agency` and `bootstrap-agency` insert into `agencies`, which the app role may not do, so run
+them with the owner connection, from Render Shell (the password is read from a prompt, asked
+twice; it is never an argument and never printed):
+
+```bash
+DATABASE_URL="$MIGRATION_DATABASE_URL" python -m app bootstrap-agency bruge-voyages "Bruge Voyages" \
+    --manager-phone "+222 12 34 56 78" --manager-name "Full Name"
+```
+
+It prints the new agency and user ids, nothing else. It refuses (exit code 2) when the slug or the
+phone number already exists. The manager does not have to change the password at first login (you
+chose it); pick a long one. `import` runs with the normal `DATABASE_URL`.
 
 ## 4. How does `X-Forwarded-For` arrive, and what is `TRUSTED_PROXY_HOPS`?
 
@@ -149,6 +213,7 @@ Fill in as you go. Leave "not done" until you have really checked it.
 | Postgres major version used | | not done | |
 | First deploy healthy (`/healthz` 200) | | not done | |
 | Default Postgres user can `CREATE ROLE` | | not done | paste the Shell output |
+| Mode in use: separate role or single-role | | not done | section 3 |
 | `X-Forwarded-For` format and rightmost hop | | not done | |
 | `TRUSTED_PROXY_HOPS` confirmed value | | not done | |
 | `X-Forwarded-Proto` value | | not done | |

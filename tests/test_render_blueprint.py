@@ -198,10 +198,14 @@ def test_render_yaml_does_not_claim_the_owner_url_is_confined_to_pre_deploy() ->
 
 def test_runbook_documents_the_owner_url_and_the_no_real_data_rule() -> None:
     runbook = " ".join((ROOT / "docs" / "runbook.md").read_text(encoding="utf-8").split())
-    assert "until pr 2 creates the `bruge_app` role" in runbook.lower()
-    assert "`DATABASE_URL` is the owner URL" in runbook
-    assert "no real agency data" in runbook.lower()
-    assert "decision 2" in runbook.lower()
+    lowered = runbook.lower()
+    # Since migration 0003 the owner URL is only the web URL in single-role mode, and the
+    # runbook must say what that costs.
+    assert "single-role mode: the owner url" in lowered
+    assert "force row level security" in lowered
+    assert "residual risk of single-role mode" in lowered
+    assert "no real agency data" in lowered
+    assert "decision 2" in lowered
 
 
 def test_only_the_cli_reads_the_owner_url() -> None:

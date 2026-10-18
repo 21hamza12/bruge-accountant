@@ -23,11 +23,25 @@ User decisions: host on **Render** (Frankfurt, Docker web service plus managed P
      `X-CSRF-Token` header).
    - The login form uses a double-submit cookie.
    - Origin/Referer are checked against the allowlist.
-4. **Row-level security** on every agency-scoped table:
-   - Policy `agency_id = app_current_agency_id()`, set per transaction with
-     `set_config('app.agency_id', …, true)`. An unset tenant means zero rows (fails closed).
-   - Login and session lookups use narrow SELECT policies keyed on an exact phone or token hash.
-   - Migrations run as the owner role; the app connects as a non-owner role without BYPASSRLS.
+4. **Row-level security** on every agency-scoped table (migration 0003, built in PR 2):
+   - ENABLE **and FORCE** row-level security, so the policies also bind the table owner.
+   - Policy `agency_id = app_current_agency_id()` (`id = …` on `agencies`), set per transaction
+     with `set_config('app.agency_id', …, true)`. An unset tenant means zero rows (fails closed).
+   - Login, session and CLI lookups use narrow SELECT policies keyed on an exact phone, token
+     hash or agency slug. `audit_events` is append-only; a row with no agency (failed login for
+     an unknown phone) can be inserted by anyone and is never readable.
+   - No admin bypass setting exists: even the CLI binds a tenant (a new agency gets its id from
+     the sequence first, and is bound to it before the INSERT).
+   - **Two deployment modes, same isolation code:**
+     - *Separate role* (preferred): migrations and admin commands run as the owner
+       (`MIGRATION_DATABASE_URL`); the web app connects as a non-owner role without BYPASSRLS
+       (`DATABASE_URL`). Migration 0003 grants that role (named by `APP_DB_ROLE`) only what it
+       needs: no DELETE on tickets or uploads, no CREATE, read-only `agencies`.
+     - *Single role* (when the host cannot `CREATE ROLE`): `APP_DB_ROLE` is unset, nothing is
+       granted, and the app connects as the owner. FORCE RLS still isolates tenants. Residual
+       risk: the owner can run `ALTER TABLE … NO FORCE ROW LEVEL SECURITY` or `DISABLE`, so an
+       attacker with code execution on the server defeats it, and the owner keeps DELETE and DDL
+       rights. SQL injection and IDOR bugs in the application remain contained.
 5. **Tenant binding** lives in the SQLAlchemy session (an `after_begin` listener re-applies it in
    every transaction). It does nothing on SQLite.
 6. **Status codes:** another agency's record returns 404; a role violation in your own agency
@@ -122,7 +136,9 @@ User decisions: host on **Render** (Frankfurt, Docker web service plus managed P
 32. Sentry with scrubbing (no cookies, headers, bodies or passenger names).
 33. Alert rules (Sentry, uptime, Render deploy failures), each triggered once and recorded.
 34. Production cutover:
-    - Create the `bruge_app` role in Render Shell and point `DATABASE_URL` at it.
+    - If `CREATE ROLE` works: create the `bruge_app` role in Render Shell *before* the release that
+      runs migration 0003, set `APP_DB_ROLE` and point `DATABASE_URL` at it. Otherwise stay in
+      single-role mode (runbook section 3).
     - Run `bootstrap-agency`, then smoke-test.
 35. Rollback drill (N+1 → N → N+1) with expand-only migrations, plus production `EXPLAIN ANALYZE`.
     - Recorded in `docs/release-checklist-phase2.md`.
@@ -147,7 +163,11 @@ User decisions: host on **Render** (Frankfurt, Docker web service plus managed P
 1. Phone numbers unique across the whole platform, so login is phone plus password with no agency
    field.
 2. The owner DB URL sits in the web service environment so `preDeployCommand` can migrate.
-   Accepted for the pilot and documented.
+   Accepted for the pilot and documented. With a separate app role, `DATABASE_URL` is the app
+   role and `MIGRATION_DATABASE_URL` the owner, which only `init-db` and the admin CLI read (the
+   admin commands `add-agency` and `bootstrap-agency` need it: run them with
+   `DATABASE_URL="$MIGRATION_DATABASE_URL"`). In single-role mode both URLs are the owner, so the
+   web process holds owner rights and relies on FORCE RLS alone (see decision 4).
 3. Postgres version: the newest Render offers in Frankfurt, with CI set to match; avoid
    PG18-only features.
 4. UI source language: **French** (Arabic RTL later).
@@ -159,7 +179,10 @@ User decisions: host on **Render** (Frankfurt, Docker web service plus managed P
 10. Alerts by email; the onrender.com address is fine for the pilot.
 
 ## Risks
-- Render Postgres may not allow `CREATE ROLE` (checked in step 8, before PR 2).
+- Render Postgres may not allow `CREATE ROLE` (checked in step 8). PR 2 no longer depends on it:
+  without a second role the app runs in single-role mode with FORCE RLS (decision 4).
+- A role created after migration 0003 has run gets no grants (the migration only grants when
+  `APP_DB_ROLE` is set while it runs). Create the role first, or add a grant-only step.
 - The memory cap needs tuning on the 512 MB instance.
 - X-Forwarded-For spoofing (use the rightmost-hop IP and also limit per phone).
 - htmx versus a strict CSP.

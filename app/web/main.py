@@ -12,7 +12,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy import select
 from sqlalchemy.exc import SQLAlchemyError
@@ -30,6 +30,7 @@ from app.web.security import add_security_middleware
 from app.web.templating import TEMPLATES_DIR, render
 
 log = logging.getLogger("app.web")
+SERVICE_WORKER = TEMPLATES_DIR.parent / "sw.js"
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -59,6 +60,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     add_security_middleware(app, settings)
     app.add_middleware(RequestLogMiddleware)
     app.mount("/static", StaticFiles(directory=TEMPLATES_DIR.parent / "static"), name="static")
+
+    @app.get("/sw.js", include_in_schema=False)
+    def service_worker() -> FileResponse:
+        # no-cache: browsers must revalidate the worker script on every load so updates ship.
+        return FileResponse(
+            SERVICE_WORKER,
+            media_type="text/javascript",
+            headers={"Cache-Control": "no-cache", "Service-Worker-Allowed": "/"},
+        )
 
     @app.get("/offline", include_in_schema=False)
     def offline() -> HTMLResponse:

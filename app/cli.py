@@ -10,7 +10,6 @@ name already taken, a role that may not be used), 130 interrupted at the passwor
 import argparse
 import dataclasses
 import getpass
-import hashlib
 import json
 import re
 import sqlite3
@@ -34,7 +33,9 @@ from app.auth.ratelimit import purge_expired_windows
 from app.auth.temp_passwords import TEMP_PASSWORD_TTL
 from app.clock import utc_now
 from app.db import default_database_url, make_engine, make_session_factory
-from app.parsing.amadeus import MAX_FILE_BYTES, ParseError, parse_report
+from app.formatting import money
+from app.ingest import ingest_report
+from app.parsing.amadeus import MAX_FILE_BYTES, ParseError
 from app.questions import build_questions
 from app.repository import (
     AlreadyExistsError,
@@ -42,7 +43,6 @@ from app.repository import (
     bootstrap_agency,
     create_agency,
     get_agency_by_slug,
-    import_report,
     purge_expired,
     reset_user_password,
     tickets_awaiting_price,
@@ -168,16 +168,9 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _money(value: Decimal) -> str:
-    """Stable text form: whole amounts without decimals ("746423"), otherwise 2 ("1234.50")."""
-    if value == value.to_integral_value():
-        return format(value.quantize(Decimal(1)), "f")
-    return format(value.quantize(Decimal("0.01")), "f")
-
-
 def _json_default(value: object) -> Any:
     if isinstance(value, Decimal):
-        return _money(value)
+        return money(value)
     if isinstance(value, date):
         return value.isoformat()
     raise TypeError(f"cannot serialise {type(value).__name__}")
@@ -428,15 +421,10 @@ def _import(url: str, file: Path, slug: str, override: date | None) -> int:
             except OSError as exc:
                 return _fail(f"cannot read {file}: {exc.strerror or exc}", EXIT_FAILURE)
             bind_tenant(session, agency.id)  # row-level security: everything below is this agency
-            parsed = parse_report(data)
-            if override is not None:
-                parsed = dataclasses.replace(
-                    parsed, header=dataclasses.replace(parsed.header, report_date=override)
-                )
-            result = import_report(
-                session, agency.id, parsed, file.name, hashlib.sha256(data).hexdigest()
+            result = ingest_report(
+                session, agency.id, data, file.name, report_date_override=override
             )
-            report_date = parsed.header.report_date
+            report_date = result.report_date
             staff = build_questions(tickets_awaiting_price(session, agency.id, report_date))
             _emit(
                 {
@@ -445,7 +433,7 @@ def _import(url: str, file: Path, slug: str, override: date | None) -> int:
                     "upload_id": result.upload_id,
                     "inserted": result.inserted,
                     "updated": result.updated,
-                    "warnings": list(parsed.warnings),
+                    "warnings": list(result.warnings),
                     "staff": [dataclasses.asdict(s) for s in staff],
                 }
             )

@@ -11,6 +11,7 @@ import pytest
 from sqlalchemy.exc import DBAPIError, IntegrityError, OperationalError
 
 import app.cli
+import app.ingest
 from app.cli import main
 from tests.builders import build_workbook, ticket_row
 
@@ -358,7 +359,7 @@ def test_database_errors_during_import_are_clean(
     def boom(*args: object, **kwargs: object) -> None:
         raise exc
 
-    monkeypatch.setattr(app.cli, "import_report", boom)
+    monkeypatch.setattr(app.ingest, "import_report", boom)
     code = main(["import", str(fixture_path), "--agency", "bruge-voyages", "--db", ready_db])
     captured = capsys.readouterr()
     assert code == 1

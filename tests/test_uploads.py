@@ -283,42 +283,7 @@ def test_a_user_who_must_change_the_password_cannot_upload(env: Env) -> None:
     assert response.headers["location"] == "/password/change"
 
 
-# --- rate limit ---------------------------------------------------------------------------------
-
-
-def test_the_thirty_first_upload_in_an_hour_is_a_429(env: Env) -> None:
-    with env.manager_a() as c:
-        token = csrf_for(c, "/uploads/new")
-        statuses = [env.upload(c, token=token).status_code for _ in range(31)]
-        limited = env.upload(c, token=token)
-    assert statuses == [303] * 30 + [429]
-    assert limited.status_code == 429
-    assert int(limited.headers["retry-after"]) > 0
-    assert env.counts(env.seeded.agency_a)[1] == 30
-    assert len(audit_events(env.db.owner_url, env.seeded.agency_a, "rate_limited")) == 1
-    # another agency has its own budget
-    with env.manager_b() as b:
-        assert env.upload(b).status_code == 303
-
-
-def test_the_limit_is_per_agency_not_per_user(env: Env) -> None:
-    with env.manager_a() as m, env.staff_a() as s:
-        mt, st = csrf_for(m, "/uploads/new"), csrf_for(s, "/uploads/new")
-        codes = [
-            env.upload(m if i % 2 else s, token=mt if i % 2 else st).status_code for i in range(31)
-        ]
-    assert codes[-1] == 429
-    assert codes.count(303) == 30
-
-
-def test_the_window_ends_after_an_hour(env: Env) -> None:
-    with env.manager_a() as c:
-        token = csrf_for(c, "/uploads/new")
-        for _ in range(31):
-            env.upload(c, token=token)
-        env.clock.advance(hours=1, seconds=1)
-        # (the session is still valid: 12 h idle)
-        assert env.upload(c, token=csrf_for(c, "/uploads/new")).status_code == 303
+# --- rate limit: see tests/test_upload_gates.py ----------------------------------------------
 
 
 # --- errors -------------------------------------------------------------------------------------

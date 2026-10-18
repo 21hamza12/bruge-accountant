@@ -36,6 +36,7 @@ from app.repository import (
     latest_report_date,
     recent_uploads,
     tickets_awaiting_price,
+    upload_ticket_dates,
 )
 from app.settings import Settings
 from app.tenancy import bind_tenant, lookup_scope, rebind_tenant
@@ -259,6 +260,27 @@ def hot_queries(w: World) -> list[Hot]:
             AGENCY_UPLOAD_INDEXES,
         ),
         Hot(
+            "recent uploads of one user (staff view)",
+            Scope(agency_id=a),
+            lambda s: recent_uploads(s, a, 50, uploaded_by=w.seeded.staff_a),
+            "FROM uploads",
+            AGENCY_UPLOAD_INDEXES,
+        ),
+        Hot(
+            "upload by id for its owner (staff view)",
+            Scope(agency_id=a),
+            lambda s: get_upload(s, a, w.upload_a, uploaded_by=w.seeded.manager_a),
+            "FROM uploads",
+            frozenset({"uq_uploads_agency_id_id", "pk_uploads"}),
+        ),
+        Hot(
+            "days of the tickets of one upload",
+            Scope(agency_id=a),
+            lambda s: upload_ticket_dates(s, a, w.upload_a),
+            "FROM tickets",
+            frozenset({"ix_tickets_agency_last_upload"}),
+        ),
+        Hot(
             "links by agency",
             Scope(agency_id=a),
             lambda s: sign_links_by_agency(s, a),
@@ -285,7 +307,7 @@ def hot_queries(w: World) -> list[Hot]:
             lambda s: get_upload(s, a, w.upload_a),
             "FROM uploads",
             # The primary key is as good a unique lookup as the (agency_id, id) constraint.
-            frozenset({"uq_uploads_agency_id_id", "uploads_pkey"}),
+            frozenset({"uq_uploads_agency_id_id", "pk_uploads"}),
         ),
     ]
 

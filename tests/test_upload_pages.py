@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from datetime import date
 from pathlib import Path
 
 import httpx
@@ -23,6 +24,7 @@ from tests.web_support import (
     FakeClock,
     Seeded,
     WebDb,
+    add_user,
     csrf_for,
     login,
     make_client,
@@ -99,15 +101,141 @@ def test_a_reupload_shows_zero_inserted_and_48_updated(env: Env) -> None:
     assert re.search(r"Mis à jour\s*:\s*<strong>48</strong>", page.text)
 
 
-def test_staff_can_open_an_upload_of_their_agency(env: Env) -> None:
+# --- staff see only their own uploads, and never the warnings -----------------------------------
+
+PHONE_STAFF_2 = "+22212345611"
+OTHER_PASSENGER = "ZEBRA/QUENTIN"
+
+
+def _leaky_workbook() -> bytes:
+    """A report whose warnings quote another sign's passenger (the reviewer's repro)."""
+    rows = [
+        ticket_row(doc="3940000011", name=f"{OTHER_PASSENGER} (INFX)", staff="0009ER"),
+        ticket_row(doc="BAD-LEAK-77", name="DOE/JANE", staff="0009ER"),
+        ticket_row(doc="3940000013", name="DOE/JOHN", staff="0004SV"),
+    ]
+    return build_workbook(rows)
+
+
+def test_staff_cannot_open_a_managers_upload_or_see_its_warnings(env: Env) -> None:
     with env.as_user(PHONE_A, PASSWORD_A) as m:
-        location = env.upload(m).headers["location"]
+        location = env.upload(m, _leaky_workbook()).headers["location"]
+        manager_page = m.get(location)
+    assert OTHER_PASSENGER in manager_page.text  # the manager sees the warning
+    assert "BAD-LEAK-77" in manager_page.text
     with env.as_user(PHONE_STAFF_A, PASSWORD_S) as s:
         page = s.get(location)
         listing = s.get("/uploads")
+    assert page.status_code == 404
+    assert OTHER_PASSENGER not in page.text + listing.text
+    assert "BAD-LEAK-77" not in page.text + listing.text
+    assert location not in listing.text
+    assert "Aucun rapport" in listing.text
+
+
+def test_a_colleagues_upload_is_a_404_identical_to_a_missing_one(env: Env) -> None:
+    add_user(env.db.owner_url, env.seeded.agency_a, PHONE_STAFF_2, password=PASSWORD_S)
+    with env.as_user(PHONE_STAFF_2, PASSWORD_S) as other:
+        location = env.upload(other, _leaky_workbook()).headers["location"]
+    with env.as_user(PHONE_STAFF_A, PASSWORD_S) as s:
+        colleague = s.get(location)
+        missing = s.get("/uploads/987654")
+        listing = s.get("/uploads")
+
+    def shape(r: httpx.Response) -> str:
+        return re.sub(r"<code>[0-9A-F]{8}</code>|data-[a-z-]+='[^']*'", "", r.text)
+
+    assert colleague.status_code == missing.status_code == 404
+    assert shape(colleague) == shape(missing)
+    assert location not in listing.text
+
+
+def test_staff_see_their_own_upload_with_counts_and_date_but_no_warnings(env: Env) -> None:
+    with env.as_user(PHONE_STAFF_A, PASSWORD_S) as s:
+        location = env.upload(s, _leaky_workbook()).headers["location"]
+        page = s.get(location)
+        listing = s.get("/uploads")
     assert page.status_code == 200
-    assert "Manager A" in page.text
+    text = page.text
+    assert "2026-10-01" in text
+    assert re.search(r"Ajoutés\s*:\s*<strong>2</strong>", text)
+    assert "Staff A" in text
+    assert 'href="/questions?date=2026-10-01"' in text
+    assert OTHER_PASSENGER not in text
+    assert "BAD-LEAK-77" not in text
+    assert "Avertissements" not in text
+    assert '<li class="warning">' not in text
     assert location in listing.text
+    assert OTHER_PASSENGER not in listing.text
+
+
+def test_the_list_holds_only_the_staff_members_own_uploads(env: Env) -> None:
+    add_user(env.db.owner_url, env.seeded.agency_a, PHONE_STAFF_2, password=PASSWORD_S)
+    with env.as_user(PHONE_A, PASSWORD_A) as m:
+        mine_m = env.upload(m).headers["location"]
+    with env.as_user(PHONE_STAFF_2, PASSWORD_S) as other:
+        mine_2 = env.upload(other, _leaky_workbook()).headers["location"]
+    with env.as_user(PHONE_STAFF_A, PASSWORD_S) as s:
+        mine_s = env.upload(s, build_workbook([ticket_row(doc="3940000099")])).headers["location"]
+        listing = s.get("/uploads").text
+    assert mine_s in listing
+    assert mine_m not in listing
+    assert mine_2 not in listing
+
+
+def test_the_manager_sees_every_upload_and_every_warning(env: Env) -> None:
+    add_user(env.db.owner_url, env.seeded.agency_a, PHONE_STAFF_2, password=PASSWORD_S)
+    with env.as_user(PHONE_STAFF_2, PASSWORD_S) as other:
+        theirs = env.upload(other, _leaky_workbook()).headers["location"]
+    with env.as_user(PHONE_STAFF_A, PASSWORD_S) as s:
+        also = env.upload(s).headers["location"]
+    with env.as_user(PHONE_A, PASSWORD_A) as m:
+        listing = m.get("/uploads").text
+        page = m.get(theirs)
+    assert theirs in listing
+    assert also in listing
+    assert page.status_code == 200
+    assert OTHER_PASSENGER in page.text
+    assert "Avertissements" in page.text
+
+
+def test_imported_uploads_without_an_uploader_are_the_managers_only(env: Env) -> None:
+    with owner_session(env.db.owner_url) as s:
+        upload_id = ingest_report(
+            s, env.seeded.agency_a, FIXTURE.read_bytes(), "cli.xlsx"
+        ).upload_id
+    with env.as_user(PHONE_STAFF_A, PASSWORD_S) as staff:
+        assert staff.get(f"/uploads/{upload_id}").status_code == 404
+        assert f"/uploads/{upload_id}" not in staff.get("/uploads").text
+    with env.as_user(PHONE_A, PASSWORD_A) as m:
+        assert m.get(f"/uploads/{upload_id}").status_code == 200
+
+
+# --- a re-upload under another date --------------------------------------------------------------
+
+
+def test_the_result_page_shows_the_days_the_tickets_belong_to_and_warns_on_a_mismatch(
+    env: Env,
+) -> None:
+    with env.as_user(PHONE_A, PASSWORD_A) as m:
+        first = env.upload(m).headers["location"]
+        with owner_session(env.db.owner_url) as s:
+            second_id = ingest_report(
+                s,
+                env.seeded.agency_a,
+                FIXTURE.read_bytes(),
+                "again.xlsx",
+                report_date_override=date(2026, 10, 5),
+                uploaded_by=env.seeded.manager_a,
+            ).upload_id
+        page = m.get(f"/uploads/{second_id}")
+        plain = m.get(first)
+    text = page.text
+    assert "2026-10-05" in text  # the upload's own date
+    assert 'href="/questions?date=2026-10-01"' in text  # where the tickets really are
+    assert re.search(r"2026-10-01</a> : 48 billets", text)
+    assert "gardent leur jour d'origine" in text
+    assert "gardent leur jour d'origine" not in plain.text  # no warning when the days agree
 
 
 def test_another_agencys_upload_is_a_404_not_a_403(env: Env) -> None:

@@ -402,3 +402,24 @@ def test_db_option_documented_as_credential_risk(capsys: pytest.CaptureFixture[s
     out = capsys.readouterr().out
     assert "DATABASE_URL" in out
     assert "history" in out
+
+
+def test_import_reports_the_days_the_tickets_belong_to(
+    ready_db: str, fixture_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    out = run_import(capsys, fixture_path, ready_db)
+    assert out["ticket_dates"] == {"2026-10-01": 48}
+    assert out["date_warning"] is None
+
+
+def test_reimport_under_another_date_shows_the_real_day_and_warns(
+    ready_db: str, fixture_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    run_import(capsys, fixture_path, ready_db)
+    out = run_import(capsys, fixture_path, ready_db, "--date", "2026-10-05")
+    assert out["report_date"] == "2026-10-05"  # what the upload says
+    assert out["ticket_dates"] == {"2026-10-01": 48}  # where the tickets really are
+    assert (out["inserted"], out["updated"]) == (0, 48)
+    assert "keep their original day" in out["date_warning"]
+    assert "2026-10-01" in out["date_warning"]
+    assert sum(s["ticket_count"] for s in out["staff"]) == 48  # questions of the real day, not none

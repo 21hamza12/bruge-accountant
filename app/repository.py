@@ -382,21 +382,48 @@ def tickets_awaiting_price(session: Session, agency_id: int, report_date: date) 
     return list(session.scalars(stmt))
 
 
-def get_upload(session: Session, agency_id: int, upload_id: int) -> Upload | None:
-    """One upload of this agency; another agency's id is None, like a missing one."""
+def get_upload(
+    session: Session, agency_id: int, upload_id: int, uploaded_by: int | None = None
+) -> Upload | None:
+    """One upload of this agency; another agency's id is None, like a missing one.
+
+    With ``uploaded_by`` only an upload made by that user is found (what staff may open): a
+    colleague's upload is None too.
+    """
     bind_tenant(session, agency_id)
-    return session.scalars(
-        select(Upload).where(Upload.agency_id == agency_id, Upload.id == upload_id)
-    ).one_or_none()
+    stmt = select(Upload).where(Upload.agency_id == agency_id, Upload.id == upload_id)
+    if uploaded_by is not None:
+        stmt = stmt.where(Upload.uploaded_by_user_id == uploaded_by)
+    return session.scalars(stmt).one_or_none()
 
 
-def recent_uploads(session: Session, agency_id: int, limit: int = 50) -> list[Upload]:
-    """The agency's newest uploads first (``ORDER BY id DESC``)."""
+def recent_uploads(
+    session: Session, agency_id: int, limit: int = 50, uploaded_by: int | None = None
+) -> list[Upload]:
+    """The agency's newest uploads first (``ORDER BY id DESC``); only one user's with
+    ``uploaded_by``."""
     bind_tenant(session, agency_id)
-    stmt = (
-        select(Upload).where(Upload.agency_id == agency_id).order_by(Upload.id.desc()).limit(limit)
+    stmt = select(Upload).where(Upload.agency_id == agency_id)
+    if uploaded_by is not None:
+        stmt = stmt.where(Upload.uploaded_by_user_id == uploaded_by)
+    return list(session.scalars(stmt.order_by(Upload.id.desc()).limit(limit)))
+
+
+def upload_ticket_dates(session: Session, agency_id: int, upload_id: int) -> list[tuple[date, int]]:
+    """The report days of the tickets this upload last wrote, with how many tickets each holds.
+
+    A ticket that already existed keeps the day it was first stored on, so after a re-upload with
+    another date this can differ from the upload's own ``report_date``. (A later upload of the
+    same tickets takes them over: this is "as of now", not a history.)
+    """
+    bind_tenant(session, agency_id)
+    rows = session.execute(
+        select(Ticket.report_date, func.count())
+        .where(Ticket.agency_id == agency_id, Ticket.last_upload_id == upload_id)
+        .group_by(Ticket.report_date)
+        .order_by(Ticket.report_date)
     )
-    return list(session.scalars(stmt))
+    return [(row[0], int(row[1])) for row in rows]
 
 
 def user_names(session: Session, agency_id: int, user_ids: Sequence[int | None]) -> dict[int, str]:

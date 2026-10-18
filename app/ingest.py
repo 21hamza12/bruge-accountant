@@ -21,7 +21,7 @@ from datetime import date
 from sqlalchemy.orm import Session
 
 from app.parsing.amadeus import MAX_FILE_BYTES, ParsedReport, ParseError, parse_report
-from app.repository import import_report
+from app.repository import import_report, upload_ticket_dates
 
 ZIP_MAGIC = b"PK\x03\x04"
 FALLBACK_FILENAME = "upload.xlsx"
@@ -59,6 +59,14 @@ class IngestResult:
     warnings: tuple[str, ...]
     filename: str  # as stored (sanitized)
     sha256: str
+    # The days the tickets of this upload actually belong to, with their counts. Tickets that were
+    # already stored keep their original day, so this can differ from ``report_date``.
+    ticket_dates: tuple[tuple[date, int], ...] = ()
+
+    @property
+    def dates_differ(self) -> bool:
+        """Some ticket of this upload belongs to a day other than ``report_date``."""
+        return any(day != self.report_date for day, _ in self.ticket_dates)
 
 
 def sanitize_filename(raw: str | None) -> str:
@@ -116,6 +124,7 @@ def ingest_report(
     stored_name = sanitize_filename(filename)
     sha256 = hashlib.sha256(data).hexdigest()
     result = import_report(session, agency_id, parsed, stored_name, sha256, uploaded_by)
+    ticket_dates = tuple(upload_ticket_dates(session, agency_id, result.upload_id))
     return IngestResult(
         upload_id=result.upload_id,
         inserted=result.inserted,
@@ -124,4 +133,5 @@ def ingest_report(
         warnings=parsed.warnings,
         filename=stored_name,
         sha256=sha256,
+        ticket_dates=ticket_dates,
     )

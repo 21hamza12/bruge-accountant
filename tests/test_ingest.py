@@ -219,3 +219,19 @@ def test_the_result_is_immutable() -> None:
     result = IngestResult(1, 2, 3, date(2026, 10, 1), (), "a.xlsx", "0" * 64)
     with pytest.raises(dataclasses.FrozenInstanceError):
         result.inserted = 5  # type: ignore[misc]
+
+
+def test_ingest_reports_the_days_the_tickets_belong_to(web_db: WebDb) -> None:
+    seeded: Seeded = seed(web_db.owner_url)
+    data = FIXTURE.read_bytes()
+    with owner_session(web_db.owner_url) as s:
+        first = ingest_report(s, seeded.agency_a, data, "1OCT.xlsx")
+        again = ingest_report(
+            s, seeded.agency_a, data, "1OCT.xlsx", report_date_override=date(2026, 10, 5)
+        )
+    assert first.ticket_dates == ((date(2026, 10, 1), 48),)
+    assert not first.dates_differ
+    # the re-upload says 5 October, but the 48 tickets already existed and keep 1 October
+    assert again.report_date == date(2026, 10, 5)
+    assert again.ticket_dates == ((date(2026, 10, 1), 48),)
+    assert again.dates_differ

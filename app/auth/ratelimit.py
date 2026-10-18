@@ -52,8 +52,10 @@ class Limit:
 LOGIN_PHONE = Limit("login_phone", 5, 15 * 60)
 # A coarse flood guard, not a precision tool: a whole office shares one NAT address.
 LOGIN_IP = Limit("login_ip", 100, 15 * 60)
-# Defined now, used by the upload route (PR 4).
+# Uploads: 30 an hour for the whole agency, and 10 an hour for each user, so one staff member
+# cannot use up the agency's budget.
 UPLOAD_AGENCY = Limit("upload_agency", 30, 3600)
+UPLOAD_USER = Limit("upload_user", 10, 3600)
 # Guesses at the current password of a logged-in account (stolen-session brute force).
 PASSWORD_CHANGE_USER = Limit("password_change_user", 5, 15 * 60)
 

@@ -71,7 +71,7 @@ def questions_page(
         "my_signs": [],
     }
     if chosen is None:
-        return page("questions.html", **context)
+        return page("questions.html", headers={"Cache-Control": "no-store"}, **context)
 
     groups = build_questions(tickets_awaiting_price(db, agency_id, chosen))
     my_signs = [link.staff_sign for link in accounts.get_signs(db, agency_id, user.id)]

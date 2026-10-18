@@ -321,3 +321,10 @@ def test_hostile_names_and_signs_are_escaped(env: Env) -> None:
     assert "<img" not in text
     assert "&lt;script&gt;alert(1)&lt;/script&gt;" in text
     assert not re.findall(r"<script(?![^>]*src=)", text)
+
+
+def test_the_empty_state_is_not_cached(env: Env) -> None:
+    with env.manager_a() as c:
+        response = c.get("/questions")
+    assert "Aucun rapport" in response.text
+    assert response.headers["cache-control"] == "no-store"

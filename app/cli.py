@@ -35,7 +35,7 @@ from app.clock import utc_now
 from app.db import default_database_url, make_engine, make_session_factory
 from app.demo import ALL_PHONES, seed_demo
 from app.formatting import money
-from app.ingest import check_bytes, ingest_report, sanitize_filename
+from app.ingest import IngestResult, check_bytes, ingest_report, sanitize_filename
 from app.parsing.amadeus import MAX_FILE_BYTES, ParseError, parse_report
 from app.questions import build_questions
 from app.repository import (
@@ -477,6 +477,17 @@ def _password_argument_error(argv: Sequence[str]) -> str | None:
     return None
 
 
+def _date_warning(result: IngestResult) -> str | None:
+    """A sentence when some tickets of this import belong to a day other than ``report_date``."""
+    if not result.dates_differ:
+        return None
+    days = ", ".join(f"{day.isoformat()} ({count})" for day, count in result.ticket_dates)
+    return (
+        f"the report date is {result.report_date.isoformat()}, but tickets that already existed "
+        f"keep their original day: the tickets of this import belong to {days}"
+    )
+
+
 def _import(url: str, file: Path, slug: str, override: date | None) -> int:
     engine = make_engine(url)
     try:
@@ -497,11 +508,20 @@ def _import(url: str, file: Path, slug: str, override: date | None) -> int:
                 session, agency.id, data, file.name, report_date_override=override
             )
             report_date = result.report_date
-            staff = build_questions(tickets_awaiting_price(session, agency.id, report_date))
+            # Tickets that already existed keep the day they were first stored on, so the
+            # questions are those of the days the tickets really belong to (normally just
+            # ``report_date``).
+            days = [day for day, _count in result.ticket_dates] or [report_date]
+            awaiting = [
+                ticket for day in days for ticket in tickets_awaiting_price(session, agency.id, day)
+            ]
+            staff = build_questions(awaiting)
             _emit(
                 {
                     "agency": agency.slug,
                     "report_date": report_date,
+                    "ticket_dates": {day.isoformat(): count for day, count in result.ticket_dates},
+                    "date_warning": _date_warning(result),
                     "upload_id": result.upload_id,
                     "inserted": result.inserted,
                     "updated": result.updated,

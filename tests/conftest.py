@@ -6,12 +6,16 @@ from pathlib import Path
 
 import pytest
 from alembic.config import Config
+from fastapi.testclient import TestClient
+from pydantic import SecretStr
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import make_url
 from sqlalchemy.orm import Session
 
 from app.db import Base, make_engine, make_session_factory
 from app.parsing.amadeus import ParsedReport, parse_report
+from app.settings import Settings
+from app.web.main import create_app
 
 FIXTURE = Path(__file__).parent / "fixtures" / "1OCT.xlsx"
 SHA = "a" * 64
@@ -85,3 +89,18 @@ def alembic_cfg(db_url: str, monkeypatch: pytest.MonkeyPatch) -> tuple[Config, s
     cfg = Config(str(ROOT / "alembic.ini"))
     cfg.set_main_option("script_location", str(ROOT / "migrations"))
     return cfg, db_url
+
+
+@pytest.fixture
+def web_settings(db_url: str, monkeypatch: pytest.MonkeyPatch) -> Settings:
+    """Development settings pointing at this test's database, with a clean environment."""
+    for name in ("ENV", "ALLOWED_HOSTS", "CORS_ALLOWED_ORIGINS", "COOKIE_SECURE"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.delenv("RENDER_GIT_COMMIT", raising=False)
+    return Settings(database_url=SecretStr(db_url))
+
+
+@pytest.fixture
+def client(web_settings: Settings) -> Iterator[TestClient]:
+    with TestClient(create_app(web_settings), base_url="https://testserver") as c:
+        yield c

@@ -103,7 +103,8 @@ def test_method_not_allowed_is_a_custom_page(err_client: TestClient) -> None:
     resp = err_client.post("/healthz")
     assert resp.status_code == 405
     assert "Requête invalide" in resp.text
-    assert resp.headers["allow"] == "GET, HEAD"
+    # Starlette builds the header from a set, so its order depends on the hash seed.
+    assert {m.strip() for m in resp.headers["allow"].split(",")} == {"GET", "HEAD"}
     assert_clean(resp.text, {k: v for k, v in resp.headers.items() if k != "allow"})
 
 

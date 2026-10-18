@@ -16,6 +16,7 @@ from app.models import (
     ROLE_MANAGER,
     Agency,
     AuditEvent,
+    StaffSignLink,
     TemporaryPassword,
     Ticket,
     Upload,
@@ -416,6 +417,32 @@ def latest_report_date(session: Session, agency_id: int) -> date | None:
     """The newest report date that has tickets (None when the agency has none)."""
     bind_tenant(session, agency_id)
     return session.scalar(select(func.max(Ticket.report_date)).where(Ticket.agency_id == agency_id))
+
+
+def recent_report_dates(session: Session, agency_id: int, limit: int = 14) -> list[date]:
+    """The newest report dates that have tickets, latest first."""
+    bind_tenant(session, agency_id)
+    stmt = (
+        select(Ticket.report_date)
+        .where(Ticket.agency_id == agency_id)
+        .distinct()
+        .order_by(Ticket.report_date.desc())
+        .limit(limit)
+    )
+    return list(session.scalars(stmt))
+
+
+def sign_owners(session: Session, agency_id: int) -> dict[str, str]:
+    """Which person each linked staff sign belongs to (display name, else phone)."""
+    bind_tenant(session, agency_id)
+    rows = session.execute(
+        select(StaffSignLink.staff_sign, User.display_name, User.phone)
+        .join(
+            User, (User.agency_id == StaffSignLink.agency_id) & (User.id == StaffSignLink.user_id)
+        )
+        .where(StaffSignLink.agency_id == agency_id)
+    )
+    return {row.staff_sign: row.display_name or row.phone for row in rows}
 
 
 # --- purging expired rows ----------------------------------------------------------------------

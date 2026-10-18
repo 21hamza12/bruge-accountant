@@ -424,13 +424,13 @@ def test_a_busy_sandbox_is_the_503_page_with_retry_after(env: Env) -> None:
 
 
 def test_a_real_concurrent_parse_makes_the_second_upload_busy(web_db: WebDb) -> None:
-    env = Env(web_db, sandboxed=True)
-    assert sandbox._LOCK.acquire(blocking=False)
+    env = Env(web_db, sandboxed=True, parse_concurrency=1, parse_queue_wait_s=0)
+    assert sandbox.slots(1).acquire(blocking=False)
     try:
         with env.manager_a() as c:
             response = env.upload(c)
     finally:
-        sandbox._LOCK.release()
+        sandbox.slots(1).release()
     assert response.status_code == 503
     assert response.headers["retry-after"]
 

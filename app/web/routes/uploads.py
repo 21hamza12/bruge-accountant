@@ -67,7 +67,11 @@ MSG_PARSE = "Le fichier n'a pas pu être lu : {reason}"
 async def get_parser(settings: Annotated[Settings, Depends(get_settings)]) -> Parser:
     """The parser the upload uses: the sandbox. Tests replace it with a cheaper stand-in."""
     return partial(
-        parse_in_sandbox, timeout_s=settings.parse_timeout_s, memory_mb=settings.parse_memory_mb
+        parse_in_sandbox,
+        timeout_s=settings.parse_timeout_s,
+        memory_mb=settings.parse_memory_mb,
+        concurrency=settings.parse_concurrency,
+        queue_wait_s=settings.parse_queue_wait_s,
     )
 
 

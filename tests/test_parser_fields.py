@@ -156,3 +156,41 @@ def test_cell_values_in_warnings_are_truncated() -> None:
     assert len(result.warnings) == 1
     assert len(result.warnings[0]) < 150
     assert "9" * 41 not in result.warnings[0]
+
+
+# --- control characters and length in text cells ------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("DOE/JO\u202eHN", "DOE/JOHN"),  # bidi override (Cf)
+        ("DOE/\u200bJOHN\u200f", "DOE/JOHN"),  # zero-width space, right-to-left mark
+        ("DOE/JO\x7fHN\x9b", "DOE/JOHN"),  # DEL and a C1 control (Cc)
+        ("DOE/JOHN\nMR", "DOE/JOHN MR"),  # a line break becomes a space
+        ("DOE/JOHN\u2028MR", "DOE/JOHN MR"),  # line separator (Zl)
+        ("\ufeffDOE/JOHN", "DOE/JOHN"),  # byte order mark
+    ],
+)
+def test_passenger_names_lose_control_and_format_characters(raw: str, expected: str) -> None:
+    result = parse_report(build_workbook([ticket_row(name=raw)]))
+    assert result.tickets[0].passenger_name == expected
+
+
+def test_a_very_long_passenger_name_is_capped_at_200_and_flagged() -> None:
+    result = parse_report(build_workbook([ticket_row(name="A" * 5000)]))
+    (ticket,) = result.tickets
+    assert ticket.passenger_name == "A" * 200
+    assert "field_too_long" in ticket.flags
+    assert any("PAX NAME longer than 200" in w for w in result.warnings)
+
+
+def test_other_text_fields_are_cleaned_too() -> None:
+    result = parse_report(build_workbook([ticket_row(staff="00\u202e04SV", rloc="AB\x7fCDE")]))
+    (ticket,) = result.tickets
+    assert (ticket.staff_sign, ticket.booking_ref) == ("0004SV", "ABCDE")
+
+
+def test_ordinary_non_ascii_names_survive() -> None:
+    result = parse_report(build_workbook([ticket_row(name="BEN ALI/AMÉLIE ÉLÈVE")]))
+    assert result.tickets[0].passenger_name == "BEN ALI/AMÉLIE ÉLÈVE"

@@ -1,230 +1,184 @@
 """Run the parser in a throwaway child process.
 
 Why: a hostile or broken workbook must not be able to take the web process down (memory
-exhaustion, an endless loop, a crash inside a C extension). The child is a fresh ``spawn``ed
-interpreter that does one thing: ``parse_report``. The parent waits for the answer for at most
-``timeout_s`` seconds, then kills the child whatever it is doing.
+exhaustion, an endless loop, a crash inside a C extension), and must not be able to read the web
+process's secrets if the parser were ever exploited.
 
-* Linux: before parsing, the child sets ``RLIMIT_AS`` (``memory_mb``) and ``RLIMIT_CPU``. Windows
-  has neither, so the memory cap is skipped there and a warning says so (the timeout still holds).
-* What comes back is a JSON message (``encode_report``), never a pickle: the child has just read
-  untrusted input, and unpickling data from a compromised child would run code in the parent. The
-  parent rebuilds the dataclasses from validated fields and refuses anything of the wrong shape.
-* Only a ``ParsedReport`` or a short ``ParseError`` message crosses the boundary. A traceback, or
-  the text of an unexpected exception, never does.
-* One parse at a time per process (a ``BoundedSemaphore(1)``): a second concurrent call raises
-  :class:`SandboxBusy` at once, which the web layer turns into a friendly 503. A queue can replace
-  this later behind the same function.
-* The parent reads the pipe BEFORE joining the child: a big result could otherwise fill the pipe
-  and block the child forever while the parent waits for it to exit.
+How it works
+------------
+* The child is ``python -I -c <bootstrap>`` started with :class:`subprocess.Popen` and a MINIMAL
+  environment (``child_environment``): the interpreter's own needs (``PATH``, ``SYSTEMROOT`` on
+  Windows, ``LANG`` on Linux) and nothing else. ``DATABASE_URL``, ``MIGRATION_DATABASE_URL``,
+  ``SENTRY_DSN`` and every other variable of the web process are simply not there. ``-I`` makes
+  the interpreter ignore ``PYTHON*`` variables, the user site directory and the current directory.
+* The bytes go to the child's stdin, its answer comes back on stdout (``app.parsing.worker``).
+  No pickling and no ``multiprocessing``: the answer is JSON (``app.parsing.wire``) that the parent
+  validates field by field, with a size cap. A traceback or the text of an unexpected exception
+  never crosses the boundary.
+* ONE monotonic deadline (``timeout_s``) covers the whole child: a reader thread collects stdout
+  and the parent waits for it with the time that is left. When the deadline passes, or the answer
+  grows past ``MAX_MESSAGE_BYTES``, the child (and on Windows its whole process tree: the venv
+  launcher spawns the real interpreter) is killed, which also ends a half-sent message. Nothing
+  blocks forever on a partial answer.
+* Linux: the child sets ``RLIMIT_AS`` (``memory_mb``), ``RLIMIT_CPU``, ``RLIMIT_NPROC`` (no new
+  process) and ``RLIMIT_FSIZE`` (no file writes) before parsing. Windows has none of them, so the
+  memory cap is skipped there and a warning says so (the timeout still holds).
+* ``concurrency`` parses may run at once per process (``PARSE_CONCURRENCY``, default 2). A parse
+  that finds every slot taken waits up to ``queue_wait_s`` seconds (``PARSE_QUEUE_WAIT_S``,
+  default 5) and then raises :class:`SandboxBusy`, which the web layer turns into a friendly 503.
+  The slot is always released. A queue can replace this later behind the same function.
+
+Memory sizing: a child needs about 31 MB resident for the 48-ticket fixture and about 49 MB for a
+20 000-row report (docs/phase2-plan.md), so ``PARSE_CONCURRENCY`` children take roughly
+``PARSE_CONCURRENCY x 50 MB`` on top of the web process; the default 2 fits a 512 MB instance.
 """
 
 from __future__ import annotations
 
-import json
+import contextlib
 import logging
-import multiprocessing
+import os
+import subprocess
 import sys
 import threading
+import time
 from collections.abc import Callable
-from datetime import date
-from decimal import Decimal, InvalidOperation
-from multiprocessing.connection import Connection
-from typing import Any
+from pathlib import Path
 
-from app.parsing.amadeus import (
-    ParsedReport,
-    ParsedTicket,
-    ParseError,
-    ReportHeader,
-    parse_report,
+from app.parsing import wire
+from app.parsing.amadeus import ParsedReport, ParseError, parse_report
+from app.parsing.wire import (
+    MSG_BAD_ANSWER,
+    decode_message,
+    decode_report,
+    encode_report,
 )
 
-_resource: Any = None  # the ``resource`` module on POSIX; typed Any so mypy is platform-neutral
-try:
-    import resource
-
-    _resource = resource
-except ImportError:  # pragma: no cover - Windows
-    pass
+__all__ = [
+    "SandboxBusy",
+    "child_environment",
+    "decode_message",
+    "decode_report",
+    "encode_report",
+    "parse_in_sandbox",
+    "slots",
+]
 
 log = logging.getLogger("app.parsing.sandbox")
 
-_HAS_RLIMIT = sys.platform == "linux" and _resource is not None
-_LOCK = threading.BoundedSemaphore(1)
-MAX_MESSAGE_BYTES = 64 * 1024 * 1024  # a 50 000-row report encodes to far less
-MAX_ERROR_CHARS = 300
-JOIN_GRACE_SECONDS = 2
-KILL_WAIT_SECONDS = 5
+DEFAULT_CONCURRENCY = 2
+DEFAULT_QUEUE_WAIT_S = 5.0
+JOIN_GRACE_SECONDS = 2.0
+KILL_WAIT_SECONDS = 5.0
+READ_CHUNK = 1024 * 1024
 
 MSG_TIMEOUT = "the file took too long to read"
 MSG_CRASH = "the file could not be read"
-MSG_MEMORY = "the file needs too much memory to read"
-MSG_BAD_ANSWER = "the file could not be read"
 
-_PAX_TYPES = frozenset({"ADT", "CHD", "INF"})
+_ROOT = str(Path(__file__).resolve().parents[2])  # the directory that holds the ``app`` package
+_BOOTSTRAP = (
+    "import sys; sys.path.insert(0, {root!r}); "
+    "from app.parsing.worker import main; sys.exit(main(sys.argv[1:]))"
+)
+_HAS_RLIMIT = sys.platform == "linux"
+_DEFAULT_TARGET = parse_report
+
+_SLOTS: dict[int, threading.BoundedSemaphore] = {}
+_SLOTS_GUARD = threading.Lock()
 
 
 class SandboxBusy(Exception):  # noqa: N818 - a condition, not a failure of the input
-    """Another parse is running in this process; try again shortly."""
+    """Every parse slot of this process stays taken for the whole queue wait; try again shortly."""
 
 
-# --- the wire format ----------------------------------------------------------------------------
+def slots(size: int) -> threading.BoundedSemaphore:
+    """The semaphore that holds ``size`` parse slots (one per size, created on first use)."""
+    if size < 1:
+        raise ValueError("at least one parse slot is needed")
+    with _SLOTS_GUARD:
+        semaphore = _SLOTS.get(size)
+        if semaphore is None:
+            semaphore = _SLOTS[size] = threading.BoundedSemaphore(size)
+        return semaphore
 
 
-def encode_report(report: ParsedReport) -> bytes:
-    header = report.header
-    message = {
-        "status": "ok",
-        "report": {
-            "header": {
-                "report_range_raw": header.report_range_raw,
-                "report_date": header.report_date.isoformat(),
-                "generated_on": header.generated_on.isoformat(),
-            },
-            "tickets": [
-                {
-                    "seq_no": t.seq_no,
-                    "airline": t.airline,
-                    "ticket_no": t.ticket_no,
-                    "cost": None if t.cost is None else str(t.cost),
-                    "passenger_name": t.passenger_name,
-                    "pax_type": t.pax_type,
-                    "staff_sign": t.staff_sign,
-                    "transaction_type": t.transaction_type,
-                    "booking_ref": t.booking_ref,
-                    "flags": list(t.flags),
-                    "source_row": t.source_row,
-                }
-                for t in report.tickets
-            ],
-            "warnings": list(report.warnings),
-        },
+def child_environment() -> dict[str, str]:
+    """The environment of the child: what Python needs to start, and nothing of ours."""
+    env: dict[str, str] = {
+        "PYTHONNOUSERSITE": "1",
+        "PYTHONDONTWRITEBYTECODE": "1",
+        "PYTHONUTF8": "1",
     }
-    return json.dumps(message, ensure_ascii=False).encode("utf-8", "surrogatepass")
+    if sys.platform == "win32":
+        wanted = ("SYSTEMROOT", "SYSTEMDRIVE", "PATH", "PATHEXT", "COMSPEC")
+    else:
+        wanted = ("PATH", "LANG", "LC_ALL")
+    for key in wanted:
+        value = os.environ.get(key)
+        if value is not None:
+            env[key] = value
+    if sys.platform != "win32":
+        env.setdefault("LANG", "C.UTF-8")
+    return env
 
 
-def _str(value: object) -> str:
-    if not isinstance(value, str):
-        raise ValueError("expected a string")
-    return value
+def _target_spec(target: Callable[[bytes], ParsedReport]) -> str:
+    module = getattr(target, "__module__", None)
+    name = getattr(target, "__qualname__", None)
+    if not module or not name or "<" in name:
+        raise ValueError("a parse target must be a module-level function")
+    return f"{module}:{name}"
 
 
-def _ticket(raw: object) -> ParsedTicket:
-    if not isinstance(raw, dict):
-        raise ValueError("ticket is not an object")
-    cost_raw = raw["cost"]
-    cost = None if cost_raw is None else Decimal(_str(cost_raw))
-    if cost is not None and not cost.is_finite():
-        raise ValueError("cost is not finite")
-    pax_type = _str(raw["pax_type"])
-    if pax_type not in _PAX_TYPES:
-        raise ValueError("unknown passenger type")
-    flags = raw["flags"]
-    source_row = raw["source_row"]
-    if (
-        not isinstance(flags, list)
-        or isinstance(source_row, bool)
-        or not isinstance(source_row, int)
-    ):
-        raise ValueError("bad flags or row")
-    return ParsedTicket(
-        seq_no=_str(raw["seq_no"]),
-        airline=_str(raw["airline"]),
-        ticket_no=_str(raw["ticket_no"]),
-        cost=cost,
-        passenger_name=_str(raw["passenger_name"]),
-        pax_type=pax_type,  # type: ignore[arg-type]  # checked against _PAX_TYPES above
-        staff_sign=_str(raw["staff_sign"]),
-        transaction_type=_str(raw["transaction_type"]),
-        booking_ref=_str(raw["booking_ref"]),
-        flags=tuple(_str(f) for f in flags),
-        source_row=source_row,
-    )
+def _kill(proc: subprocess.Popen[bytes]) -> None:
+    """Kill the child. On Windows also its descendants: the venv launcher ``python.exe`` starts
+    the real interpreter as a child, and killing only the launcher would leave that one running
+    with the pipe open."""
+    if sys.platform == "win32":
+        with contextlib.suppress(OSError, subprocess.SubprocessError):  # best effort
+            subprocess.run(  # noqa: S603 - fixed arguments, a pid we started
+                ["taskkill", "/F", "/T", "/PID", str(proc.pid)],  # noqa: S607
+                capture_output=True,
+                timeout=10,
+                check=False,
+            )
+    with contextlib.suppress(OSError):  # already gone
+        proc.kill()
 
 
-def _report(raw: object) -> ParsedReport:
-    if not isinstance(raw, dict):
-        raise ValueError("report is not an object")
-    header = raw["header"]
-    tickets, warnings = raw["tickets"], raw["warnings"]
-    if not isinstance(header, dict) or not isinstance(tickets, list):
-        raise ValueError("bad report")
-    if not isinstance(warnings, list):
-        raise ValueError("bad warnings")
-    return ParsedReport(
-        header=ReportHeader(
-            report_range_raw=_str(header["report_range_raw"]),
-            report_date=date.fromisoformat(_str(header["report_date"])),
-            generated_on=date.fromisoformat(_str(header["generated_on"])),
-        ),
-        tickets=tuple(_ticket(t) for t in tickets),
-        warnings=tuple(_str(w) for w in warnings),
-    )
+class _Reader(threading.Thread):
+    """Collects the child's stdout, at most ``limit`` bytes (one more byte proves it is too big)."""
+
+    def __init__(self, stream: object, limit: int) -> None:
+        super().__init__(daemon=True, name="parse-reader")
+        self._stream = stream
+        self._limit = limit
+        self.payload = bytearray()
+        self.overflow = False
+
+    def run(self) -> None:
+        read = self._stream.read  # type: ignore[attr-defined]
+        try:
+            while True:
+                chunk = read(READ_CHUNK)
+                if not chunk:
+                    return
+                self.payload += chunk
+                if len(self.payload) > self._limit:
+                    self.overflow = True
+                    return
+        except (OSError, ValueError):  # the pipe broke or was closed under us
+            return
 
 
-def decode_message(payload: bytes) -> ParsedReport:
-    """The report in a child's message, or the ``ParseError`` it reported. Anything malformed is
-    a ``ParseError`` too (never an unexpected exception type)."""
+def _feed(stream: object, data: bytes) -> None:
+    """Send the workbook to the child's stdin (in a thread: a full pipe must not block the
+    parent), then close it so the child sees the end of its input."""
     try:
-        message: Any = json.loads(payload.decode("utf-8", "surrogatepass"))
-        if not isinstance(message, dict):
-            raise ValueError("message is not an object")
-        status = message["status"]
-        if status == "ok":
-            return _report(message["report"])
-        if status != "error":
-            raise ValueError("unknown status")
-        text = _str(message["message"])[:MAX_ERROR_CHARS]
-    except (ValueError, KeyError, TypeError, InvalidOperation, UnicodeError, RecursionError):
-        raise ParseError(MSG_BAD_ANSWER) from None
-    raise ParseError(text)
-
-
-def decode_report(payload: bytes) -> ParsedReport:
-    return decode_message(payload)
-
-
-# --- the child ----------------------------------------------------------------------------------
-
-
-def run_target(target: Callable[[bytes], ParsedReport], data: bytes) -> bytes:
-    """Run the parser and encode its answer. Never raises: the child reports, it does not crash."""
-    try:
-        return encode_report(target(data))
-    except ParseError as exc:
-        text = str(exc)[:MAX_ERROR_CHARS]
-    except MemoryError:
-        text = MSG_MEMORY
-    except Exception:
-        text = MSG_CRASH  # the exception's own text could hold file contents or paths
-    return json.dumps({"status": "error", "message": text}).encode("utf-8")
-
-
-def _apply_limits(memory_mb: int, cpu_seconds: int) -> None:
-    if not _HAS_RLIMIT:
-        return
-    try:
-        cap = memory_mb * 1024 * 1024
-        _resource.setrlimit(_resource.RLIMIT_AS, (cap, cap))
-        _resource.setrlimit(_resource.RLIMIT_CPU, (cpu_seconds, cpu_seconds + 1))
-    except (ValueError, OSError):  # pragma: no cover - a platform without these limits
+        stream.write(data)  # type: ignore[attr-defined]
+        stream.close()  # type: ignore[attr-defined]
+    except (OSError, ValueError):  # the child died or was killed first
         pass
-
-
-def _child_main(
-    conn: Connection,
-    target: Callable[[bytes], ParsedReport],
-    data: bytes,
-    memory_mb: int,
-    cpu_seconds: int,
-) -> None:
-    _apply_limits(memory_mb, cpu_seconds)
-    conn.send_bytes(run_target(target, data))
-    conn.close()
-
-
-# --- the parent ---------------------------------------------------------------------------------
 
 
 def parse_in_sandbox(
@@ -232,21 +186,24 @@ def parse_in_sandbox(
     *,
     timeout_s: int,
     memory_mb: int,
-    parse_target: Callable[[bytes], ParsedReport] = parse_report,
+    parse_target: Callable[[bytes], ParsedReport] = _DEFAULT_TARGET,
+    concurrency: int = DEFAULT_CONCURRENCY,
+    queue_wait_s: float = DEFAULT_QUEUE_WAIT_S,
 ) -> ParsedReport:
     """Parse ``data`` in a child process; see the module docstring.
 
     ``parse_target`` exists for tests (a slow or crashing stand-in). It must be a module-level
-    function so the spawned child can import it; the web app never passes it.
+    function so the child can import it by name; the web app never passes it.
     """
-    if not _LOCK.acquire(blocking=False):
+    semaphore = slots(concurrency)
+    if not semaphore.acquire(timeout=max(0.0, queue_wait_s)):
         raise SandboxBusy
     try:
         if not _HAS_RLIMIT:
             log.warning("memory cap skipped: RLIMIT_AS is not available on this platform")
         return decode_message(_run_child(data, timeout_s, memory_mb, parse_target))
     finally:
-        _LOCK.release()
+        semaphore.release()
 
 
 def _run_child(
@@ -255,26 +212,60 @@ def _run_child(
     memory_mb: int,
     target: Callable[[bytes], ParsedReport],
 ) -> bytes:
-    ctx = multiprocessing.get_context("spawn")
-    receiver, sender = ctx.Pipe(duplex=False)
-    proc = ctx.Process(
-        target=_child_main, args=(sender, target, data, memory_mb, timeout_s), daemon=True
+    deadline = time.monotonic() + timeout_s
+    command = [
+        sys.executable,
+        "-I",
+        "-B",
+        "-c",
+        _BOOTSTRAP.format(root=_ROOT),
+        str(memory_mb),
+        str(timeout_s),
+        _target_spec(target),
+    ]
+    # If this raises there is no child to join or kill, and the original error is what the
+    # caller sees (the semaphore is released by the caller's ``finally``).
+    proc = subprocess.Popen(  # noqa: S603 - our own interpreter and a fixed bootstrap
+        command,
+        env=child_environment(),
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        close_fds=True,
+    )
+    assert proc.stdin is not None and proc.stdout is not None  # noqa: S101 - PIPE was requested
+    reader = _Reader(proc.stdout, wire.MAX_MESSAGE_BYTES)
+    writer = threading.Thread(
+        target=_feed, args=(proc.stdin, data), daemon=True, name="parse-writer"
     )
     try:
-        proc.start()
-        sender.close()  # the parent's copy: without this a dead child would never read as EOF
-        if not receiver.poll(timeout_s):
-            log.warning("parse killed: no answer within %s s", timeout_s)
+        reader.start()
+        writer.start()
+        reader.join(max(0.0, deadline - time.monotonic()))
+        if reader.is_alive():
+            log.warning("parse killed: no complete answer within %s s", timeout_s)
             raise ParseError(MSG_TIMEOUT)
+        if reader.overflow:
+            log.warning("parse killed: the answer is bigger than %s bytes", wire.MAX_MESSAGE_BYTES)
+            raise ParseError(MSG_BAD_ANSWER)
         try:
-            return receiver.recv_bytes(MAX_MESSAGE_BYTES)
-        except (EOFError, OSError):
-            log.warning("parse child died without an answer (exit code %s)", proc.exitcode)
-            raise ParseError(MSG_CRASH) from None
+            code = proc.wait(timeout=max(JOIN_GRACE_SECONDS, deadline - time.monotonic()))
+        except subprocess.TimeoutExpired:
+            log.warning("parse killed: the child did not exit after answering")
+            raise ParseError(MSG_TIMEOUT) from None
+        if code != 0:
+            log.warning("parse child died without a clean exit (exit code %s)", code)
+            raise ParseError(MSG_CRASH)
+        return bytes(reader.payload)
     finally:
-        sender.close()
-        receiver.close()
-        proc.join(JOIN_GRACE_SECONDS)
-        if proc.is_alive():
-            proc.kill()
-            proc.join(KILL_WAIT_SECONDS)
+        if proc.poll() is None:
+            _kill(proc)
+        try:
+            proc.wait(KILL_WAIT_SECONDS)
+        except subprocess.TimeoutExpired:  # pragma: no cover - the kernel did not reap it
+            log.error("parse child %s did not die after a kill", proc.pid)
+        for thread in (reader, writer):
+            if thread.ident is not None:  # never started if the first start() failed
+                thread.join(KILL_WAIT_SECONDS)
+        if not reader.is_alive():
+            proc.stdout.close()

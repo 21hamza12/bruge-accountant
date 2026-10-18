@@ -13,3 +13,6 @@ build/
 *.sqlite3
 .env
 ~$*.xlsx
+
+# Real agency reports contain passenger and client personal data: keep them local only.
+tests/fixtures/real/

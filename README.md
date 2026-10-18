@@ -63,14 +63,28 @@ uv run ruff check .
 uv run mypy                   # strict, over app, tests and migrations
 ```
 
-Tests run on a temporary SQLite file by default. To run the storage and CLI tests against
-Postgres, point `TEST_DATABASE_URL` at an empty database whose name contains `test` (each
-test drops and recreates its `public` schema):
+Tests run on a temporary SQLite file by default. To run the whole suite against Postgres, point
+`TEST_DATABASE_URL` at an empty database whose name contains `test` (each test drops and
+recreates its `public` schema) and `TEST_APP_DATABASE_URL` at the same database as the
+non-owner application role (row-level security tests must not run as the table owner).
 
-```bash
-TEST_DATABASE_URL=postgresql+psycopg://user:pw@localhost/bruge_test uv run pytest --no-cov tests/test_storage.py tests/test_storage_hardening.py tests/test_cli.py tests/test_postgres_concurrency.py
+Two roles on a local Postgres (run as a superuser; pick your own passwords, never commit them):
+
+```sql
+CREATE ROLE bruge_owner LOGIN PASSWORD '<owner-password>';       -- runs migrations, owns the tables
+CREATE ROLE bruge_app LOGIN PASSWORD '<app-password>' NOBYPASSRLS;  -- what the application uses
+CREATE DATABASE bruge_test OWNER bruge_owner;
 ```
 
+```bash
+export TEST_DATABASE_URL='postgresql+psycopg://bruge_owner:<owner-password>@localhost/bruge_test'
+export TEST_APP_DATABASE_URL='postgresql+psycopg://bruge_app:<app-password>@localhost/bruge_test'
+uv run pytest --no-cov -rs
+```
+
+The test fixtures grant `bruge_app` its privileges after every schema reset (until migration 0003
+does it). Without `TEST_DATABASE_URL`, the Postgres-only tests are skipped.
 `tests/test_postgres_concurrency.py` (two connections importing overlapping tickets at once)
-only runs on Postgres. CI (`.github/workflows/ci.yml`) runs both: the full suite on SQLite,
-and the Alembic upgrade/downgrade/upgrade cycle plus those tests on `postgres:16`.
+only runs on Postgres. CI (`.github/workflows/ci.yml`) runs the full suite on SQLite (with the
+coverage gate), and the Alembic upgrade/downgrade/upgrade cycle plus the full suite on
+`postgres:16` with both roles.

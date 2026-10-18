@@ -37,7 +37,7 @@ jobs:
         run: uv run mypy
 
   postgres:
-    name: Migrations, storage and CLI (Postgres 16)
+    name: Migrations and full suite (Postgres 16)
     runs-on: ubuntu-latest
     timeout-minutes: 15
     services:
@@ -58,6 +58,8 @@ jobs:
     env:
       DATABASE_URL: postgresql+psycopg://bruge:bruge@localhost:5432/bruge_test
       TEST_DATABASE_URL: postgresql+psycopg://bruge:bruge@localhost:5432/bruge_test
+      # The non-owner role the application uses; row-level security tests connect as it.
+      TEST_APP_DATABASE_URL: postgresql+psycopg://bruge_app:bruge_app@localhost:5432/bruge_test
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -66,6 +68,10 @@ jobs:
       - uses: astral-sh/setup-uv@v6
         with:
           enable-cache: true
+      # The full suite includes the service worker test, which needs node when CI is set.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
       - run: uv sync --locked
       - name: alembic upgrade head
         run: uv run alembic upgrade head
@@ -73,14 +79,13 @@ jobs:
         run: uv run alembic downgrade base
       - name: alembic upgrade head (again)
         run: uv run alembic upgrade head
-      - name: Storage, CLI and concurrency tests against Postgres
-        # A subset of the suite, so the coverage gate stays with the full SQLite run.
+      - name: Create the application role (throwaway CI credentials)
         run: >-
-          uv run pytest --no-cov -rs
-          tests/test_storage.py
-          tests/test_storage_hardening.py
-          tests/test_cli.py
-          tests/test_postgres_concurrency.py
+          psql "postgresql://bruge:bruge@localhost:5432/bruge_test" --set ON_ERROR_STOP=1
+          --command "CREATE ROLE bruge_app LOGIN PASSWORD 'bruge_app' NOBYPASSRLS"
+      - name: Full test suite against Postgres
+        # The 80% coverage gate stays with the SQLite run; Postgres-only tests run here.
+        run: uv run pytest --no-cov -rs
 
   docker:
     name: Docker image and /healthz (Postgres 16)

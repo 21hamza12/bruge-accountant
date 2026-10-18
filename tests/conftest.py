@@ -6,6 +6,7 @@ from collections.abc import Callable, Iterator
 from pathlib import Path
 
 import pytest
+from alembic import command
 from alembic.config import Config
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -23,6 +24,7 @@ FIXTURE = Path(__file__).parent / "fixtures" / "1OCT.xlsx"
 SHA = "a" * 64
 ROOT = Path(__file__).resolve().parent.parent
 TEST_DATABASE_URL_ENV = "TEST_DATABASE_URL"
+TEST_APP_DATABASE_URL_ENV = "TEST_APP_DATABASE_URL"
 
 
 def select_test_database_url(tmp_path: Path) -> str:
@@ -36,6 +38,57 @@ def select_test_database_url(tmp_path: Path) -> str:
             "every test drops and recreates its schema"
         )
     return url
+
+
+def select_app_database_url(owner_url: str, app_url: str | None) -> str:
+    """The URL the application connects with: the owner's on SQLite, else $TEST_APP_DATABASE_URL.
+
+    On Postgres the app must be a different (non-owner) role on the same database as the owner,
+    otherwise row-level security tests would run as the table owner and prove nothing.
+    """
+    owner = make_url(owner_url)
+    if owner.get_backend_name() != "postgresql":
+        return owner_url
+    if not app_url:
+        raise pytest.UsageError(
+            f"{TEST_APP_DATABASE_URL_ENV} must be set when {TEST_DATABASE_URL_ENV} is Postgres: "
+            "the connection of the non-owner application role (see README)"
+        )
+    app = make_url(app_url)
+    if app.username == owner.username:
+        raise pytest.UsageError(
+            f"{TEST_APP_DATABASE_URL_ENV} must use a different role than {TEST_DATABASE_URL_ENV}"
+        )
+    if (app.host, app.port, app.database) != (owner.host, owner.port, owner.database):
+        raise pytest.UsageError(
+            f"{TEST_APP_DATABASE_URL_ENV} must point at the same database as "
+            f"{TEST_DATABASE_URL_ENV}"
+        )
+    return app_url
+
+
+def grant_app_role_privileges_until_migration_0003(owner_url: str, app_url: str) -> None:
+    """Minimal grants so the app role can work; schema-level, so redone after every reset.
+
+    TODO(step 12): migration 0003 creates the RLS policies and the real grants (no DELETE on
+    tickets or uploads, narrow lookup access). Delete this helper then and let the migration do
+    the work.
+    """
+    role = make_url(app_url).username or ""
+    engine = create_engine(owner_url)
+    try:
+        quoted = engine.dialect.identifier_preparer.quote(role)
+        with engine.begin() as conn:
+            conn.execute(text("REVOKE CREATE ON SCHEMA public FROM PUBLIC"))
+            conn.execute(text(f"GRANT USAGE ON SCHEMA public TO {quoted}"))  # noqa: S608
+            conn.execute(
+                text(
+                    f"GRANT SELECT, INSERT, UPDATE ON ALL TABLES IN SCHEMA public TO {quoted}"  # noqa: S608
+                )
+            )
+            conn.execute(text(f"GRANT USAGE ON ALL SEQUENCES IN SCHEMA public TO {quoted}"))
+    finally:
+        engine.dispose()
 
 
 def _reset_server_database(url: str) -> None:
@@ -73,6 +126,24 @@ def db_url(tmp_path: Path) -> str:
     url = select_test_database_url(tmp_path)
     if not url.startswith("sqlite"):
         _reset_server_database(url)
+    return url
+
+
+@pytest.fixture
+def app_db_url(db_url: str) -> str:
+    """The URL the application connects with, on a database migrated to head by the owner.
+
+    SQLite: ``db_url`` itself, untouched (tests build the schema themselves there).
+    Postgres: ``alembic upgrade head`` as the owner, grants for the app role, then its URL.
+    """
+    url = select_app_database_url(db_url, os.environ.get(TEST_APP_DATABASE_URL_ENV))
+    if url == db_url:
+        return url
+    cfg = Config(str(ROOT / "alembic.ini"))
+    cfg.set_main_option("script_location", str(ROOT / "migrations"))
+    cfg.set_main_option("sqlalchemy.url", db_url.replace("%", "%%"))
+    command.upgrade(cfg, "head")
+    grant_app_role_privileges_until_migration_0003(db_url, url)
     return url
 
 

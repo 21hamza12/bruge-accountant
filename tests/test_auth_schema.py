@@ -13,7 +13,7 @@ import pytest
 from alembic import command
 from alembic.config import Config
 from sqlalchemy import create_engine, inspect, select, text
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import DataError, IntegrityError
 from sqlalchemy.orm import Session
 
 from app.db import make_engine, make_session_factory
@@ -70,7 +70,8 @@ def make_user(s: Session, agency_id: int, phone: str = "+22212345678", **kw: Any
 
 def rejects(s: Session, *rows: Any) -> None:
     s.add_all(rows)
-    with pytest.raises(IntegrityError):
+    # Postgres reports an over-long value as DataError (the column type), SQLite via the CHECK.
+    with pytest.raises((IntegrityError, DataError)):
         s.commit()
     s.rollback()
 

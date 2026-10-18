@@ -29,6 +29,8 @@ from sqlalchemy.exc import DBAPIError, IntegrityError, SQLAlchemyError
 from app import db_roles
 from app.auth.passwords import hash_password, password_policy_error
 from app.auth.phone import InvalidPhoneError, normalize_phone
+from app.auth.ratelimit import purge_expired_windows
+from app.clock import utc_now
 from app.db import default_database_url, make_engine, make_session_factory
 from app.parsing.amadeus import MAX_FILE_BYTES, ParseError, parse_report
 from app.questions import build_questions
@@ -325,9 +327,17 @@ def _purge_expired(url: str) -> int:
     try:
         with make_session_factory(engine)() as session:
             counts = purge_expired(session)
+            windows = purge_expired_windows(session, utc_now())
+            session.commit()
     finally:
         engine.dispose()
-    _emit({**dataclasses.asdict(counts), "total": counts.total})
+    _emit(
+        {
+            **dataclasses.asdict(counts),
+            "rate_limit_buckets": windows,
+            "total": counts.total + windows,
+        }
+    )
     return EXIT_OK
 
 

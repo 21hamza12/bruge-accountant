@@ -37,6 +37,7 @@ from app.web.errors import (
 from app.web.middleware import build_middleware
 from app.web.routes import auth as auth_routes
 from app.web.routes import home as home_routes
+from app.web.routes import password as password_routes
 from app.web.templating import TEMPLATES_DIR, render
 
 log = logging.getLogger("app.web")
@@ -99,6 +100,7 @@ def create_app(
     app.add_exception_handler(ResponseException, response_exception_handler)
     app.include_router(auth_routes.router)
     app.include_router(home_routes.router)
+    app.include_router(password_routes.router)
     app.mount("/static", StaticAssets(directory=TEMPLATES_DIR.parent / "static"), name="static")
 
     @app.get("/sw.js", include_in_schema=False)

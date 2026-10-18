@@ -3,14 +3,33 @@
 from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
+from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import func, select
+from sqlalchemy.dialects import postgresql, sqlite
 from sqlalchemy.orm import Session
 
 from app.models import PRICE_STATUS_AWAITING, Agency, Ticket, Upload
 from app.parsing.amadeus import ParsedReport, ParsedTicket
 
-LOOKUP_CHUNK = 500
+UPSERT_CHUNK = 200
+
+# Amadeus-owned columns refreshed on re-import. Deliberately absent: price_status (staff
+# owned), first_upload_id and created_at (history), and report_date (a ticket belongs to the
+# day it first appeared; a later report never moves it to another day).
+_REFRESHED_COLUMNS = (
+    "seq_no",
+    "airline",
+    "cost",
+    "passenger_name",
+    "pax_type",
+    "staff_sign",
+    "transaction_type",
+    "booking_ref",
+    "flags",
+    "last_upload_id",
+    "updated_at",
+)
 
 
 @dataclass(frozen=True)
@@ -35,24 +54,60 @@ def get_agency_by_slug(session: Session, slug: str) -> Agency | None:
     return session.scalars(select(Agency).where(Agency.slug == slug)).one_or_none()
 
 
-def _chunks(items: Sequence[str], size: int) -> Iterator[Sequence[str]]:
+def _chunks(items: Sequence[Any], size: int) -> Iterator[Sequence[Any]]:
     for start in range(0, len(items), size):
         yield items[start : start + size]
 
 
-def _apply(ticket: Ticket, parsed: ParsedTicket, report_date: date, upload_id: int) -> None:
-    """Copy Amadeus-owned fields only; price_status is deliberately not touched."""
-    ticket.report_date = report_date
-    ticket.seq_no = parsed.seq_no
-    ticket.airline = parsed.airline
-    ticket.cost = parsed.cost
-    ticket.passenger_name = parsed.passenger_name
-    ticket.pax_type = parsed.pax_type
-    ticket.staff_sign = parsed.staff_sign
-    ticket.transaction_type = parsed.transaction_type
-    ticket.booking_ref = parsed.booking_ref
-    ticket.flags = list(parsed.flags)
-    ticket.last_upload_id = upload_id
+def _upsert_statement(dialect_name: str, rows: list[dict[str, Any]]) -> Any:
+    """One atomic INSERT .. ON CONFLICT DO UPDATE for a chunk of rows."""
+    if dialect_name == "postgresql":
+        stmt: Any = postgresql.insert(Ticket).values(rows)
+    elif dialect_name == "sqlite":
+        stmt = sqlite.insert(Ticket).values(rows)
+    else:
+        raise NotImplementedError(f"upsert is not implemented for dialect {dialect_name!r}")
+    return stmt.on_conflict_do_update(
+        index_elements=["agency_id", "ticket_no"],
+        set_={name: getattr(stmt.excluded, name) for name in _REFRESHED_COLUMNS},
+    )
+
+
+def _upsert_chunk(session: Session, rows: list[dict[str, Any]]) -> None:
+    session.execute(_upsert_statement(session.get_bind().dialect.name, rows))
+
+
+def _row(
+    parsed: ParsedTicket, agency_id: int, report_date: date, upload_id: int, now: datetime
+) -> dict[str, Any]:
+    return {
+        "agency_id": agency_id,
+        "ticket_no": parsed.ticket_no,
+        "first_upload_id": upload_id,
+        "last_upload_id": upload_id,
+        "report_date": report_date,
+        "seq_no": parsed.seq_no,
+        "airline": parsed.airline,
+        "cost": parsed.cost,
+        "passenger_name": parsed.passenger_name,
+        "pax_type": parsed.pax_type,
+        "staff_sign": parsed.staff_sign,
+        "transaction_type": parsed.transaction_type,
+        "booking_ref": parsed.booking_ref,
+        "flags": list(parsed.flags),
+        "price_status": PRICE_STATUS_AWAITING,
+        "created_at": now,
+        "updated_at": now,
+    }
+
+
+def _count_existing(session: Session, agency_id: int, ticket_nos: Sequence[str]) -> int:
+    stmt = (
+        select(func.count())
+        .select_from(Ticket)
+        .where(Ticket.agency_id == agency_id, Ticket.ticket_no.in_(ticket_nos))
+    )
+    return session.scalar(stmt) or 0
 
 
 def import_report(
@@ -62,16 +117,19 @@ def import_report(
     filename: str,
     sha256: str,
 ) -> ImportResult:
-    """Store an upload and upsert its tickets in a single transaction."""
+    """Store an upload and upsert its tickets in a single transaction.
+
+    Each chunk is one atomic upsert, so concurrent imports of the same tickets cannot
+    collide; rows go in ticket-number order so concurrent writers lock in the same order.
+    ``inserted``/``updated`` come from a count taken in the same transaction (exact unless
+    another import commits the same tickets in between).
+    """
     try:
         if session.get(Agency, agency_id) is None:
             raise LookupError(f"unknown agency id {agency_id}")
 
         header = parsed.header
-        unique: dict[str, ParsedTicket] = {}
-        for item in parsed.tickets:
-            unique.setdefault(item.ticket_no, item)
-
+        unique = {t.ticket_no: t for t in sorted(parsed.tickets, key=lambda t: t.ticket_no)}
         upload = Upload(
             agency_id=agency_id,
             filename=filename,
@@ -85,36 +143,23 @@ def import_report(
         session.add(upload)
         session.flush()
 
-        existing: dict[str, Ticket] = {}
-        for chunk in _chunks(list(unique), LOOKUP_CHUNK):
-            stmt = select(Ticket).where(Ticket.agency_id == agency_id, Ticket.ticket_no.in_(chunk))
-            for row in session.scalars(stmt):
-                existing[row.ticket_no] = row
-
         now = datetime.now(UTC)
-        inserted = updated = 0
-        for ticket_no, item in unique.items():
-            current = existing.get(ticket_no)
-            if current is None:
-                current = Ticket(
-                    agency_id=agency_id,
-                    ticket_no=ticket_no,
-                    first_upload_id=upload.id,
-                    price_status=PRICE_STATUS_AWAITING,
-                )
-                _apply(current, item, header.report_date, upload.id)
-                session.add(current)
-                inserted += 1
-            else:
-                _apply(current, item, header.report_date, upload.id)
-                current.updated_at = now
-                updated += 1
+        existing = 0
+        for chunk in _chunks(list(unique.values()), UPSERT_CHUNK):
+            existing += _count_existing(session, agency_id, [t.ticket_no for t in chunk])
+            rows = [_row(t, agency_id, header.report_date, upload.id, now) for t in chunk]
+            _upsert_chunk(session, rows)
 
+        upload_id = upload.id
         session.commit()
-        return ImportResult(upload_id=upload.id, inserted=inserted, updated=updated)
-    except BaseException:
+    except Exception:
         session.rollback()
         raise
+    # Core upserts bypass the identity map; refresh anything already loaded.
+    for obj in list(session.identity_map.values()):
+        if isinstance(obj, Ticket):
+            session.expire(obj)
+    return ImportResult(upload_id=upload_id, inserted=len(unique) - existing, updated=existing)
 
 
 def tickets_awaiting_price(session: Session, agency_id: int, report_date: date) -> list[Ticket]:

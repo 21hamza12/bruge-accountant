@@ -175,3 +175,89 @@ jobs:
       - name: Container logs
         if: always()
         run: docker logs app
+
+  docker-e2e:
+    name: Docker image and HTTP end-to-end journeys (Postgres 16, separate app role)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:16
+        # Throwaway credentials for a CI-only container that is gone when the job ends.
+        env:
+          POSTGRES_USER: bruge
+          POSTGRES_PASSWORD: bruge
+          POSTGRES_DB: bruge_e2e
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U bruge -d bruge_e2e"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      # The owner runs init-db and seed-demo. The app runs as bruge_app: not the owner, not a
+      # superuser, no BYPASSRLS, and granted only what migration 0003 gives APP_DB_ROLE.
+      OWNER_URL: postgres://bruge_owner:bruge_owner@localhost:5432/bruge_e2e
+      APP_URL: postgres://bruge_app:bruge_app@localhost:5432/bruge_e2e
+      # The one password of all four demo accounts: a throwaway for this CI run only.
+      E2E_PASSWORD: ci-throwaway-Demo-2026
+      E2E_BASE_URL: http://127.0.0.1:8000
+    steps:
+      - uses: actions/checkout@v4
+      - name: Create the owner and application roles (throwaway CI credentials)
+        run: |
+          psql "postgresql://bruge:bruge@localhost:5432/bruge_e2e" --set ON_ERROR_STOP=1 <<'SQL'
+          CREATE ROLE bruge_owner LOGIN PASSWORD 'bruge_owner' NOSUPERUSER NOBYPASSRLS;
+          CREATE ROLE bruge_app LOGIN PASSWORD 'bruge_app' NOSUPERUSER NOBYPASSRLS;
+          ALTER DATABASE bruge_e2e OWNER TO bruge_owner;
+          SQL
+      - name: Build the image
+        run: docker build --tag bruge-accountant:ci .
+      - name: init-db as the owner, granting the app role
+        run: >-
+          docker run --rm --network host -e DATABASE_URL="$OWNER_URL" -e APP_DB_ROLE=bruge_app
+          bruge-accountant:ci python -m app init-db
+      - name: seed-demo as the owner (password from stdin, fixture mounted read-only)
+        run: >-
+          printf '%s\n' "$E2E_PASSWORD" |
+          docker run --rm -i --network host -e DATABASE_URL="$OWNER_URL"
+          -v "$PWD/tests/fixtures/1OCT.xlsx:/fixture/1OCT.xlsx:ro"
+          bruge-accountant:ci python -m app seed-demo --fixture /fixture/1OCT.xlsx --password-stdin
+      - name: Start the app as the application role
+        # Plain http on the runner, so cookies cannot be Secure: development settings, which
+        # production refuses (the docker job above covers production mode and HSTS).
+        run: >-
+          docker run --detach --name app --network host
+          -e PORT=8000 -e COOKIE_SECURE=false -e ALLOWED_HOSTS=localhost,127.0.0.1
+          -e DATABASE_URL="$APP_URL" -e RENDER_GIT_COMMIT="$GITHUB_SHA"
+          bruge-accountant:ci
+      - name: Wait for /healthz to return 200 (60 s timeout)
+        run: |
+          deadline=$((SECONDS + 60))
+          until curl --fail --silent --show-error "$E2E_BASE_URL/healthz" -o health.json; do
+            if [ "$SECONDS" -ge "$deadline" ]; then
+              echo "timeout: /healthz never returned 200"
+              docker logs app
+              exit 1
+            fi
+            sleep 2
+          done
+          cat health.json
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: uv sync --locked
+      - name: End-to-end journeys against the container
+        run: uv run pytest tests/e2e --no-cov -v -rs
+      - name: The app log holds no password
+        run: |
+          if docker logs app 2>&1 | grep -F "$E2E_PASSWORD"; then
+            echo "the demo password reached the log"; exit 1
+          fi
+      - name: Container logs
+        if: always()
+        run: docker logs app

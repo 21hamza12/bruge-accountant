@@ -61,7 +61,8 @@ Configuration comes from environment variables (see `app/settings.py`): `ENV` (`
 default, `production` on Render), `DATABASE_URL`, `MIGRATION_DATABASE_URL` (used by `init-db` when
 set), `ALLOWED_HOSTS`, `CORS_ALLOWED_ORIGINS`, `COOKIE_SECURE`, `TRUSTED_PROXY_HOPS`, `SESSION_IDLE_HOURS` (default 12),
 `SESSION_ABSOLUTE_DAYS` (default 7), `DB_POOL_SIZE` (default 5) and `DB_MAX_OVERFLOW` (default 5),
-`MAX_REQUEST_BYTES` (default 10 MB + 64 KB), `SENTRY_DSN`.
+`MAX_REQUEST_BYTES` (default 10 MB + 64 KB), `PARSE_TIMEOUT_S` (default 30), `PARSE_MEMORY_MB`
+(default 768, Linux only), `SENTRY_DSN`.
 List variables take `a,b` or a JSON array (`["a","b"]`). `TRUSTED_PROXY_HOPS` defaults to 0 (the
 `X-Forwarded-*` headers are ignored); on Render it is 1. A wildcard CORS origin is refused in every
 environment. In production the app also refuses to start without an explicit non-SQLite
@@ -99,6 +100,47 @@ Open `http://127.0.0.1:8000/login` and sign in with that phone and password.
 - Five failed sign-ins for one phone (or a hundred from one address) in 15 minutes show the
   "too many attempts" page. Only failures count: a successful sign-in clears the phone's count.
   The counters live in the database, so every server instance shares them.
+
+## Try uploads locally
+
+Any signed-in user (staff or manager) can send the daily Amadeus report. Use the committed
+synthetic fixture, never a real report (those hold passenger names). Placeholders only; pick your
+own values and never commit them.
+
+```bash
+uv run python -m app init-db
+printf '%s\n' '<a password of at least 10 characters>' | uv run python -m app seed-demo --fixture tests/fixtures/1OCT.xlsx --password-stdin
+COOKIE_SECURE=false uv run uvicorn --factory app.web.main:create_app     # http://127.0.0.1:8000
+```
+
+`seed-demo` creates two agencies for trying the app (it refuses when `ENV=production`, and when
+`demo-a` or `demo-b` already exists). One password, read from standard input and never printed or
+accepted as an argument, is shared by all four accounts:
+
+| Phone | Agency | Role |
+|---|---|---|
+| `+22290000001` | `demo-a` | manager |
+| `+22290000003` | `demo-a` | staff, linked to sign `0004SV` |
+| `+22290000004` | `demo-a` | staff, linked to sign `0009ER` |
+| `+22290000002` | `demo-b` | manager (the fixture is already loaded here) |
+
+Sign in as the `demo-a` manager, open **Envoyer un rapport** (`/uploads/new`) and choose
+`tests/fixtures/1OCT.xlsx`: the result page shows 48 tickets added. Send it again and it shows 0
+added and 48 updated. **Questions de prix** (`/questions`) lists the day's price questions: the
+manager sees both signs (34 tickets in 25 questions for `0004SV`, 14 in 8 for `0009ER`), a staff
+member only the sign linked to them. Prices are not collected yet.
+
+- Parsing runs in a throwaway child process (`app/parsing/sandbox.py`): killed after
+  `PARSE_TIMEOUT_S` (default 30) seconds, and on Linux capped at `PARSE_MEMORY_MB` (default 768) of
+  address space. Windows has no such cap; the app logs a warning and keeps the timeout. A second
+  upload while one is being read gets the "service occupé" page (503, `Retry-After`).
+- Files over 10 MB get the 413 page; the limit is applied before the form is read.
+  Thirty uploads an hour per agency, then 429.
+- HTTP end-to-end journeys run against a live server (skipped when `E2E_BASE_URL` is unset):
+
+```bash
+E2E_BASE_URL=http://127.0.0.1:8000 E2E_PASSWORD='<the demo password>' uv run pytest tests/e2e --no-cov -rs
+```
 
 Development checks:
 

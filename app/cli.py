@@ -1,7 +1,7 @@
 """Command line interface.
 
 ``python -m app <command>`` with command one of: init-db, add-agency, bootstrap-agency,
-reset-password, grant-app-role, purge-expired, import.
+reset-password, grant-app-role, purge-expired, import, seed-demo.
 
 Exit codes: 0 success, 1 failure (database, file, parse), 2 usage or refusal (bad arguments, a
 name already taken, a role that may not be used), 130 interrupted at the password prompt.
@@ -11,6 +11,7 @@ import argparse
 import dataclasses
 import getpass
 import json
+import os
 import re
 import sqlite3
 import sys
@@ -33,9 +34,10 @@ from app.auth.ratelimit import purge_expired_windows
 from app.auth.temp_passwords import TEMP_PASSWORD_TTL
 from app.clock import utc_now
 from app.db import default_database_url, make_engine, make_session_factory
+from app.demo import ALL_PHONES, seed_demo
 from app.formatting import money
-from app.ingest import ingest_report
-from app.parsing.amadeus import MAX_FILE_BYTES, ParseError
+from app.ingest import check_bytes, ingest_report, sanitize_filename
+from app.parsing.amadeus import MAX_FILE_BYTES, ParseError, parse_report
 from app.questions import build_questions
 from app.repository import (
     AlreadyExistsError,
@@ -157,6 +159,27 @@ def _build_parser() -> argparse.ArgumentParser:
         "purge-expired",
         parents=[db_option],
         help="delete expired sessions and temporary passwords and audit events past retention",
+    )
+
+    seed = sub.add_parser(
+        "seed-demo",
+        parents=[db_option],
+        allow_abbrev=False,
+        help="create two demo agencies with managers and staff (never in production)",
+        description=(
+            "Create the demo agencies demo-a and demo-b, each with a manager; demo-a also gets "
+            "two staff linked to the signs 0004SV and 0009ER, and demo-b receives the fixture. "
+            "One password for all four accounts is read from the first line of standard input "
+            "(--password-stdin is required); it is never an argument and never printed. "
+            "Refuses when ENV=production and when the demo agencies already exist."
+        ),
+    )
+    seed.add_argument("--fixture", required=True, type=Path, help="an Amadeus report (.xlsx)")
+    seed.add_argument(
+        "--password-stdin",
+        action="store_true",
+        required=True,
+        help="read the shared demo password from the first line of standard input",
     )
 
     imp = sub.add_parser("import", parents=[db_option], help="import an Amadeus daily report")
@@ -388,6 +411,56 @@ def _purge_expired(url: str) -> int:
     return EXIT_OK
 
 
+def _seed_demo(url: str, args: argparse.Namespace) -> int:
+    try:
+        password = _read_password(True)
+    except ValueError as exc:
+        return _fail(str(exc), EXIT_USAGE)
+    for phone in ALL_PHONES:
+        problem = password_policy_error(password, phone)
+        if problem is not None:
+            return _fail(problem, EXIT_USAGE)
+    fixture: Path = args.fixture
+    try:
+        with fixture.open("rb") as fh:
+            data = fh.read(MAX_FILE_BYTES + 1)
+        check_bytes(data)
+        parsed = parse_report(data)  # a bad fixture is refused before anything is written
+    except OSError as exc:
+        return _fail(f"cannot read {fixture}: {exc.strerror or exc}", EXIT_FAILURE)
+    except ParseError as exc:
+        return _fail(str(exc), EXIT_FAILURE)
+    engine = make_engine(url)
+    try:
+        seeded = seed_demo(
+            make_session_factory(engine),
+            parsed,
+            data,
+            sanitize_filename(fixture.name),
+            password,
+            _operator(),
+        )
+    except AlreadyExistsError:
+        return _fail("the demo agencies already exist; nothing was changed", EXIT_USAGE)
+    finally:
+        engine.dispose()
+    _emit(
+        {
+            "demo-a": {
+                "agency_id": seeded.agency_a,
+                "manager_id": seeded.manager_a,
+                "staff_ids": [seeded.staff_sv, seeded.staff_er],
+            },
+            "demo-b": {
+                "agency_id": seeded.agency_b,
+                "manager_id": seeded.manager_b,
+                "upload_id": seeded.upload_b,
+            },
+        }
+    )
+    return EXIT_OK
+
+
 def _password_argument_error(argv: Sequence[str]) -> str | None:
     """A password typed on the command line lands in shell history and process listings.
 
@@ -485,7 +558,9 @@ def _default_url_for(command_name: str) -> str:
 def main(argv: Sequence[str] | None = None) -> int:
     _use_utf8_output()
     raw_argv = sys.argv[1:] if argv is None else list(argv)
-    if raw_argv[:1] == ["bootstrap-agency"]:
+    if raw_argv[:1] == ["seed-demo"] and os.environ.get("ENV", "").strip().lower() == "production":
+        return _fail("seed-demo never runs in production (ENV=production)", EXIT_USAGE)
+    if raw_argv[:1] in (["bootstrap-agency"], ["seed-demo"]):
         refusal = _password_argument_error(raw_argv)
         if refusal is not None:
             return _fail(refusal, EXIT_USAGE)
@@ -509,6 +584,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             return _grant_app_role(url, args.role)
         if args.command == "purge-expired":
             return _purge_expired(url)
+        if args.command == "seed-demo":
+            return _seed_demo(url, args)
         return _import(url, args.file, args.agency, args.date)
     except SQLAlchemyError as exc:
         return _database_failure(exc)

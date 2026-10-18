@@ -35,6 +35,22 @@ Importing the same file again updates the tickets in place and never resets thei
 - Unreadable files are reported with exit code 1.
 - `--date YYYY-MM-DD` overrides the report date derived from the file.
 
+## Run the web app locally
+
+```bash
+uv run python -m app init-db                       # creates sqlite:///bruge.db (or use DATABASE_URL)
+uv run uvicorn app.web.main:app --reload           # http://127.0.0.1:8000
+curl -i http://127.0.0.1:8000/healthz              # 200 {"status":"ok","version":"dev"}
+curl -i http://127.0.0.1:8000/nope                 # the French 404 page, with security headers
+```
+
+Configuration comes from environment variables (see `app/settings.py`): `ENV` (`development` by
+default, `production` on Render), `DATABASE_URL`, `MIGRATION_DATABASE_URL` (used by `init-db` when
+set), `ALLOWED_HOSTS`, `CORS_ALLOWED_ORIGINS`, `COOKIE_SECURE`, `TRUSTED_PROXY_HOPS`, `SENTRY_DSN`.
+In production the app refuses to start with `*` in the CORS list or hosts, insecure cookies, or an
+empty `ALLOWED_HOSTS`. Logs are JSON lines on stdout (one per request, secrets redacted).
+Deploying to Render: [docs/runbook.md](docs/runbook.md).
+
 Development checks:
 
 ```bash

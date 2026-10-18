@@ -23,6 +23,7 @@ from starlette.middleware import Middleware
 from starlette.responses import Response
 
 from app import db_roles
+from app.clock import Clock, utc_now
 from app.db import make_engine, make_session_factory
 from app.observability import configure_logging
 from app.settings import Settings
@@ -56,7 +57,9 @@ def _check_database_role(engine: Engine, settings: Settings) -> None:
 
 
 def create_app(
-    settings: Settings | None = None, extra_middleware: Sequence[Middleware] = ()
+    settings: Settings | None = None,
+    extra_middleware: Sequence[Middleware] = (),
+    clock: Clock | None = None,
 ) -> FastAPI:
     """Build the application. Nothing happens at import time; run it with ``uvicorn --factory``."""
     settings = settings or Settings()
@@ -82,6 +85,7 @@ def create_app(
     app.state.settings = settings
     app.state.engine = engine
     app.state.sessionmaker = make_session_factory(engine)
+    app.state.clock = clock or utc_now  # injected in tests; sessions, limits and expiry use it
 
     app.add_exception_handler(StarletteHTTPException, http_exception_handler)
     app.add_exception_handler(RequestValidationError, validation_exception_handler)

@@ -46,6 +46,9 @@ class Settings(BaseSettings):
     allowed_hosts: CsvList = Field(default_factory=list)
     cors_allowed_origins: CsvList = Field(default_factory=list)
     cookie_secure: bool = True
+    # Server-side sessions (docs/phase2-plan.md decision 2): 12 h idle, 7 d absolute.
+    session_idle_hours: int = Field(default=12, ge=1, le=24 * 30)
+    session_absolute_days: int = Field(default=7, ge=1, le=90)
     # Number of trusted reverse proxies in front of the app (Render: see the runbook). 0 means
     # X-Forwarded-* is ignored entirely, which is the safe default; render.yaml sets 1.
     trusted_proxy_hops: int = Field(default=0, ge=0, le=10)

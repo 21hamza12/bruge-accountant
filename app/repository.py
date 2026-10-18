@@ -1,5 +1,6 @@
 """Database access. Every query is scoped by ``agency_id``."""
 
+import logging
 from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
@@ -11,8 +12,9 @@ from sqlalchemy.orm import Session
 
 from app.models import PRICE_STATUS_AWAITING, ROLE_MANAGER, Agency, Ticket, Upload, User
 from app.parsing.amadeus import ParsedReport, ParsedTicket
-from app.tenancy import bind_tenant, bound_tenant, lookup_scope, unbind_tenant
+from app.tenancy import bind_tenant, bound_tenant, lookup_scope, rebind_tenant, restore_binding
 
+log = logging.getLogger("app.repository")
 UPSERT_CHUNK = 200
 
 # Amadeus-owned columns refreshed on re-import. Deliberately absent: price_status (staff
@@ -57,23 +59,29 @@ def create_agency(session: Session, slug: str, name: str, currency: str = "MRU")
     """Insert an agency and leave the session bound to it. Works under FORCEd row-level security."""
     previous = bound_tenant(session)
     agency_id = _next_agency_id(session)
-    if agency_id is not None:
-        bind_tenant(session, agency_id)  # before the INSERT: its WITH CHECK compares the id
-    agency = Agency(slug=slug, name=name, currency=currency)
-    if agency_id is not None:
-        agency.id = agency_id
-    session.add(agency)
     try:
+        if agency_id is not None:
+            rebind_tenant(session, agency_id)  # before the INSERT: its WITH CHECK compares the id
+        agency = Agency(slug=slug, name=name, currency=currency)
+        if agency_id is not None:
+            agency.id = agency_id
+        session.add(agency)
         session.commit()
     except Exception:
-        session.rollback()
-        if previous is None:
-            unbind_tenant(session)
-        else:
-            bind_tenant(session, previous)
+        _abandon(session, previous)
         raise
-    bind_tenant(session, agency.id)
+    rebind_tenant(session, agency.id)
     return agency
+
+
+def _abandon(session: Session, previous: int | None) -> None:
+    """After a failure: restore the previous binding first (it cannot fail), then roll back.
+    A rollback that fails too must not replace the error being handled, so it is only logged."""
+    restore_binding(session, previous)
+    try:
+        session.rollback()
+    except Exception:
+        log.warning("rollback failed while handling an earlier error", exc_info=True)
 
 
 class AlreadyExistsError(Exception):
@@ -114,13 +122,13 @@ def bootstrap_agency(
             raise AlreadyExistsError("phone")
         agency_id = _next_agency_id(session)
         if agency_id is not None:
-            bind_tenant(session, agency_id)
+            rebind_tenant(session, agency_id)
         agency = Agency(slug=slug, name=name)
         if agency_id is not None:
             agency.id = agency_id
         session.add(agency)
         session.flush()
-        bind_tenant(session, agency.id)
+        rebind_tenant(session, agency.id)
         user = User(
             agency_id=agency.id,
             phone=phone,
@@ -134,11 +142,7 @@ def bootstrap_agency(
         result = BootstrapResult(agency_id=agency.id, user_id=user.id)
         session.commit()
     except Exception:
-        session.rollback()
-        if previous is None:
-            unbind_tenant(session)
-        else:
-            bind_tenant(session, previous)
+        _abandon(session, previous)
         raise
     return result
 
@@ -215,17 +219,19 @@ def import_report(
 ) -> ImportResult:
     """Store an upload and upsert its tickets in a single transaction.
 
-    The session is bound to ``agency_id`` first (row-level security). The commit at the end
-    ends the transaction and its tenant setting; the session's ``after_begin`` listener applies
-    the binding again to whatever the caller reads next.
+    The session is bound to ``agency_id`` first (row-level security); one that is already bound
+    to a different agency is refused (``TenantBindingError``), never re-pointed. The commit at
+    the end ends the transaction and its tenant setting; the session's ``after_begin`` listener
+    applies the binding again to whatever the caller reads next.
 
     Each chunk is one atomic upsert, so concurrent imports of the same tickets cannot
     collide; rows go in ticket-number order so concurrent writers lock in the same order.
     ``inserted``/``updated`` come from a count taken in the same transaction (exact unless
     another import commits the same tickets in between).
     """
+    # Raises, and leaves the session untouched, if it is bound to another agency.
+    bind_tenant(session, agency_id)
     try:
-        bind_tenant(session, agency_id)
         if session.get(Agency, agency_id) is None:
             raise LookupError(f"unknown agency id {agency_id}")
 

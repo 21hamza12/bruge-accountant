@@ -6,21 +6,28 @@ in both deployment modes (``rls_db``).
 
 from __future__ import annotations
 
+from collections.abc import Callable
+from datetime import date
+from typing import Any
+
 import pytest
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from app import repository
+from app.auth.passwords import hash_password
 from app.db import make_engine, make_session_factory
 from app.models import Agency, Ticket, Upload, User
 from app.parsing.amadeus import ParsedReport
 from app.repository import (
+    bootstrap_agency,
     create_agency,
     get_agency_by_slug,
     import_report,
     tickets_awaiting_price,
 )
-from app.tenancy import bind_tenant, bound_tenant
+from app.tenancy import TenantBindingError, bind_tenant, bound_tenant, rebind_tenant
 from tests.conftest import SHA, RlsDatabase
 
 # --- upload counts and uploader (both engines) ----------------------------------------
@@ -58,6 +65,7 @@ def test_uploader_from_another_agency_is_refused_and_nothing_is_written(
     stranger = User(agency_id=b.id, phone="+22212345678", role="staff")
     session.add(stranger)
     session.commit()
+    rebind_tenant(session, a.id)  # create_agency left the session bound to b
     with pytest.raises(IntegrityError):
         import_report(session, a.id, parsed_fixture, "f.xlsx", SHA, uploaded_by_user_id=stranger.id)
     assert session.scalar(select(func.count()).select_from(Upload)) == 0
@@ -96,6 +104,126 @@ def test_slug_lookup_works_on_an_unbound_session(session: Session) -> None:
         assert bound_tenant(fresh) is None  # looking an agency up does not bind to it
     finally:
         fresh.close()
+
+
+# --- no silent re-pointing ---------------------------------------------------------------
+
+
+def test_tickets_awaiting_price_refuses_another_agency_and_keeps_the_binding(
+    session: Session,
+) -> None:
+    bind_tenant(session, 1)
+    with pytest.raises(TenantBindingError):
+        tickets_awaiting_price(session, 2, date(2026, 10, 1))
+    assert bound_tenant(session) == 1
+
+
+def test_import_report_refuses_another_agency_keeps_the_binding_and_writes_nothing(
+    session: Session, parsed_fixture: ParsedReport
+) -> None:
+    bind_tenant(session, 1)
+    with pytest.raises(TenantBindingError):
+        import_report(session, 2, parsed_fixture, "f.xlsx", SHA)
+    assert bound_tenant(session) == 1
+    assert session.scalar(select(func.count()).select_from(Upload)) == 0
+
+
+def test_the_functions_accept_the_agency_the_session_is_bound_to(
+    session: Session, parsed_fixture: ParsedReport
+) -> None:
+    agency = create_agency(session, "a", "A")
+    bind_tenant(session, agency.id)  # same agency again: fine
+    import_report(session, agency.id, parsed_fixture, "f.xlsx", SHA)
+    found = tickets_awaiting_price(session, agency.id, parsed_fixture.header.report_date)
+    assert len(found) == 48
+
+
+# --- a failed create restores the previous binding, whatever else goes wrong ---------------
+
+NEW_AGENCY_ID = 99
+
+
+@pytest.fixture
+def fake_sequence(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Make SQLite behave like Postgres here: the new id is known (and bound) before the INSERT."""
+    monkeypatch.setattr(repository, "_next_agency_id", lambda _session: NEW_AGENCY_ID)
+
+
+def _duplicate_slug_create(session: Session) -> Any:
+    return create_agency(session, "taken", "Again")
+
+
+def _bad_phone_bootstrap(session: Session) -> Any:
+    return bootstrap_agency(
+        session, "fresh", "Fresh", "not-a-phone", "Name", hash_password("x" * 12)
+    )
+
+
+def _duplicate_slug_bootstrap(session: Session) -> Any:
+    return bootstrap_agency(session, "taken", "Again", "+22212345678", "N", hash_password("x" * 12))
+
+
+FAILING_CALLS = [
+    pytest.param(_duplicate_slug_create, IntegrityError, id="create_agency duplicate slug"),
+    pytest.param(_bad_phone_bootstrap, IntegrityError, id="bootstrap_agency bad phone"),
+    pytest.param(
+        _duplicate_slug_bootstrap, repository.AlreadyExistsError, id="bootstrap duplicate slug"
+    ),
+]
+
+
+@pytest.fixture
+def taken_slug(session: Session) -> Session:
+    """A session on a database that already has the agency 'taken' (created by someone else)."""
+    other = Session(bind=session.get_bind())
+    try:
+        create_agency(other, "taken", "Taken")
+    finally:
+        other.close()
+    return session
+
+
+@pytest.mark.parametrize(("call", "error"), FAILING_CALLS)
+@pytest.mark.usefixtures("fake_sequence")
+def test_a_failure_restores_an_unbound_session(
+    taken_slug: Session, call: Callable[[Session], Any], error: type[Exception]
+) -> None:
+    with pytest.raises(error):
+        call(taken_slug)
+    assert bound_tenant(taken_slug) is None
+
+
+@pytest.mark.parametrize(("call", "error"), FAILING_CALLS)
+@pytest.mark.usefixtures("fake_sequence")
+def test_a_failure_restores_the_previous_binding(
+    taken_slug: Session, call: Callable[[Session], Any], error: type[Exception]
+) -> None:
+    bind_tenant(taken_slug, 7)
+    with pytest.raises(error):
+        call(taken_slug)
+    assert bound_tenant(taken_slug) == 7
+
+
+@pytest.mark.parametrize(("call", "error"), FAILING_CALLS[:2])
+@pytest.mark.parametrize("previous", [None, 7])
+@pytest.mark.usefixtures("fake_sequence")
+def test_a_failing_rollback_never_masks_the_original_error(
+    taken_slug: Session,
+    monkeypatch: pytest.MonkeyPatch,
+    call: Callable[[Session], Any],
+    error: type[Exception],
+    previous: int | None,
+) -> None:
+    if previous is not None:
+        bind_tenant(taken_slug, previous)
+
+    def broken_rollback() -> None:
+        raise RuntimeError("connection lost during rollback")
+
+    monkeypatch.setattr(taken_slug, "rollback", broken_rollback)
+    with pytest.raises(error):  # the IntegrityError, not the RuntimeError
+        call(taken_slug)
+    assert bound_tenant(taken_slug) == previous
 
 
 # --- Postgres, under row-level security, in both modes --------------------------------
@@ -142,6 +270,7 @@ def test_import_survives_its_commit_under_rls_and_is_isolated(
             assert len(tickets_awaiting_price(s, a, parsed_fixture.header.report_date)) == 48
 
             # the same tickets in agency B are new rows there: B's lookups cannot see A's
+            rebind_tenant(s, b)  # a deliberate switch; import_report itself refuses to re-point
             other = import_report(s, b, parsed_fixture, "1OCT.xlsx", SHA)
             assert (other.inserted, other.updated) == (48, 0)
             assert bound_tenant(s) == b

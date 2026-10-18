@@ -17,7 +17,15 @@ from sqlalchemy.orm import Session
 
 from app import tenancy
 from app.db import make_engine, make_session_factory
-from app.tenancy import LOOKUP_KEYS, bind_tenant, bound_tenant, lookup_scope
+from app.tenancy import (
+    LOOKUP_KEYS,
+    TenantBindingError,
+    bind_tenant,
+    bound_tenant,
+    lookup_scope,
+    rebind_tenant,
+    unbind_tenant,
+)
 
 # --- statement shape (no database needed) -------------------------------------------
 
@@ -126,13 +134,110 @@ def test_unbound_sessions_set_nothing(sqlite_session: Session, spy: list[tuple[s
     assert spy == []
 
 
-def test_rebinding_replaces_the_tenant(sqlite_session: Session, spy: list[tuple[str, str]]) -> None:
+def test_binding_a_different_agency_raises_and_keeps_the_first(
+    sqlite_session: Session, spy: list[tuple[str, str]]
+) -> None:
     bind_tenant(sqlite_session, 3)
-    bind_tenant(sqlite_session, 4)
+    spy.clear()
+    with pytest.raises(TenantBindingError, match="already bound"):
+        bind_tenant(sqlite_session, 4)
+    assert bound_tenant(sqlite_session) == 3
+    assert spy == []  # nothing was sent to the database
+    sqlite_session.commit()
+    sqlite_session.execute(select(1))
+    assert spy == [("app.agency_id", "3")]  # and later transactions still use agency 3
+
+
+def test_binding_the_same_agency_again_is_a_no_op(
+    sqlite_session: Session, spy: list[tuple[str, str]]
+) -> None:
+    bind_tenant(sqlite_session, 3)
+    spy.clear()
+    bind_tenant(sqlite_session, 3)
+    assert spy == []
+    assert bound_tenant(sqlite_session) == 3
+
+
+def test_rebind_tenant_replaces_the_tenant_now_and_later(
+    sqlite_session: Session, spy: list[tuple[str, str]]
+) -> None:
+    bind_tenant(sqlite_session, 3)
+    rebind_tenant(sqlite_session, 4)
+    assert spy[-1] == ("app.agency_id", "4")
     sqlite_session.commit()
     spy.clear()
     sqlite_session.execute(select(1))
     assert spy == [("app.agency_id", "4")]
+
+
+def test_rebind_tenant_binds_an_unbound_session_too(sqlite_session: Session) -> None:
+    rebind_tenant(sqlite_session, 8)
+    assert bound_tenant(sqlite_session) == 8
+
+
+@pytest.mark.parametrize("bad", [0, -1, True, "1", None, 1.5])
+def test_rebind_tenant_validates_like_bind_tenant(sqlite_session: Session, bad: Any) -> None:
+    rebind_tenant(sqlite_session, 2)
+    with pytest.raises((TypeError, ValueError)):
+        rebind_tenant(sqlite_session, bad)
+    assert bound_tenant(sqlite_session) == 2
+
+
+def test_unbind_then_bind_another_agency_is_allowed(sqlite_session: Session) -> None:
+    bind_tenant(sqlite_session, 3)
+    unbind_tenant(sqlite_session)
+    assert bound_tenant(sqlite_session) is None
+    bind_tenant(sqlite_session, 4)
+    assert bound_tenant(sqlite_session) == 4
+
+
+def test_unbind_sets_the_setting_to_empty_at_once_inside_a_transaction(
+    sqlite_session: Session, spy: list[tuple[str, str]]
+) -> None:
+    bind_tenant(sqlite_session, 3)
+    spy.clear()
+    unbind_tenant(sqlite_session)
+    assert spy == [("app.agency_id", "")]
+    sqlite_session.commit()
+    spy.clear()
+    sqlite_session.execute(select(1))
+    assert spy == []  # nothing re-applied afterwards
+
+
+def test_unbind_without_a_transaction_sends_nothing(
+    sqlite_session: Session, spy: list[tuple[str, str]]
+) -> None:
+    bind_tenant(sqlite_session, 3)
+    sqlite_session.commit()
+    spy.clear()
+    unbind_tenant(sqlite_session)
+    assert spy == []
+    assert bound_tenant(sqlite_session) is None
+
+
+@pytest.mark.parametrize("action", [bind_tenant, rebind_tenant])
+def test_binding_inside_a_savepoint_is_refused(sqlite_session: Session, action: Any) -> None:
+    """A savepoint rollback would drop the transaction-local setting while session.info still
+    says "bound": the session would silently see zero rows (or, worse, the wrong tenant)."""
+    with sqlite_session.begin_nested(), pytest.raises(TenantBindingError, match="savepoint"):
+        action(sqlite_session, 5)
+    assert bound_tenant(sqlite_session) is None
+
+
+def test_unbinding_inside_a_savepoint_is_refused(sqlite_session: Session) -> None:
+    bind_tenant(sqlite_session, 5)
+    with sqlite_session.begin_nested(), pytest.raises(TenantBindingError, match="savepoint"):
+        unbind_tenant(sqlite_session)
+    assert bound_tenant(sqlite_session) == 5
+
+
+def test_binding_before_and_after_a_savepoint_is_fine(sqlite_session: Session) -> None:
+    bind_tenant(sqlite_session, 5)
+    with sqlite_session.begin_nested():
+        sqlite_session.execute(select(1))
+    sqlite_session.commit()
+    bind_tenant(sqlite_session, 5)
+    assert bound_tenant(sqlite_session) == 5
 
 
 def test_lookup_scope_applies_once_and_is_not_reapplied(
@@ -230,3 +335,44 @@ def test_pg_value_with_quotes_is_data_not_sql(pg_session: Session) -> None:
     nasty = "x'; DROP TABLE agencies; --"
     lookup_scope(pg_session, "app.login_phone", nasty)
     assert current(pg_session, "app.login_phone") == nasty
+
+
+def test_pg_unbind_takes_effect_immediately_inside_the_transaction(pg_session: Session) -> None:
+    bind_tenant(pg_session, 42)
+    assert current(pg_session, "app.agency_id") == "42"
+    unbind_tenant(pg_session)
+    assert current(pg_session, "app.agency_id") in (None, "")  # same transaction, no commit
+    pg_session.commit()
+    assert current(pg_session, "app.agency_id") in (None, "")
+
+
+def test_pg_binding_another_agency_raises_and_the_setting_stays(pg_session: Session) -> None:
+    bind_tenant(pg_session, 42)
+    with pytest.raises(TenantBindingError):
+        bind_tenant(pg_session, 43)
+    assert current(pg_session, "app.agency_id") == "42"
+    assert bound_tenant(pg_session) == 42
+
+
+def test_pg_rebind_tenant_switches_the_setting_immediately(pg_session: Session) -> None:
+    bind_tenant(pg_session, 42)
+    rebind_tenant(pg_session, 43)
+    assert current(pg_session, "app.agency_id") == "43"
+
+
+def test_pg_a_savepoint_rollback_drops_a_setting_made_inside_it(pg_session: Session) -> None:
+    """The reason binding inside a savepoint is refused: the setting would silently vanish."""
+    pg_session.execute(select(1))
+    savepoint = pg_session.begin_nested()
+    pg_session.execute(select(func.set_config("app.agency_id", "7", True)))
+    assert current(pg_session, "app.agency_id") == "7"
+    savepoint.rollback()
+    assert current(pg_session, "app.agency_id") in (None, "")
+
+
+def test_pg_binding_inside_a_savepoint_is_refused(pg_session: Session) -> None:
+    pg_session.execute(select(1))
+    with pg_session.begin_nested(), pytest.raises(TenantBindingError, match="savepoint"):
+        bind_tenant(pg_session, 9)
+    assert bound_tenant(pg_session) is None
+    assert current(pg_session, "app.agency_id") in (None, "")

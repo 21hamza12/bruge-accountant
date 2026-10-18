@@ -342,6 +342,17 @@ def test_duplicate_doc_number_keeps_first_with_warning() -> None:
     assert len(result.warnings) == 1
     assert "3940000001" in result.warnings[0]
     assert "row 7" in result.warnings[0]
+    assert result.tickets[0].flags == ("duplicate_in_file",)
+    assert result.tickets[1].flags == ()
+
+
+def test_triple_duplicate_flags_once_and_warns_each() -> None:
+    rows = [ticket_row(doc="3940000001", cost=c) for c in (1, 2, 3)]
+    result = parse_report(build_workbook(rows))
+    assert len(result.tickets) == 1
+    assert result.tickets[0].cost == Decimal(1)
+    assert result.tickets[0].flags == ("duplicate_in_file",)
+    assert len(result.warnings) == 2
 
 
 def test_blank_doc_number_with_data_is_skipped_with_warning() -> None:
@@ -359,6 +370,9 @@ def test_blank_doc_number_with_data_is_skipped_with_warning() -> None:
         ("DOE/JOHN MR", "DOE/JOHN MR", "ADT"),
         ("  DOE/JOHN  ", "DOE/JOHN", "ADT"),
         ("DOE/JOHN (inf) ", "DOE/JOHN", "INF"),
+        ("DOE/JOHN(INF)", "DOE/JOHN", "INF"),
+        ("DOE/JOHN (CHD) ", "DOE/JOHN", "CHD"),
+        ("  DOE/JOHN	(chd) ", "DOE/JOHN", "CHD"),
         ("DOE/(CHD)JOHN", "DOE/(CHD)JOHN", "ADT"),
         ("O'BRIEN/ÉLODIE 😀", "O'BRIEN/ÉLODIE 😀", "ADT"),
     ],

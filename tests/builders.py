@@ -5,6 +5,7 @@ from __future__ import annotations
 import io
 import re
 import zipfile
+from collections.abc import Callable
 from typing import Any
 
 import openpyxl
@@ -29,10 +30,11 @@ def build_workbook(
     rows: list[list[Any]],
     *,
     range_raw: str | None = "01OCT",
-    current: str | None = "02-OCT-2026",
+    current: Any = "02-OCT-2026",
     headers: list[str] | None = None,
     header_row: int = 5,
     hand_typed: bool = False,
+    stray: dict[str, Any] | None = None,
 ) -> bytes:
     """Create an .xlsx (as bytes) shaped like an Amadeus daily sales export."""
     wb = openpyxl.Workbook()
@@ -60,6 +62,8 @@ def build_workbook(
         if hand_typed:
             ws.cell(row=header_row + offset, column=9, value=999)
             ws.cell(row=header_row + offset, column=10, value="JUNK")
+    for coordinate, value in (stray or {}).items():
+        ws[coordinate] = value
     buf = io.BytesIO()
     wb.save(buf)
     return buf.getvalue()
@@ -85,4 +89,30 @@ def set_cached_formula(xlsx: bytes, cell: str, formula: str, cached: int | None)
                 data = text.encode("utf-8")
             dst.writestr(item, data)
     assert patched, f"cell {cell} not found in sheet XML"
+    return out.getvalue()
+
+
+def patch_sheet_xml(xlsx: bytes, transform: Callable[[str], str]) -> bytes:
+    """Return a copy of ``xlsx`` whose first sheet XML went through ``transform``."""
+    out = io.BytesIO()
+    with zipfile.ZipFile(io.BytesIO(xlsx)) as src, zipfile.ZipFile(out, "w") as dst:
+        for item in src.infolist():
+            data = src.read(item.filename)
+            if item.filename == "xl/worksheets/sheet1.xml":
+                data = transform(data.decode("utf-8")).encode("utf-8")
+            dst.writestr(item, data)
+    return out.getvalue()
+
+
+def add_zip_entries(xlsx: bytes, entries: dict[str, bytes]) -> bytes:
+    """Return a copy of ``xlsx`` with extra (compressed) entries."""
+    out = io.BytesIO()
+    with (
+        zipfile.ZipFile(io.BytesIO(xlsx)) as src,
+        zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as dst,
+    ):
+        for item in src.infolist():
+            dst.writestr(item, src.read(item.filename))
+        for name, data in entries.items():
+            dst.writestr(name, data)
     return out.getvalue()

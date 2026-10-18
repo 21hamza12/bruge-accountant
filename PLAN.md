@@ -65,13 +65,72 @@ Deploy: one Docker container + managed Postgres.
    Before exposing uploads: `agency_id` only from the authenticated session; parse in a worker with
    memory/time limits; separate migration vs app DB roles and a per-transaction `app.agency_id`
    setting for Postgres RLS; sanitize upload filenames
-3. Text price chat (read-back + confirm; who/when stored in append-only price history).
-   Open question: partner sales (P.B = fee only) vs direct sales (P.B = full price)
-4. Voice notes (speech-to-text → same confirmation flow)
-5. Daily / weekly / monthly reports: tickets, revenue, profit, margin.
-   Any Excel/CSV export must neutralise cells starting with `=` `+` `-` `@` tab or CR (formula injection)
-6. "Usual" partner fee suggestion (never auto-applied), odd-price flags, manager escalation, push notifications
-7. Arabic / French UI, onboarding other agencies, billing
+   Before Phase 3: a design pass on every page (high-end look, approved from a clickable mockup).
+3. **Price chat.** After each upload the app asks each staff member about the bookings they issued.
+   They answer by text; the app reads the answer back and saves only after they confirm.
+   Each price is stored with who gave it and when, in an append-only price history.
+   Per booking it collects:
+   - the **price**
+   - **who it was sold to**: a walk-in client or a partner (BARAKE, BOUCHRA…). This resolves the
+     open question of whether P.B is the full price or the partner fee.
+   - **how it was paid**: cash, Bankily, Masrvi, Sedad, bank transfer, or on credit
+   - optionally, the **client's name and phone**
+   Replies are read by plain code first; AI is used only when needed (see "AI usage").
+4. **Voice notes.** Speech-to-text runs only when a voice note is sent; the transcript then goes
+   through the same read-back and confirm flow.
+5. **Reports and the manager's daily summary.**
+   - Daily, weekly and monthly tickets, revenue, profit and margin.
+   - **Refunds, voids and EMDs** are matched to their original ticket and netted out.
+   - **Staff performance and commissions**: per agent, plus the commission rule if one is set.
+   - **Daily summary card** at the top of the manager's home page: yesterday's numbers, missing
+     prices per staff member, top unpaid balances, odd prices. It is generated on the dashboard,
+     not sent by WhatsApp. An optional free phone notification says when it is ready.
+   - Excel/CSV export. Any export must neutralise cells starting with `=` `+` `-` `@` tab or CR
+     (formula injection).
+6. **Balances and payments.**
+   - What each partner and credit client owes, payments recorded against it, how late each
+     balance is, and a statement per partner.
+   - **Daily cash check**: the expected cash from the day's cash sales compared with the counted
+     cash, with any difference flagged.
+7. **Other services.** Visas, hotels, Hajj/Umrah packages and insurance, entered by staff with
+   their price, cost and payment method, and included in the reports and balances.
+8. **Client list.** Repeat customers, their purchase history, and reminders before the Hajj and
+   Umrah seasons. Built on the client details captured in Phase 3.
+9. **Smart questions.**
+   - Filters and buttons first, at no running cost: period, airline, staff member, partner,
+     service.
+   - Plain-language questions ("Bénéfice de la semaine sur Turkish ?") come as an add-on, and the
+     AI is used only for that.
+   - Read-only and scoped to the agency. The AI picks from fixed report functions; it never
+     writes free-form SQL.
+10. **Helpers and alerts.** The partner's "usual" fee as a suggestion (never applied
+    automatically), odd-price flags (below cost, equal to cost, unusually high), escalation of
+    unanswered questions to the manager, and push notifications.
+11. **Selling to other agencies.** Arabic (RTL) and French interface, self-service onboarding
+    for new agencies, and billing.
+
+### AI usage: only when needed
+
+- **Plain code first.** It handles the common cases at no running cost, e.g. "45000", "45 000",
+  "45k", "cash", "usual".
+- **AI only when that fails or is ambiguous.** Mixed languages, several numbers, a Hassaniya
+  sentence, a voice note. Every AI result still goes through the staff member's read-back and
+  confirm; nothing is saved on the AI's word alone.
+- **The smallest model that does the job.** Inputs are short, and no passenger data goes to the
+  AI beyond what the question needs.
+- **AI use is logged per agency** so its cost can be measured. A cost estimate is done when
+  Phase 3 is planned.
+
+### Decisions still open (each one is due before its phase)
+
+- **Phase 3**
+  - the list of payment methods
+  - whether the client name and phone are optional or required
+  - partner fee vs full price (answered by the "who it was sold to" field)
+- **Phase 5:** the commission rule (per ticket, % of margin, or none)
+- **Phase 6:** do partners pay per ticket or at the end of the month?
+- **Phase 7:** which services the agency sells, and whether each one has a cost
+- **Before go-live:** hosting (free tier, laptop, or paid Render)
 
 ## Workflow
 

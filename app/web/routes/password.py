@@ -19,7 +19,7 @@ from sqlalchemy.orm import Session
 from starlette.responses import RedirectResponse, Response
 
 from app import audit
-from app.auth import ratelimit, sessions
+from app.auth import ratelimit, sessions, temp_passwords
 from app.auth.passwords import hash_password, password_policy_error, verify_password
 from app.auth.sessions import SessionPolicy
 from app.clock import Clock
@@ -58,9 +58,11 @@ def change_form(auth: Annotated[AuthContext, Depends(require_login)]) -> Respons
     return _form(auth)
 
 
-def current_password_is_right(
-    db: Session, auth: AuthContext, supplied: str
-) -> bool:  # extended for temporary passwords in step 23
+def current_password_is_right(db: Session, auth: AuthContext, supplied: str) -> bool:
+    """The real password, or - for an account that only has a temporary one - the temporary
+    password it just logged in with."""
+    if auth.user.password_hash is None:
+        return temp_passwords.spent_temporary_matches(db, auth.user, supplied)
     return verify_password(supplied, auth.user.password_hash)
 
 
@@ -102,6 +104,7 @@ def change_submit(
 
     user.password_hash = hash_password(new_password)
     user.must_change_password = False
+    temp_passwords.retire_pending(db, user, now)
     policy = SessionPolicy.from_settings(settings)
     created = sessions.create_session(db, user, now, policy)  # rotate: a brand new token
     sessions.revoke_all_for_user(db, user.agency_id, user.id, now, except_session_id=created.row.id)

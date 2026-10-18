@@ -211,3 +211,44 @@ def audit_sequence(owner_url: str) -> int:
         seq = table("audit_events_id_seq", column("last_value"), column("is_called"))
         row = s.execute(select(seq.c.last_value, seq.c.is_called)).one()
         return int(row.last_value) if row.is_called else 0
+
+
+def issue_temp(
+    db: WebDb, clock: FakeClock, agency_id: int, user_id: int, actor_id: int | None = None
+) -> str:
+    """Issue a temporary password through the service, as the application connection."""
+    from sqlalchemy import select
+
+    from app.auth.temp_passwords import issue_temporary_password
+    from app.tenancy import bind_tenant
+
+    engine = make_engine(db.app_url)
+    try:
+        with make_session_factory(engine)() as s:
+            bind_tenant(s, agency_id)
+            user = s.scalars(
+                select(User).where(User.agency_id == agency_id, User.id == user_id)
+            ).one()
+            plaintext = issue_temporary_password(s, user, clock(), actor_user_id=actor_id)
+            s.commit()
+            return plaintext
+    finally:
+        engine.dispose()
+
+
+def database_text(owner_url: str, agency_ids: list[int]) -> str:
+    """Every column of every readable row of the login-related tables, as one string."""
+    from sqlalchemy import select
+
+    from app.models import RateLimitBucket, StaffSignLink, TemporaryPassword, UserSession
+
+    parts: list[str] = []
+    with owner_session(owner_url) as s:
+        for agency_id in agency_ids:
+            rebind_tenant(s, agency_id)
+            for model in (User, TemporaryPassword, UserSession, AuditEvent, StaffSignLink):
+                for row in s.scalars(select(model)):
+                    parts.extend(str(getattr(row, c.key)) for c in model.__table__.columns)
+        for bucket in s.scalars(select(RateLimitBucket)):
+            parts.extend([bucket.key, str(bucket.window_start), str(bucket.count)])
+    return "\n".join(parts)

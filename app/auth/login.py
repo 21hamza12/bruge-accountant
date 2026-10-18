@@ -20,6 +20,7 @@ from datetime import datetime
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.auth import temp_passwords
 from app.auth.passwords import hash_password, needs_rehash, verify_dummy, verify_password
 from app.models import User
 from app.tenancy import bind_tenant, lookup_scope
@@ -29,6 +30,7 @@ REASON_UNKNOWN_PHONE = "unknown_phone"
 REASON_INACTIVE = "inactive"
 REASON_NO_CREDENTIALS = "no_credentials"
 REASON_BAD_PASSWORD = "bad_password"  # noqa: S105 - an internal reason code, not a secret
+REASON_TEMP_UNUSABLE = "temp_password_expired_or_used"  # noqa: S105 - a reason code
 
 
 @dataclass(frozen=True)
@@ -76,6 +78,17 @@ def authenticate(db: Session, phone: str | None, password: str, now: datetime) -
 
 
 def _credential_free_login(db: Session, user: User, password: str, now: datetime) -> LoginResult:
-    """No permanent password: only a temporary one (step 23) can work."""
-    verify_dummy()
-    return _fail(REASON_NO_CREDENTIALS, user)
+    """No permanent password: only the user's latest unused temporary password can work.
+
+    The password is verified first and only a match is spent, so wrong guesses cannot burn a
+    temporary password. The spend itself is atomic and honours the 30-minute expiry.
+    """
+    temp = temp_passwords.latest_unused(db, user)
+    if temp is None:
+        verify_dummy()
+        return _fail(REASON_NO_CREDENTIALS, user)
+    if not verify_password(password, temp.password_hash):
+        return _fail(REASON_BAD_PASSWORD, user)
+    if not temp_passwords.consume_temporary_password(db, temp.id, now):
+        return _fail(REASON_TEMP_UNUSABLE, user)
+    return LoginResult(user, None)

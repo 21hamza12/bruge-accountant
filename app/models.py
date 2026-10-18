@@ -44,6 +44,9 @@ def _now() -> datetime:
 
 class Agency(Base):
     __tablename__ = "agencies"
+    # Migration 0004. The slug_lookup policy compares with a setting that reads '' on a reused
+    # connection, so an empty slug must never exist.
+    __table_args__ = (CheckConstraint("slug <> ''", name="slug_nonempty"),)
 
     id: Mapped[int] = mapped_column(primary_key=True)
     slug: Mapped[str] = mapped_column(String(64), unique=True)
@@ -301,6 +304,8 @@ class RateLimitBucket(Base):
     __table_args__ = (
         CheckConstraint("count >= 0", name="count_nonneg"),
         Index("ix_rate_limit_buckets_window_start", "window_start"),
+        # Migration 0004: every login attempt updates a row, so keep room for HOT updates.
+        {"postgresql_with": {"fillfactor": 70}},
     )
 
     key: Mapped[str] = mapped_column(String(200), primary_key=True)

@@ -12,6 +12,7 @@ from starlette.requests import Request
 from starlette.responses import HTMLResponse, Response
 from starlette.types import ASGIApp, Receive, Scope, Send
 
+from app.observability import request_id_var
 from app.web.templating import render
 
 log = logging.getLogger("app.web.errors")
@@ -19,6 +20,10 @@ log = logging.getLogger("app.web.errors")
 PAGES = {400, 401, 403, 404, 429, 500}
 # Only headers that help the client are copied from an HTTPException; nothing else.
 FORWARDED_HEADERS = ("allow", "retry-after")
+
+
+def _context() -> dict[str, str | None]:
+    return {"request_id": request_id_var.get()}
 
 
 def new_reference() -> str:
@@ -43,7 +48,7 @@ async def http_exception_handler(request: Request, exc: Exception) -> Response:
         return error_response(500, ref)
     kept = {k: v for k, v in (exc.headers or {}).items() if k.lower() in FORWARDED_HEADERS}
     if exc.status_code >= 500:
-        log.error("http %s ref=%s", exc.status_code, ref)
+        log.error("http %s ref=%s", exc.status_code, ref, extra=_context())
     return error_response(exc.status_code, ref, kept)
 
 
@@ -77,7 +82,7 @@ class ErrorBoundaryMiddleware:
             await self.app(scope, receive, tracking_send)
         except Exception:
             ref = new_reference()
-            log.error("unhandled exception ref=%s", ref, exc_info=True)
+            log.error("unhandled exception ref=%s", ref, exc_info=True, extra=_context())
             if started:
                 raise
             await error_response(500, ref)(scope, receive, send)

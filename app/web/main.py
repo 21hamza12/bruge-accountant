@@ -19,6 +19,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app.db import make_engine, make_session_factory
+from app.observability import RequestLogMiddleware, configure_logging
 from app.settings import Settings
 from app.web.errors import (
     ErrorBoundaryMiddleware,
@@ -56,6 +57,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     # Catches unhandled exceptions (the "Exception" handler); innermost, see the class docstring.
     app.add_middleware(ErrorBoundaryMiddleware)
     add_security_middleware(app, settings)
+    app.add_middleware(RequestLogMiddleware)
     app.mount("/static", StaticFiles(directory=TEMPLATES_DIR.parent / "static"), name="static")
 
     @app.get("/offline", include_in_schema=False)
@@ -75,4 +77,5 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     return app
 
 
+configure_logging()
 app = create_app()

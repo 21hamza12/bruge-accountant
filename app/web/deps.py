@@ -6,17 +6,18 @@ from collections.abc import Iterator
 from dataclasses import dataclass
 from typing import Annotated, cast
 
-from fastapi import Depends, Request
+from fastapi import Depends, HTTPException, Request
 from sqlalchemy.orm import Session
 from starlette.responses import RedirectResponse
 
+from app import audit
 from app.auth import sessions
 from app.auth.sessions import SessionPolicy
 from app.clock import Clock
-from app.models import User, UserSession
+from app.models import ROLE_MANAGER, User, UserSession
 from app.settings import Settings
 from app.web.cookies import session_cookie_name
-from app.web.errors import ResponseException
+from app.web.errors import ResponseException, error_response, new_reference
 
 UNKNOWN_IP = "unknown"
 
@@ -79,8 +80,61 @@ def get_auth(
     return AuthContext(found.user, found.session)
 
 
-def current_user(auth: Annotated[AuthContext | None, Depends(get_auth)]) -> AuthContext:
-    """The logged-in user; an anonymous request is sent to the login page."""
+def _is_htmx(request: Request) -> bool:
+    return request.headers.get("hx-request", "").lower() == "true"
+
+
+def _send_away(
+    request: Request, location: str, status_code: int
+) -> ResponseException | HTTPException:
+    """How to turn a request away to ``location``, by kind of request.
+
+    * htmx: ``status_code`` with ``HX-Redirect`` (a 3xx would be followed inside the swap target);
+    * a plain page view (GET, HEAD): a 303 redirect;
+    * anything else (a stale form POST): the error page with ``status_code``, no redirect.
+    """
+    if _is_htmx(request):
+        return ResponseException(
+            error_response(status_code, new_reference(), {"HX-Redirect": location})
+        )
+    if request.method in ("GET", "HEAD"):
+        return ResponseException(RedirectResponse(location, status_code=303))
+    return HTTPException(status_code=status_code)
+
+
+def require_login(
+    request: Request, auth: Annotated[AuthContext | None, Depends(get_auth)]
+) -> AuthContext:
+    """A logged-in user, even one who still has to change the password (``/password/change`` and
+    ``/logout`` use this). Anonymous requests are sent to the login page."""
     if auth is None:
-        raise ResponseException(RedirectResponse("/login", status_code=303))
+        raise _send_away(request, "/login", 401)
+    return auth
+
+
+def current_user(
+    request: Request, auth: Annotated[AuthContext, Depends(require_login)]
+) -> AuthContext:
+    """A logged-in user who has no pending forced password change."""
+    if auth.user.must_change_password:
+        raise _send_away(request, "/password/change", 403)
+    return auth
+
+
+def require_manager(
+    request: Request,
+    db: Annotated[Session, Depends(get_session)],
+    auth: Annotated[AuthContext, Depends(current_user)],
+) -> AuthContext:
+    """A manager; staff get the 403 page and a ``permission_denied`` audit event."""
+    if auth.user.role != ROLE_MANAGER:
+        audit.record_and_commit(
+            db,
+            audit.PERMISSION_DENIED,
+            agency_id=auth.user.agency_id,
+            actor_user_id=auth.user.id,
+            ip=client_ip(request),
+            details={"path": request.url.path, "method": request.method},
+        )
+        raise HTTPException(status_code=403)
     return auth

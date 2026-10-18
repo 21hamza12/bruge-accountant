@@ -39,11 +39,11 @@ from app.web.csrf import csrf_protect, login_csrf_protect, new_login_token, usab
 from app.web.deps import (
     AuthContext,
     client_ip,
-    current_user,
     get_auth,
     get_clock,
     get_session,
     get_settings,
+    require_login,
 )
 from app.web.pages import page
 
@@ -148,7 +148,7 @@ def logout(
     db: Annotated[Session, Depends(get_session)],
     settings: Annotated[Settings, Depends(get_settings)],
     clock: Annotated[Clock, Depends(get_clock)],
-    auth: Annotated[AuthContext, Depends(current_user)],
+    auth: Annotated[AuthContext, Depends(require_login)],
 ) -> Response:
     sessions.revoke_session(db, auth.session, clock())
     audit.record(

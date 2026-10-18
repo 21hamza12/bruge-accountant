@@ -33,7 +33,7 @@ from starlette.concurrency import run_in_threadpool
 from app import audit
 from app.settings import Settings
 from app.web.cookies import login_csrf_cookie_name
-from app.web.deps import AuthContext, client_ip, get_auth, get_session, get_settings
+from app.web.deps import AuthContext, client_ip, get_session, get_settings, require_login
 
 CSRF_FIELD = "csrf_token"
 CSRF_HEADER = "X-CSRF-Token"
@@ -117,13 +117,15 @@ async def csrf_protect(
     request: Request,
     db: Annotated[Session, Depends(get_session)],
     settings: Annotated[Settings, Depends(get_settings)],
-    auth: Annotated[AuthContext | None, Depends(get_auth)],
+    auth: Annotated[AuthContext, Depends(require_login)],
 ) -> None:
-    """Logged-in forms: synchronizer token plus origin check, on unsafe methods only."""
+    """Logged-in forms: synchronizer token plus origin check, on unsafe methods only.
+
+    An anonymous request never gets here: ``require_login`` answers it first (login redirect,
+    htmx 401 with ``HX-Redirect``, or the 401 page for a stale POST).
+    """
     if request.method in SAFE_METHODS:
         return
-    if auth is None:
-        raise HTTPException(status_code=401)
     if not origin_allowed(request, settings):
         raise await _refuse(request, db, "origin", auth)
     if not tokens_match(auth.csrf_token, await submitted_token(request)):

@@ -77,3 +77,71 @@ jobs:
           tests/test_storage_hardening.py
           tests/test_cli.py
           tests/test_postgres_concurrency.py
+
+  docker:
+    name: Docker image and /healthz (Postgres 16)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:16
+        # Throwaway credentials for a CI-only container that is gone when the job ends.
+        env:
+          POSTGRES_USER: bruge
+          POSTGRES_PASSWORD: bruge
+          POSTGRES_DB: bruge_smoke
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U bruge -d bruge_smoke"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      # postgres:// on purpose: it exercises the URL normalization the Render URLs rely on.
+      DB_URL: postgres://bruge:bruge@localhost:5432/bruge_smoke
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build the image
+        run: docker build --tag bruge-accountant:ci .
+      - name: init-db inside the image (same command as preDeployCommand)
+        run: >-
+          docker run --rm --network host -e DATABASE_URL="$DB_URL"
+          bruge-accountant:ci python -m app init-db
+      - name: Start the app in production mode
+        run: >-
+          docker run --detach --name app --network host
+          -e PORT=8000 -e ENV=production -e ALLOWED_HOSTS=localhost,127.0.0.1
+          -e DATABASE_URL="$DB_URL" -e RENDER_GIT_COMMIT="$GITHUB_SHA"
+          bruge-accountant:ci
+      - name: Wait for /healthz to return 200 (60 s timeout)
+        run: |
+          deadline=$((SECONDS + 60))
+          until curl --fail --silent --show-error http://localhost:8000/healthz -o health.json; do
+            if [ "$SECONDS" -ge "$deadline" ]; then
+              echo "timeout: /healthz never returned 200"
+              docker logs app
+              exit 1
+            fi
+            sleep 2
+          done
+          cat health.json
+          grep -q "\"version\": *\"$GITHUB_SHA\"" health.json
+      - name: Error page and headers
+        run: |
+          curl --silent --dump-header headers.txt --output body.html http://localhost:8000/nope
+          cat headers.txt
+          head -n 1 headers.txt | grep -q " 404"
+          grep -qi '^content-security-policy:' headers.txt
+          grep -qi '^strict-transport-security:' headers.txt
+          grep -qi '^x-request-id:' headers.txt
+          if grep -qi '^server:' headers.txt; then echo "server header leaked"; exit 1; fi
+          grep -q "Page introuvable" body.html
+      - name: Runs as non-root and shuts down cleanly on SIGTERM
+        run: |
+          test "$(docker exec app id -u)" != "0"
+          docker stop --time 10 app
+          test "$(docker inspect --format '{{.State.ExitCode}}' app)" = "0"
+      - name: Container logs
+        if: always()
+        run: docker logs app

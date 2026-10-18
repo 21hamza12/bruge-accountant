@@ -1,0 +1,79 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  checks:
+    name: Tests, lint and types (SQLite)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - run: uv sync --locked
+      - name: pytest (80% coverage gate from pyproject)
+        run: uv run pytest
+      - run: uv run ruff check .
+      - run: uv run ruff format --check .
+      - name: mypy --strict (app, tests, migrations)
+        run: uv run mypy
+
+  postgres:
+    name: Migrations, storage and CLI (Postgres 16)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:16
+        # Throwaway credentials for a CI-only container that is gone when the job ends.
+        env:
+          POSTGRES_USER: bruge
+          POSTGRES_PASSWORD: bruge
+          POSTGRES_DB: bruge_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U bruge -d bruge_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgresql+psycopg://bruge:bruge@localhost:5432/bruge_test
+      TEST_DATABASE_URL: postgresql+psycopg://bruge:bruge@localhost:5432/bruge_test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - run: uv sync --locked
+      - name: alembic upgrade head
+        run: uv run alembic upgrade head
+      - name: alembic downgrade base
+        run: uv run alembic downgrade base
+      - name: alembic upgrade head (again)
+        run: uv run alembic upgrade head
+      - name: Storage, CLI and concurrency tests against Postgres
+        # A subset of the suite, so the coverage gate stays with the full SQLite run.
+        run: >-
+          uv run pytest --no-cov -rs
+          tests/test_storage.py
+          tests/test_storage_hardening.py
+          tests/test_cli.py
+          tests/test_postgres_concurrency.py

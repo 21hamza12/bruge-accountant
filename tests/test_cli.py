@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import io
 import json
 import runpy
 import sys
@@ -7,7 +8,9 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from sqlalchemy.exc import DBAPIError, IntegrityError, OperationalError
 
+import app.cli
 from app.cli import main
 from tests.builders import build_workbook, ticket_row
 
@@ -45,9 +48,9 @@ def test_import_fixture_prints_json(
     assert isinstance(out["upload_id"], int)
     sv, er = out["staff"]
     assert (sv["staff_sign"], sv["ticket_count"], sv["group_count"]) == ("0004SV", 34, 25)
-    assert sv["total_cost"] == 746423
+    assert sv["total_cost"] == "746423"
     assert (er["staff_sign"], er["ticket_count"], er["group_count"]) == ("0009ER", 14, 8)
-    assert er["total_cost"] == 372434
+    assert er["total_cost"] == "372434"
 
 
 def test_import_staff_question_shape(
@@ -60,28 +63,30 @@ def test_import_staff_question_shape(
         "booking_ref": "QA0030",
         "airlines": ["495"],
         "ticket_count": 3,
-        "total_cost": 37773,
+        "total_cost": "37773",
+        "known_cost_total": "37773",
+        "missing_cost_count": 0,
         "passengers": [
             {
                 "name": "PAX03/GIVEN03",
                 "pax_type": "CHD",
                 "ticket_no": "9990000154",
                 "airline": "495",
-                "cost": 17444,
+                "cost": "17444",
             },
             {
                 "name": "PAX14/GIVEN14",
                 "pax_type": "ADT",
                 "ticket_no": "9990000155",
                 "airline": "495",
-                "cost": 19428,
+                "cost": "19428",
             },
             {
                 "name": "PAX02/GIVEN02",
                 "pax_type": "INF",
                 "ticket_no": "9990000156",
                 "airline": "495",
-                "cost": 901,
+                "cost": "901",
             },
         ],
         "flags": [],
@@ -237,3 +242,167 @@ def test_python_dash_m_entrypoint(monkeypatch: pytest.MonkeyPatch) -> None:
     with pytest.raises(SystemExit) as exc:
         runpy.run_module("app", run_name="__main__")
     assert exc.value.code == 0
+
+
+def test_money_is_always_a_string(
+    ready_db: str, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    path = tmp_path / "m.xlsx"
+    path.write_bytes(
+        build_workbook(
+            [
+                ticket_row(doc="3940000001", cost=746423, rloc="AAAAAA"),
+                ticket_row(doc="3940000002", cost=1234.5, rloc="BBBBBB"),
+                ticket_row(doc="3940000003", cost=None, rloc="CCCCCC"),
+            ]
+        )
+    )
+    out = run_import(capsys, path, ready_db)
+    questions = {q["booking_ref"]: q for q in out["staff"][0]["questions"]}
+    assert questions["AAAAAA"]["total_cost"] == "746423"
+    assert questions["BBBBBB"]["total_cost"] == "1234.50"
+    assert questions["BBBBBB"]["passengers"][0]["cost"] == "1234.50"
+    assert questions["CCCCCC"]["total_cost"] is None
+    assert questions["CCCCCC"]["known_cost_total"] == "0"
+    assert questions["CCCCCC"]["missing_cost_count"] == 1
+    assert questions["CCCCCC"]["passengers"][0]["cost"] is None
+    staff = out["staff"][0]
+    assert staff["total_cost"] is None
+    assert staff["known_cost_total"] == "747657.50"
+    assert staff["missing_cost_count"] == 1
+
+
+def test_blank_booking_refs_become_separate_questions(
+    ready_db: str, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    path = tmp_path / "b.xlsx"
+    path.write_bytes(
+        build_workbook(
+            [ticket_row(doc="3940000001", rloc=None), ticket_row(doc="3940000002", rloc=None)]
+        )
+    )
+    out = run_import(capsys, path, ready_db)
+    assert out["staff"][0]["group_count"] == 2
+    assert [q["booking_ref"] for q in out["staff"][0]["questions"]] == ["", ""]
+
+
+def test_arabic_output_on_a_legacy_codepage_stream(
+    db_url: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    raw = io.BytesIO()
+    stream = io.TextIOWrapper(raw, encoding="cp1252", errors="strict")
+    monkeypatch.setattr(sys, "stdout", stream)
+    assert main(["init-db", "--db", db_url]) == 0
+    assert main(["add-agency", "bruge", "بروج للسفر", "--db", db_url]) == 0
+    stream.flush()
+    text = raw.getvalue().decode("utf-8")
+    assert json.loads(text[text.index("{") :])["name"] == "بروج للسفر"
+
+
+def test_main_survives_streams_without_reconfigure(
+    db_url: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class Plain(io.StringIO):
+        reconfigure = None  # type: ignore[assignment]
+
+    monkeypatch.setattr(sys, "stdout", Plain())
+    monkeypatch.setattr(sys, "stderr", Plain())
+    assert main(["init-db", "--db", db_url]) == 0
+
+
+def test_other_operational_error_shows_real_message(
+    tmp_path: Path, fixture_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    url = f"sqlite:///{tmp_path / 'missing-dir' / 'x.db'}"
+    code = main(["import", str(fixture_path), "--agency", "bruge-voyages", "--db", url])
+    err = capsys.readouterr().err
+    assert code == 1
+    assert "unable to open database file" in err
+    assert "init-db" not in err
+    assert "Traceback" not in err
+
+
+def test_init_db_failure_is_clean(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    url = f"sqlite:///{tmp_path / 'missing-dir' / 'x.db'}"
+    assert main(["init-db", "--db", url]) == 1
+    err = capsys.readouterr().err
+    assert "unable to open database file" in err
+    assert "Traceback" not in err
+
+
+@pytest.mark.parametrize("command", ["init-db", "add-agency", "import"])
+def test_invalid_database_url_is_clean(
+    command: str, fixture_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    argv = {
+        "init-db": ["init-db"],
+        "add-agency": ["add-agency", "x", "X"],
+        "import": ["import", str(fixture_path), "--agency", "x"],
+    }[command]
+    assert main([*argv, "--db", "not a url"]) == 1
+    err = capsys.readouterr().err
+    assert err.startswith("error:")
+    assert "Traceback" not in err
+
+
+@pytest.mark.parametrize(
+    "exc",
+    [
+        IntegrityError("INSERT", {}, Exception("constraint failed: uq_x")),
+        DBAPIError("INSERT", {}, Exception("driver exploded")),
+    ],
+    ids=["integrity", "dbapi"],
+)
+def test_database_errors_during_import_are_clean(
+    exc: DBAPIError,
+    ready_db: str,
+    fixture_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def boom(*args: object, **kwargs: object) -> None:
+        raise exc
+
+    monkeypatch.setattr(app.cli, "import_report", boom)
+    code = main(["import", str(fixture_path), "--agency", "bruge-voyages", "--db", ready_db])
+    captured = capsys.readouterr()
+    assert code == 1
+    assert captured.out == ""
+    assert str(exc.orig) in captured.err
+    assert "Traceback" not in captured.err
+
+
+@pytest.mark.parametrize(
+    ("message", "ready"),
+    [
+        ("no such table: agencies", True),
+        ('relation "agencies" does not exist', True),
+        ("unable to open database file", False),
+        ("could not connect to server", False),
+    ],
+)
+def test_not_ready_message_only_for_missing_tables(
+    message: str,
+    ready: bool,
+    ready_db: str,
+    fixture_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def boom(*args: object, **kwargs: object) -> None:
+        raise OperationalError("SELECT", {}, Exception(message))
+
+    monkeypatch.setattr(app.cli, "get_agency_by_slug", boom)
+    assert main(["import", str(fixture_path), "--agency", "x", "--db", ready_db]) == 1
+    err = capsys.readouterr().err
+    assert ("init-db" in err) is ready
+    if not ready:
+        assert message in err
+
+
+def test_db_option_documented_as_credential_risk(capsys: pytest.CaptureFixture[str]) -> None:
+    with pytest.raises(SystemExit):
+        main(["import", "--help"])
+    out = capsys.readouterr().out
+    assert "DATABASE_URL" in out
+    assert "history" in out

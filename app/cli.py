@@ -14,7 +14,8 @@ from typing import Any
 
 from alembic import command
 from alembic.config import Config
-from sqlalchemy.exc import IntegrityError, OperationalError
+from alembic.util.exc import CommandError
+from sqlalchemy.exc import DBAPIError, IntegrityError, SQLAlchemyError
 
 from app.db import default_database_url, make_engine, make_session_factory
 from app.parsing.amadeus import MAX_FILE_BYTES, ParseError, parse_report
@@ -44,7 +45,12 @@ def _iso_date(value: str) -> date:
 def _build_parser() -> argparse.ArgumentParser:
     db_option = argparse.ArgumentParser(add_help=False)
     db_option.add_argument(
-        "--db", help="database URL (default: $DATABASE_URL, else sqlite:///bruge.db)"
+        "--db",
+        help=(
+            "database URL (default: $DATABASE_URL, else sqlite:///bruge.db). Prefer "
+            "DATABASE_URL: a URL typed here can contain a password and ends up in your "
+            "shell history and in process listings"
+        ),
     )
 
     parser = argparse.ArgumentParser(prog="python -m app", description="Bruge Accountant")
@@ -65,9 +71,16 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _money(value: Decimal) -> str:
+    """Stable text form: whole amounts without decimals ("746423"), otherwise 2 ("1234.50")."""
+    if value == value.to_integral_value():
+        return format(value.quantize(Decimal(1)), "f")
+    return format(value.quantize(Decimal("0.01")), "f")
+
+
 def _json_default(value: object) -> Any:
     if isinstance(value, Decimal):
-        return int(value) if value == value.to_integral_value() else str(value)
+        return _money(value)
     if isinstance(value, date):
         return value.isoformat()
     raise TypeError(f"cannot serialise {type(value).__name__}")
@@ -86,7 +99,10 @@ def _init_db(url: str) -> int:
     cfg = Config()
     cfg.set_main_option("script_location", str(MIGRATIONS_DIR))
     cfg.set_main_option("sqlalchemy.url", url.replace("%", "%%"))
-    command.upgrade(cfg, "head")
+    try:
+        command.upgrade(cfg, "head")
+    except CommandError as exc:
+        return _fail(f"migration failed: {exc}", EXIT_FAILURE)
     print("database ready")
     return EXIT_OK
 
@@ -153,18 +169,38 @@ def _import(url: str, file: Path, slug: str, override: date | None) -> int:
             )
     except ParseError as exc:
         return _fail(str(exc), EXIT_FAILURE)
-    except OperationalError:
-        return _fail("database is not ready; run: init-db", EXIT_FAILURE)
     finally:
         engine.dispose()
     return EXIT_OK
 
 
+def _database_failure(exc: SQLAlchemyError) -> int:
+    if not isinstance(exc, DBAPIError):
+        return _fail("invalid database URL or configuration", EXIT_FAILURE)
+    detail = str(exc.orig)
+    lowered = detail.lower()
+    if "no such table" in lowered or "does not exist" in lowered:
+        return _fail("database is not ready; run: init-db", EXIT_FAILURE)
+    return _fail(f"database error: {detail}", EXIT_FAILURE)
+
+
+def _use_utf8_output() -> None:
+    # Names may be Arabic/French; never crash on a legacy console codepage.
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if callable(reconfigure):
+            reconfigure(encoding="utf-8")
+
+
 def main(argv: Sequence[str] | None = None) -> int:
+    _use_utf8_output()
     args = _build_parser().parse_args(argv)
     url: str = args.db or default_database_url()
-    if args.command == "init-db":
-        return _init_db(url)
-    if args.command == "add-agency":
-        return _add_agency(url, args.slug, args.name)
-    return _import(url, args.file, args.agency, args.date)
+    try:
+        if args.command == "init-db":
+            return _init_db(url)
+        if args.command == "add-agency":
+            return _add_agency(url, args.slug, args.name)
+        return _import(url, args.file, args.agency, args.date)
+    except SQLAlchemyError as exc:
+        return _database_failure(exc)

@@ -74,7 +74,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def offline() -> HTMLResponse:
         return HTMLResponse(render("offline.html"))
 
-    @app.get("/healthz", include_in_schema=False)
+    @app.api_route("/healthz", methods=["GET", "HEAD"], include_in_schema=False)
     def healthz(request: Request) -> JSONResponse:
         try:
             with request.app.state.sessionmaker() as session:

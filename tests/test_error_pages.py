@@ -103,7 +103,7 @@ def test_method_not_allowed_is_a_custom_page(err_client: TestClient) -> None:
     resp = err_client.post("/healthz")
     assert resp.status_code == 405
     assert "Requête invalide" in resp.text
-    assert resp.headers["allow"] == "GET"
+    assert resp.headers["allow"] == "GET, HEAD"
     assert_clean(resp.text, {k: v for k, v in resp.headers.items() if k != "allow"})
 
 

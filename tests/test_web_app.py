@@ -55,3 +55,9 @@ def test_engine_and_sessionmaker_live_on_app_state(web_settings: Settings) -> No
     built = create_app(web_settings)
     assert built.state.engine is not None
     assert built.state.sessionmaker is not None
+
+
+def test_healthz_answers_head_for_uptime_monitors(client: TestClient) -> None:
+    resp = client.head("/healthz")
+    assert resp.status_code == 200
+    assert resp.content == b""

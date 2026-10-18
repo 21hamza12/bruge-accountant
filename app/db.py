@@ -57,8 +57,17 @@ def default_database_url() -> str:
     return os.environ.get("DATABASE_URL") or DEFAULT_DATABASE_URL
 
 
+def normalize_database_url(url: str) -> str:
+    """Render hands out ``postgres://`` / ``postgresql://``; we use the psycopg 3 driver."""
+    for prefix in ("postgresql://", "postgres://"):
+        if url.startswith(prefix):
+            return "postgresql+psycopg://" + url[len(prefix) :]
+    return url
+
+
 def make_engine(url: str | None = None) -> Engine:
-    engine = create_engine(url or default_database_url())
+    url = normalize_database_url(url or default_database_url())
+    engine = create_engine(url, pool_pre_ping=not url.startswith("sqlite"))
     if engine.dialect.name == "sqlite":
 
         @event.listens_for(engine, "connect")

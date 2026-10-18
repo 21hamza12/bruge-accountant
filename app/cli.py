@@ -4,6 +4,7 @@ import argparse
 import dataclasses
 import hashlib
 import json
+import os
 import re
 import sys
 from collections.abc import Sequence
@@ -192,10 +193,17 @@ def _use_utf8_output() -> None:
             reconfigure(encoding="utf-8")
 
 
+def _default_url_for(command_name: str) -> str:
+    """init-db migrates as the owner role when MIGRATION_DATABASE_URL is set."""
+    if command_name == "init-db":
+        return os.environ.get("MIGRATION_DATABASE_URL") or default_database_url()
+    return default_database_url()
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     _use_utf8_output()
     args = _build_parser().parse_args(argv)
-    url: str = args.db or default_database_url()
+    url: str = args.db or _default_url_for(args.command)
     try:
         if args.command == "init-db":
             return _init_db(url)

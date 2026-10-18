@@ -10,7 +10,11 @@ with ``COOKIE_SECURE=false``. Run:
     E2E_BASE_URL=http://127.0.0.1:8765 E2E_PASSWORD=... pytest tests/e2e --no-cov -rs
 
 Every journey is safe to repeat against the same database: it uses fresh random phone numbers where
-a rate limit would otherwise remember an earlier run.
+a login rate limit would otherwise remember an earlier run, and the uploads are made by a FRESH
+staff member created at the start of each run, so the per-user upload budget (10 an hour) never
+carries over. A run makes 3 uploads, so the agency budget (30 an hour, shared by everyone in
+demo-a) allows about 10 runs an hour against one seeded database; when it is spent the suite says
+so (re-seed a fresh database, or wait for the hour to end).
 """
 
 from __future__ import annotations
@@ -19,6 +23,7 @@ import os
 import re
 import secrets
 import socket
+import time
 from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
@@ -39,6 +44,7 @@ DEMO_PHONES = (PHONE_MANAGER_A, PHONE_MANAGER_B, PHONE_STAFF_SV, PHONE_STAFF_ER)
 FIXTURE = Path(__file__).resolve().parents[1] / "fixtures" / "1OCT.xlsx"
 XLSX = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 REPORT_DAY = "2026-10-01"
+MAX_RAW_ANSWER = 256 * 1024  # the 413 page is a few KB; never read more than this
 
 _HIDDEN = re.compile(r'name="csrf_token"\s+value="([^"]+)"')
 _BODY = re.compile(r'data-csrf-token="([^"]+)"')
@@ -124,17 +130,38 @@ def counts(browser: Browser, location: str) -> tuple[int, int]:
 
 
 @pytest.fixture(scope="module")
-def uploaded(manager_a: Browser) -> Uploaded:
+def uploader(manager_a: Browser) -> Iterator[Browser]:
+    """A fresh staff member of demo-a, so this run has its own per-user upload budget."""
+    phone, _name, temporary = create_staff(manager_a)
+    browser = Browser()
+    assert browser.login(phone, temporary).status_code == 303
+    change_password(browser, temporary)
+    yield browser
+    browser.close()
+
+
+def upload_or_explain(browser: Browser, data: bytes, name: str = "1OCT.xlsx") -> httpx.Response:
+    response = browser.upload(data, name)
+    if response.status_code == 429:
+        pytest.fail(
+            "the upload budget of demo-a is spent (30 an hour for the agency): wait for the "
+            "hour to end or seed a fresh database"
+        )
+    return response
+
+
+@pytest.fixture(scope="module")
+def uploaded(uploader: Browser) -> Uploaded:
     data = FIXTURE.read_bytes()
-    first, second = manager_a.upload(data), manager_a.upload(data)
+    first, second = upload_or_explain(uploader, data), upload_or_explain(uploader, data)
     assert first.status_code == 303, first.text[:300]
     assert second.status_code == 303
     loc1, loc2 = first.headers["location"], second.headers["location"]
     return Uploaded(
         first_id=int(loc1.rsplit("/", 1)[1]),
         second_id=int(loc2.rsplit("/", 1)[1]),
-        first=counts(manager_a, loc1),
-        second=counts(manager_a, loc2),
+        first=counts(uploader, loc1),
+        second=counts(uploader, loc2),
     )
 
 
@@ -168,13 +195,14 @@ def test_1_wrong_password_is_the_generic_401() -> None:
 # --- 2. create staff, temporary password, forced change -----------------------------------------
 
 
-def test_2_create_staff_temp_password_and_forced_change(manager_a: Browser) -> None:
+def create_staff(manager: Browser) -> tuple[str, str, str]:
+    """A new staff member made by ``manager``: (phone, display name, the temporary password)."""
     phone = "+2223" + "".join(secrets.choice("0123456789") for _ in range(7))
     name = "E2E " + secrets.token_hex(3)
-    created = manager_a.http.post(
+    created = manager.http.post(
         "/staff",
         data={
-            "csrf_token": manager_a.token("/staff"),
+            "csrf_token": manager.token("/staff"),
             "display_name": name,
             "phone": phone,
             "role": "staff",
@@ -184,7 +212,25 @@ def test_2_create_staff_temp_password_and_forced_change(manager_a: Browser) -> N
     assert created.headers["cache-control"] == "no-store"
     match = _SECRET.search(created.text)
     assert match, "the temporary password was not shown"
-    temporary = match.group(1)
+    return phone, name, match.group(1)
+
+
+def change_password(staff: Browser, temporary: str) -> None:
+    new_password = "E2e-new-" + secrets.token_hex(6)
+    changed = staff.http.post(
+        "/password/change",
+        data={
+            "csrf_token": staff.token("/password/change"),
+            "current_password": temporary,
+            "new_password": new_password,
+            "confirm_password": new_password,
+        },
+    )
+    assert changed.status_code == 303, changed.text[:300]
+
+
+def test_2_create_staff_temp_password_and_forced_change(manager_a: Browser) -> None:
+    phone, _name, temporary = create_staff(manager_a)
     assert temporary not in manager_a.http.get("/staff").text  # shown once, nowhere else
 
     staff = Browser()
@@ -193,17 +239,7 @@ def test_2_create_staff_temp_password_and_forced_change(manager_a: Browser) -> N
         gate = staff.http.get("/")
         assert gate.status_code == 303
         assert gate.headers["location"] == "/password/change"
-        new_password = "E2e-new-" + secrets.token_hex(6)
-        changed = staff.http.post(
-            "/password/change",
-            data={
-                "csrf_token": staff.token("/password/change"),
-                "current_password": temporary,
-                "new_password": new_password,
-                "confirm_password": new_password,
-            },
-        )
-        assert changed.status_code == 303, changed.text[:300]
+        change_password(staff, temporary)
         assert staff.http.get("/").status_code == 200
         assert staff.http.get("/staff").status_code == 403  # staff never reach manager pages
         # the temporary password is spent
@@ -233,8 +269,22 @@ def test_3_the_result_page_and_the_list(manager_a: Browser, uploaded: Uploaded) 
     assert f'href="/uploads/{uploaded.second_id}"' in manager_a.http.get("/uploads").text
 
 
-def test_3_a_file_that_is_not_a_workbook_is_a_friendly_400(manager_a: Browser) -> None:
-    response = manager_a.upload(b"just some text", name="notes.xlsx")
+def test_3_staff_see_only_their_own_uploads(uploader: Browser, uploaded: Uploaded) -> None:
+    """A colleague's upload is a 404 for staff, and the manager's pages show everything."""
+    other = signed_in(PHONE_STAFF_ER)
+    try:
+        assert other.http.get(f"/uploads/{uploaded.first_id}").status_code == 404
+        assert f"/uploads/{uploaded.first_id}" not in other.http.get("/uploads").text
+    finally:
+        other.close()
+    own = uploader.http.get(f"/uploads/{uploaded.first_id}")
+    assert own.status_code == 200
+    assert "Avertissements" not in own.text  # warnings are for managers
+    assert f'href="/uploads/{uploaded.first_id}"' in uploader.http.get("/uploads").text
+
+
+def test_3_a_file_that_is_not_a_workbook_is_a_friendly_400(uploader: Browser) -> None:
+    response = upload_or_explain(uploader, b"just some text", name="notes.xlsx")
     assert response.status_code == 400
     assert "pas un classeur Excel" in response.text
     assert "Traceback" not in response.text
@@ -366,17 +416,6 @@ def test_7_the_sixth_bad_login_is_a_429() -> None:
 # --- 8. body limit ------------------------------------------------------------------------------
 
 
-def multipart_body(size: int) -> tuple[bytes, str]:
-    boundary = "e2eboundary" + secrets.token_hex(4)
-    head = (
-        f"--{boundary}\r\n"
-        'Content-Disposition: form-data; name="file"; filename="big.xlsx"\r\n'
-        "Content-Type: application/octet-stream\r\n\r\n"
-    ).encode()
-    body = head + b"PK\x03\x04" + b"0" * (size - 4) + f"\r\n--{boundary}--\r\n".encode()
-    return body, f"multipart/form-data; boundary={boundary}"
-
-
 def test_8_a_declared_eleven_megabyte_post_gets_the_413_page_before_any_body() -> None:
     """Raw socket: send only the headers, and read the answer; the server must not wait for the
     body (no connection-reset race, because nothing big is written)."""
@@ -390,11 +429,19 @@ def test_8_a_declared_eleven_megabyte_post_gets_the_413_page_before_any_body() -
         "Content-Type: multipart/form-data; boundary=x\r\n"
         f"Content-Length: {11 * 1024 * 1024}\r\n\r\n"
     )
-    with socket.create_connection((parts.hostname or "127.0.0.1", port), timeout=30) as sock:
+    deadline = time.monotonic() + 30
+    answer = b""
+    with socket.create_connection((parts.hostname or "127.0.0.1", port), timeout=10) as sock:
         sock.sendall(request.encode())
-        answer = b""
-        while b"\r\n\r\n" not in answer or b"</html>" not in answer:
-            chunk = sock.recv(65536)
+        while (
+            len(answer) < MAX_RAW_ANSWER
+            and time.monotonic() < deadline
+            and (b"\r\n\r\n" not in answer or b"</html>" not in answer)
+        ):
+            try:
+                chunk = sock.recv(65536)
+            except TimeoutError:
+                break
             if not chunk:
                 break
             answer += chunk
@@ -403,19 +450,10 @@ def test_8_a_declared_eleven_megabyte_post_gets_the_413_page_before_any_body() -
     assert b"traceback" not in answer.lower()
 
 
-def test_8_a_full_eleven_megabyte_body_never_reaches_the_route(manager_a: Browser) -> None:
-    body, content_type = multipart_body(11 * 1024 * 1024)
-    try:
-        response = manager_a.http.post(
-            "/uploads", content=body, headers={"Content-Type": content_type}
-        )
-    except (httpx.WriteError, httpx.ReadError, httpx.RemoteProtocolError):
-        # The server answered 413 and closed the connection while the client was still writing;
-        # which side notices first is up to the TCP stack. The next request proves it is healthy.
-        assert httpx.get(f"{BASE_URL}/healthz", timeout=30).status_code == 200
-        return
-    assert response.status_code == 413
-    assert "Fichier trop volumineux" in response.text
+# The full 11 MB body is not sent over the wire here: whether the client sees the 413 or a reset
+# connection depends on the TCP stack, so the test would be flaky. The declared-length case above
+# (a real socket, headers only) and the streamed in-process case (tests/test_upload_body_limit.py)
+# cover the same two code paths deterministically.
 
 
 # --- 9. error pages and headers -----------------------------------------------------------------

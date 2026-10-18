@@ -118,6 +118,64 @@ class BootstrapResult:
     user_id: int
 
 
+def add_agency_with_manager(
+    session: Session,
+    slug: str,
+    name: str,
+    phone: str,
+    display_name: str,
+    password_hash: str,
+    operator: str | None = None,
+) -> BootstrapResult:
+    """Add an agency, its first manager and the ``agency_bootstrapped`` audit event to the
+    CALLER's open transaction (nothing is committed), and leave the session bound to the new
+    agency. ``bootstrap_agency`` wraps this in its own transaction; ``seed-demo`` calls it twice
+    inside one, so it is all or nothing. On error the caller rolls back and restores the binding.
+
+    ``phone`` is E.164 and ``password_hash`` an Argon2 hash; validating and hashing is the
+    caller's job. Works under FORCEd row-level security: both lookups use the narrow policies, the
+    id is taken from the sequence and bound as the tenant before the first INSERT.
+    """
+    if get_agency_by_slug(session, slug) is not None:
+        raise AlreadyExistsError("slug")
+    lookup_scope(session, "app.login_phone", phone)
+    if session.scalars(select(User.id).where(User.phone == phone)).first() is not None:
+        raise AlreadyExistsError("phone")
+    agency_id = _next_agency_id(session)
+    if agency_id is not None:
+        rebind_tenant(session, agency_id)
+    agency = Agency(slug=slug, name=name)
+    if agency_id is not None:
+        agency.id = agency_id
+    session.add(agency)
+    session.flush()
+    rebind_tenant(session, agency.id)
+    user = User(
+        agency_id=agency.id,
+        phone=phone,
+        role=ROLE_MANAGER,
+        display_name=display_name,
+        password_hash=password_hash,
+        must_change_password=False,
+    )
+    session.add(user)
+    session.flush()
+    session.add(
+        AuditEvent(
+            agency_id=agency.id,
+            actor_user_id=None,
+            event_type="agency_bootstrapped",
+            details={
+                "agency_slug": slug,
+                "manager_user_id": user.id,
+                "operator": operator or "unknown",
+            },
+        )
+    )
+    session.flush()
+    return BootstrapResult(agency_id=agency.id, user_id=user.id)
+
+
 def bootstrap_agency(
     session: Session,
     slug: str,
@@ -129,10 +187,7 @@ def bootstrap_agency(
 ) -> BootstrapResult:
     """Create an agency and its first manager in ONE transaction (all or nothing).
 
-    ``phone`` is E.164 and ``password_hash`` an Argon2 hash; validating and hashing is the
-    caller's job. The manager does not have to change the password (the operator chose it).
-    Works under FORCEd row-level security: both lookups use the narrow policies, the id is taken
-    from the sequence and bound as the tenant before the first INSERT.
+    The manager does not have to change the password (the operator chose it).
 
     An ``agency_bootstrapped`` audit event is written in the same transaction: the agency, the
     new manager's id and the ``operator`` (the OS user who ran the command). Nobody is logged in
@@ -140,44 +195,9 @@ def bootstrap_agency(
     """
     previous = bound_tenant(session)
     try:
-        if get_agency_by_slug(session, slug) is not None:
-            raise AlreadyExistsError("slug")
-        lookup_scope(session, "app.login_phone", phone)
-        if session.scalars(select(User.id).where(User.phone == phone)).first() is not None:
-            raise AlreadyExistsError("phone")
-        agency_id = _next_agency_id(session)
-        if agency_id is not None:
-            rebind_tenant(session, agency_id)
-        agency = Agency(slug=slug, name=name)
-        if agency_id is not None:
-            agency.id = agency_id
-        session.add(agency)
-        session.flush()
-        rebind_tenant(session, agency.id)
-        user = User(
-            agency_id=agency.id,
-            phone=phone,
-            role=ROLE_MANAGER,
-            display_name=display_name,
-            password_hash=password_hash,
-            must_change_password=False,
+        result = add_agency_with_manager(
+            session, slug, name, phone, display_name, password_hash, operator
         )
-        session.add(user)
-        session.flush()
-        session.add(
-            AuditEvent(
-                agency_id=agency.id,
-                actor_user_id=None,
-                event_type="agency_bootstrapped",
-                details={
-                    "agency_slug": slug,
-                    "manager_user_id": user.id,
-                    "operator": operator or "unknown",
-                },
-            )
-        )
-        session.flush()
-        result = BootstrapResult(agency_id=agency.id, user_id=user.id)
         session.commit()
     except Exception:
         _abandon(session, previous)
@@ -312,8 +332,13 @@ def import_report(
     filename: str,
     sha256: str,
     uploaded_by_user_id: int | None = None,
+    *,
+    commit: bool = True,
 ) -> ImportResult:
     """Store an upload and upsert its tickets in a single transaction.
+
+    ``commit=False`` leaves the transaction open for a caller that does more in the same
+    transaction (``seed-demo``); a failure still rolls the whole session back.
 
     The session is bound to ``agency_id`` first (row-level security); one that is already bound
     to a different agency is refused (``TenantBindingError``), never re-pointed. The commit at
@@ -357,7 +382,10 @@ def import_report(
         upload_id = upload.id
         upload.inserted_count = len(unique) - existing
         upload.updated_count = existing
-        session.commit()
+        if commit:
+            session.commit()
+        else:
+            session.flush()
     except Exception:
         session.rollback()
         raise

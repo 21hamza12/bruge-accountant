@@ -219,16 +219,25 @@ jobs:
           docker run --rm --network host -e DATABASE_URL="$OWNER_URL" -e APP_DB_ROLE=bruge_app
           bruge-accountant:ci python -m app init-db
       - name: seed-demo as the owner (password from stdin, fixture mounted read-only)
-        run: >-
+        # The output goes to a file so it can be checked for the password without echoing it.
+        run: |
           printf '%s\n' "$E2E_PASSWORD" |
-          docker run --rm -i --network host -e DATABASE_URL="$OWNER_URL"
-          -v "$PWD/tests/fixtures/1OCT.xlsx:/fixture/1OCT.xlsx:ro"
-          bruge-accountant:ci python -m app seed-demo --fixture /fixture/1OCT.xlsx --password-stdin
+          docker run --rm -i --network host -e DATABASE_URL="$OWNER_URL" \
+            -v "$PWD/tests/fixtures/1OCT.xlsx:/fixture/1OCT.xlsx:ro" \
+            bruge-accountant:ci python -m app seed-demo --fixture /fixture/1OCT.xlsx \
+            --password-stdin > seed.log 2>&1
+          cat seed.log
+      - name: The seed-demo output holds no password
+        run: |
+          if grep -qF -- "$E2E_PASSWORD" seed.log; then
+            echo "password leaked"
+            exit 1
+          fi
       - name: Start the app as the application role
         # Plain http on the runner, so cookies cannot be Secure: development settings, which
         # production refuses (the docker job above covers production mode and HSTS).
         run: >-
-          docker run --detach --name app --network host
+          docker run --detach --name app --network host --memory 512m --memory-swap 512m
           -e PORT=8000 -e COOKIE_SECURE=false -e ALLOWED_HOSTS=localhost,127.0.0.1
           -e DATABASE_URL="$APP_URL" -e RENDER_GIT_COMMIT="$GITHUB_SHA"
           bruge-accountant:ci
@@ -253,10 +262,32 @@ jobs:
       - run: uv sync --locked
       - name: End-to-end journeys against the container
         run: uv run pytest tests/e2e --no-cov -v -rs
+      - name: The sandbox under the 512 MB cap (Linux limits for real, memory numbers)
+        # Runs the real sandbox inside the capped container: RLIMIT_AS, RLIMIT_NPROC (no fork) and
+        # RLIMIT_FSIZE are all in force, and the child's peak resident memory is printed.
+        run: |
+          docker cp tests/fixtures/1OCT.xlsx app:/tmp/1OCT.xlsx
+          docker exec app python -c "
+          import resource
+          from app.parsing.sandbox import parse_in_sandbox
+          data = open('/tmp/1OCT.xlsx', 'rb').read()
+          report = parse_in_sandbox(data, timeout_s=30, memory_mb=768)
+          print('tickets parsed:', len(report.tickets))
+          peak = resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss / 1024
+          print('child peak RSS (MB):', peak)
+          "
+      - name: Memory of the app container (cgroup)
+        run: |
+          echo "memory.max     = $(docker exec app cat /sys/fs/cgroup/memory.max)"
+          echo "memory.peak    = $(docker exec app cat /sys/fs/cgroup/memory.peak 2>/dev/null || echo unavailable)"
+          echo "memory.current = $(docker exec app cat /sys/fs/cgroup/memory.current)"
+          docker inspect --format 'OOMKilled={{.State.OOMKilled}}' app
+          test "$(docker inspect --format '{{.State.OOMKilled}}' app)" = "false"
       - name: The app log holds no password
         run: |
-          if docker logs app 2>&1 | grep -F "$E2E_PASSWORD"; then
-            echo "the demo password reached the log"; exit 1
+          if docker logs app 2>&1 | grep -qF -- "$E2E_PASSWORD"; then
+            echo "password leaked"
+            exit 1
           fi
       - name: Container logs
         if: always()

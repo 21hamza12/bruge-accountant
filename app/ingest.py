@@ -110,8 +110,10 @@ def ingest_report(
     parse: Callable[[bytes], ParsedReport] = parse_report,
     report_date_override: date | None = None,
     uploaded_by: int | None = None,
+    commit: bool = True,
 ) -> IngestResult:
-    """Validate, parse and store one report for ``agency_id``; commits on success.
+    """Validate, parse and store one report for ``agency_id``; commits on success (unless
+    ``commit=False``, for a caller that finishes a larger transaction itself).
 
     Raises ``ParseError`` (or a subclass) for bad input, before anything is written.
     """
@@ -123,7 +125,9 @@ def ingest_report(
         )
     stored_name = sanitize_filename(filename)
     sha256 = hashlib.sha256(data).hexdigest()
-    result = import_report(session, agency_id, parsed, stored_name, sha256, uploaded_by)
+    result = import_report(
+        session, agency_id, parsed, stored_name, sha256, uploaded_by, commit=commit
+    )
     ticket_dates = tuple(upload_ticket_dates(session, agency_id, result.upload_id))
     return IngestResult(
         upload_id=result.upload_id,

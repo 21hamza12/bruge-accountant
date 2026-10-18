@@ -61,8 +61,10 @@ Configuration comes from environment variables (see `app/settings.py`): `ENV` (`
 default, `production` on Render), `DATABASE_URL`, `MIGRATION_DATABASE_URL` (used by `init-db` when
 set), `ALLOWED_HOSTS`, `CORS_ALLOWED_ORIGINS`, `COOKIE_SECURE`, `TRUSTED_PROXY_HOPS`, `SESSION_IDLE_HOURS` (default 12),
 `SESSION_ABSOLUTE_DAYS` (default 7), `DB_POOL_SIZE` (default 5) and `DB_MAX_OVERFLOW` (default 5),
-`MAX_REQUEST_BYTES` (default 10 MB + 64 KB), `PARSE_TIMEOUT_S` (default 30), `PARSE_MEMORY_MB`
-(default 768, Linux only), `SENTRY_DSN`.
+`MAX_REQUEST_BYTES` (default 10 MB + 64 KB), `PARSE_TIMEOUT_S` (default 30, at least 5),
+`PARSE_MEMORY_MB` (default 768, Linux only), `PARSE_CONCURRENCY` (parses at once, default 2),
+`PARSE_QUEUE_WAIT_S` (how long a parse waits for a free slot before the 503, default 5),
+`SENTRY_DSN`.
 List variables take `a,b` or a JSON array (`["a","b"]`). `TRUSTED_PROXY_HOPS` defaults to 0 (the
 `X-Forwarded-*` headers are ignored); on Render it is 1. A wildcard CORS origin is refused in every
 environment. In production the app also refuses to start without an explicit non-SQLite
@@ -113,9 +115,12 @@ printf '%s\n' '<a password of at least 10 characters>' | uv run python -m app se
 COOKIE_SECURE=false uv run uvicorn --factory app.web.main:create_app     # http://127.0.0.1:8000
 ```
 
-`seed-demo` creates two agencies for trying the app (it refuses when `ENV=production`, and when
-`demo-a` or `demo-b` already exists). One password, read from standard input and never printed or
-accepted as an argument, is shared by all four accounts:
+`seed-demo` creates two agencies for trying the app. It refuses when `ENV=production` (always),
+when any of the slugs `demo-a`, `demo-b` or the four phones below is already taken (it names each
+one that collides), and when the database is neither SQLite nor on this machine, unless you pass
+`--i-know-this-is-not-production`. Everything is created in one transaction: it is all or nothing.
+One password, read from standard input and never printed or accepted as an argument, is shared by
+all four accounts:
 
 | Phone | Agency | Role |
 |---|---|---|
@@ -130,12 +135,19 @@ added and 48 updated. **Questions de prix** (`/questions`) lists the day's price
 manager sees both signs (34 tickets in 25 questions for `0004SV`, 14 in 8 for `0009ER`), a staff
 member only the sign linked to them. Prices are not collected yet.
 
-- Parsing runs in a throwaway child process (`app/parsing/sandbox.py`): killed after
-  `PARSE_TIMEOUT_S` (default 30) seconds, and on Linux capped at `PARSE_MEMORY_MB` (default 768) of
-  address space. Windows has no such cap; the app logs a warning and keeps the timeout. A second
-  upload while one is being read gets the "service occupé" page (503, `Retry-After`).
-- Files over 10 MB get the 413 page; the limit is applied before the form is read.
-  Thirty uploads an hour per agency, then 429.
+- Parsing runs in a throwaway child process (`app/parsing/sandbox.py`, `python -I` with a
+  minimal environment: it cannot read `DATABASE_URL` or any other secret of the web process). One
+  deadline, `PARSE_TIMEOUT_S` (default 30) seconds, covers it; on Linux it is also capped at
+  `PARSE_MEMORY_MB` (default 768) of address space, no new processes and no file writes. Windows
+  has none of those caps; the app logs a warning and keeps the timeout. At most `PARSE_CONCURRENCY`
+  parses run at once (default 2; each child needs about 31-49 MB resident, so size it against the
+  instance memory). A parse that finds every slot taken waits up to `PARSE_QUEUE_WAIT_S` seconds,
+  then the user gets the "service occupe" page (503, `Retry-After`) and the attempt is not counted.
+- Files over 10 MB get the 413 page; the limit is applied before the form is read, and the form is
+  read only after login, Origin, CSRF (header) and the rate limits have passed.
+  Ten uploads an hour per user and thirty per agency, then 429.
+- Staff see only the uploads they made, without the warnings (those quote cell values); managers
+  see every upload and its warnings.
 - HTTP end-to-end journeys run against a live server (skipped when `E2E_BASE_URL` is unset):
 
 ```bash

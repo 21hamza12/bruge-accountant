@@ -11,7 +11,8 @@ User decisions: host on **Render** (Frankfurt, Docker web service plus managed P
 1. **Parsing runs in a sandboxed subprocess inside the web service**, not a Render background worker.
    - The upload is a spawned child with `RLIMIT_AS`/`RLIMIT_CPU` (Linux) and a 30 s timeout; only the
      `ParsedReport` comes back, and all DB writes happen in the parent.
-   - One parse at a time per process; a second concurrent upload gets a friendly 503 "busy, retry".
+   - At most `PARSE_CONCURRENCY` (default 2) parses at once per process; one that finds every slot
+     taken waits up to `PARSE_QUEUE_WAIT_S` (5 s) and then gets a friendly 503 "busy, retry".
    - Saves a second $7+/month service for one upload a day. A queue can replace it later behind
      `parse_in_sandbox()`.
 2. **Server-side sessions in Postgres** (the cookie holds a random token; the DB stores its sha256).
@@ -118,7 +119,7 @@ User decisions: host on **Render** (Frankfurt, Docker web service plus managed P
 ### PR 3: Login and account management (security-reviewer blocking)
 16. Postgres-backed rate limiter (atomic upsert), shared across instances:
     - login: 5 **failures** per 15 min per phone, 100 failures per 15 min per IP (a coarse
-      flood guard: an office shares one NAT address); uploads: 30 per hour per agency.
+      flood guard: an office shares one NAT address); uploads: 30 per hour per agency and 10 per hour per user.
     - Failures only: an attempt is counted before it is checked and given back on success
       (the phone bucket is cleared, the IP hit refunded), so five successful logins in a row stay
       allowed and the 6th failure is the first 429. A password change counts wrong current
@@ -172,6 +173,33 @@ User decisions: host on **Render** (Frankfurt, Docker web service plus managed P
 
 #### PR 4 as built (measured results and deviations)
 
+- **Sandbox design (step 25), after the review fixes.** The child is
+  `python -I -B -c <bootstrap> <memory_mb> <cpu_s> <target>`, started with `subprocess.Popen` and a
+  MINIMAL environment (`PATH`, `SYSTEMROOT`/`SYSTEMDRIVE` on Windows, `LANG` on Linux, plus
+  `PYTHON*` isolation variables; `-I` makes it ignore `PYTHON*`, the user site and the current
+  directory). It cannot read `DATABASE_URL`, `MIGRATION_DATABASE_URL`, `SENTRY_DSN` or any other
+  variable of the web process (tested). The workbook goes to its stdin, the answer comes back on
+  its stdout (`app/parsing/worker.py`); there is no `multiprocessing` and no pickling.
+  - *One monotonic deadline.* A reader thread collects stdout (at most `MAX_MESSAGE_BYTES`) and the
+    parent waits for it with the time that is left. At the deadline, or when the answer is too big,
+    the child is killed (on Windows its whole process tree with `taskkill /T`: the venv launcher
+    starts the real interpreter as a child), which also ends a half-sent message. The original
+    design (`poll(timeout)` then `recv_bytes()`) could block forever on a partial message; a test
+    now sends a partial message and then hangs, and the parse fails near the timeout with the slot
+    free. If `Popen` itself raises there is no child to join or kill and the original error
+    propagates (the slot is released by a `finally`). `Popen` has no `close()`: `wait()` reaps it.
+  - *Linux limits*, applied in the child just before parsing: `RLIMIT_AS`, `RLIMIT_CPU`,
+    `RLIMIT_NPROC` (0: no new process) and `RLIMIT_FSIZE` (0: no file writes), plus no core file.
+  - *Slots.* `PARSE_CONCURRENCY` (default 2) parses at once; a parse that finds none free waits up
+    to `PARSE_QUEUE_WAIT_S` (default 5) and then raises `SandboxBusy` (the 503). Each child needs
+    about 31-49 MB resident (below), so 2 children plus the web process fit a 512 MB instance with
+    room to spare; size `PARSE_CONCURRENCY` as roughly `(instance memory - 250 MB) / 80 MB`.
+  - *Strict reading of the answer* (`app/parsing/wire.py`): exact types; string lengths from the
+    column sizes; cost a plain decimal string with |cost| < 10^12 and at most two decimals (no
+    NaN/Infinity); `source_row` 1..10^7; at most 50 000 tickets and 1 000 warnings; known flags
+    only; no control, format, surrogate or private-use characters anywhere. Anything else is a
+    `ParseError`. The parser itself strips such characters from every text cell and caps passenger
+    names at 200 characters (flagged `field_too_long`).
 - **Sandbox memory (step 25).** Peak resident memory of the spawned child, measured on Windows
   (Python 3.14, `PeakWorkingSetSize`, read inside the child around `parse_report`):
   about **31 MB** for the 48-ticket synthetic fixture, about **49 MB** for a synthetic 20,000-row
@@ -179,29 +207,51 @@ User decisions: host on **Render** (Frankfurt, Docker web service plus managed P
   A 50,000-row workbook cannot be built as a valid test file: it expands past the 30 MB
   uncompressed limit, so 20,000 rows is the largest realistic measurement. `RLIMIT_AS` limits
   *virtual* address space, which is several times the resident size, so the default
-  `PARSE_MEMORY_MB` is 768 (not 512). It has not been measured on Linux or on the 512 MB Render
-  instance yet: the CI `docker-e2e` job runs real uploads under the cap, and the cap still needs
-  tuning on Render (see Risks).
-- **Sandbox wire format.** The child answers with a JSON message that the parent validates field by
-  field, not a pickle: unpickling bytes from a process that has just read an untrusted file would
-  run code in the parent if the child were ever compromised. The parent also reads the pipe before
-  joining the child (a large result would otherwise deadlock on a full pipe).
+  `PARSE_MEMORY_MB` is 768 (not 512). The CI `docker-e2e` job now runs the app container with
+  `--memory 512m` (no swap), runs real uploads and one sandbox parse inside it under the real
+  Linux limits, and prints the child's peak RSS and the container's cgroup `memory.peak`; see the
+  numbers recorded below.
+- **Upload route order (step 27).** `POST /uploads` declares no `UploadFile`: FastAPI parses a
+  declared upload before it runs dependencies, so an anonymous, CSRF-less or rate-limited POST
+  would still spool up to 10 MB. The route runs, in order: login (session), Origin, the
+  `X-CSRF-Token` header if present, the rate limits (10/hour/user then 30/hour/agency), and only
+  then `request.form(max_files=1, max_fields=5, max_part_size=64 KB)`; without a header the form's
+  `csrf_token` field is checked before the file is used (a wrong token refunds the hit). A spy test
+  proves that anonymous, bad-Origin, bad-header-token and rate-limited POSTs never construct
+  `MultiPartParser`. The plain HTML form (no JavaScript) still works. The quota is refunded on the
+  503, a database error, any unexpected error and a wrong form token; a bad file still counts. A
+  database error during the import is a friendly 500 audited as `upload_failed` / `db_error`, and a
+  failing success audit is logged without turning a committed upload into a 500.
+- **Upload visibility (decision 5).** Managers see every upload with its warnings. Staff see only
+  uploads they made, with counts and dates but no warnings (warnings quote ticket numbers and name
+  fragments); a colleague's upload id is a 404, like a missing one. Uploads without an uploader
+  (CLI imports) are manager-only.
+- **Re-upload under another date.** Tickets that already exist keep the day they were first stored
+  on. The result page and the `import` command now show the day(s) the tickets of that upload
+  really belong to and warn when they differ from the upload's own date.
 - **Upload CSRF.** The decision above (header only, so the check never spools the file) was
   relaxed: the upload form is a plain multipart form with the hidden `csrf_token` field, so it
-  works without JavaScript. The header still works first. The body limit runs before any
-  parsing, so a form is never bigger than `MAX_REQUEST_BYTES`.
-- **Hot-query plans (step 30): no migration 0005.** All nine queries already have their index
+  works without JavaScript. The header still works first and is checked before the body is read.
+  The body limit runs before any parsing, so a form is never bigger than `MAX_REQUEST_BYTES`.
+- **Hot-query plans (step 30): no migration 0005.** All queries already have their index
   (`tests/test_query_plans.py`, run as the app role, under row-level security, on tables padded to
-  realistic volume and analysed). Notes from writing it: on a two-row table every index path costs
+  realistic volume and analysed), including the staff views of uploads and the days of one upload's
+  tickets. Notes from writing it: on a two-row table every index path costs
   the same, so the test pads the tables first. For "recent uploads" the planner walks the primary
   key backwards for an agency that owns nearly every row and uses an agency-leading index for a
   small agency; the unique `(agency_id, id)` constraint covers both, so no new index is needed.
 - **`seed-demo` (step 31).** `--fixture` is loaded into `demo-b` only, so the two agencies hold
   overlapping ticket numbers while `demo-a` stays empty for the person trying the upload and for
-  the end-to-end journey that checks 48 inserted, then 0 inserted and 48 updated.
+  the end-to-end journey that checks 48 inserted, then 0 inserted and 48 updated. It pre-checks
+  both slugs and all four phones (naming each collision), creates everything in ONE transaction,
+  refuses `ENV=production` always, and refuses a database that is neither SQLite nor local unless
+  `--i-know-this-is-not-production` is given.
 - **End-to-end in CI** runs the app container as a separate non-superuser role with
   `COOKIE_SECURE=false` over plain http (cookies cannot be `Secure` there). Production mode and
-  HSTS stay covered by the existing `docker` job.
+  HSTS stay covered by the existing `docker` job. The suite is rerunnable: it creates a fresh staff
+  member per run for the uploads (a fresh per-user budget); the agency budget of 30 an hour allows
+  about 10 runs an hour against one seeded database. The full 11 MB body test was dropped (client
+  side TCP races); the raw-socket test and the in-process streamed test cover it.
 
 ### PR 5: Production readiness, go-live, rollback drill
 32. Sentry with scrubbing (no cookies, headers, bodies or passenger names).

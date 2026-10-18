@@ -208,3 +208,199 @@ def test_the_end_to_end_suite_uses_the_same_demo_phones() -> None:
         PHONE_STAFF_SV,
         PHONE_STAFF_ER,
     )
+
+
+# --- the pre-check names what collided, and nothing is half-created ------------------------------
+
+
+def make_other_agency(url: str, *, phone: str | None = None, slug: str = "other") -> None:
+    from app.auth.passwords import hash_password
+    from app.repository import bootstrap_agency
+
+    with owner_session(url) as s:
+        bootstrap_agency(
+            s, slug, "Other", phone or "+22290000099", "Other", hash_password(PASSWORD), "test"
+        )
+
+
+def agency_slugs(url: str) -> list[str]:
+    from app.models import Agency
+
+    with owner_session(url) as s:
+        slugs: list[str] = []
+        for slug in (DEMO_A, DEMO_B, "other"):
+            if s.scalar(select(func.count()).select_from(Agency).where(Agency.slug == slug)):
+                slugs.append(slug)
+        return slugs
+
+
+@pytest.mark.parametrize(
+    "phone", [PHONE_MANAGER_A, PHONE_MANAGER_B, PHONE_STAFF_SV, PHONE_STAFF_ER]
+)
+def test_a_taken_demo_phone_is_named_and_nothing_is_created(
+    migrated: str, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], phone: str
+) -> None:
+    make_other_agency(migrated, phone=phone)
+    capsys.readouterr()
+    stdin(monkeypatch)
+    assert seed(migrated) == 2
+    err = capsys.readouterr().err
+    assert f"phone {phone}" in err
+    assert "already" in err
+    assert "nothing was changed" in err
+    assert agency_slugs(migrated) == ["other"]  # no demo agency, no half-seeded state
+
+
+@pytest.mark.parametrize("slug", [DEMO_A, DEMO_B])
+def test_a_taken_demo_slug_is_named_and_nothing_else_is_created(
+    migrated: str, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], slug: str
+) -> None:
+    make_other_agency(migrated, slug=slug)
+    capsys.readouterr()
+    stdin(monkeypatch)
+    assert seed(migrated) == 2
+    err = capsys.readouterr().err
+    assert f"slug {slug}" in err
+    assert agency_slugs(migrated) == [slug]
+
+
+def test_several_collisions_are_all_reported(
+    migrated: str, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    make_other_agency(migrated, slug=DEMO_B, phone=PHONE_STAFF_ER)
+    capsys.readouterr()
+    stdin(monkeypatch)
+    assert seed(migrated) == 2
+    err = capsys.readouterr().err
+    assert f"slug {DEMO_B}" in err
+    assert f"phone {PHONE_STAFF_ER}" in err
+
+
+def test_a_failure_halfway_leaves_nothing_behind(
+    migrated: str, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from sqlalchemy.exc import OperationalError
+
+    def boom(*args: Any, **kwargs: Any) -> Any:
+        raise OperationalError("INSERT INTO tickets", {}, Exception("disk full"))
+
+    monkeypatch.setattr("app.demo.ingest_report", boom)  # agencies and users are already added
+    stdin(monkeypatch)
+    assert seed(migrated) == 1
+    assert "database error" in capsys.readouterr().err
+    assert agency_slugs(migrated) == []
+    with owner_session(migrated) as s:
+        from app.models import AuditEvent
+
+        assert s.scalar(select(func.count()).select_from(User)) == 0
+        assert s.scalar(select(func.count()).select_from(AuditEvent)) == 0
+    # and the next, healthy run succeeds from a clean slate
+    monkeypatch.undo()
+    stdin(monkeypatch)
+    assert seed(migrated) == 0
+
+
+def test_the_whole_seed_is_one_transaction(migrated: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    from sqlalchemy.orm import Session
+
+    commits: list[int] = []
+    real_commit = Session.commit
+
+    def counting(self: Session) -> None:
+        commits.append(1)
+        real_commit(self)
+
+    monkeypatch.setattr(Session, "commit", counting)
+    stdin(monkeypatch)
+    assert seed(migrated) == 0
+    assert len(commits) == 1
+
+
+# --- where it may run ----------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "sqlite:///demo.db",
+        "sqlite://",
+        "postgresql://u:p@localhost/db",
+        "postgresql+psycopg://u:p@127.0.0.1:5432/db",
+        "postgresql://u:p@[::1]/db",
+        "postgresql:///db",  # a unix socket on this machine
+        "postgresql://u:p@LOCALHOST/db",
+    ],
+)
+def test_local_databases_are_allowed(url: str) -> None:
+    from app.demo import demo_target_refusal
+
+    assert demo_target_refusal(url, allow_remote=False) is None
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "postgresql://u:p@db.example.com/db",
+        "postgresql://u:p@10.0.0.5/db",
+        "postgresql+psycopg://u:p@dpg-abc123.frankfurt-postgres.render.com/db",
+        "postgresql://u:p@localhost.evil.example/db",
+    ],
+)
+def test_remote_databases_are_refused_unless_confirmed(url: str) -> None:
+    from app.demo import demo_target_refusal
+
+    reason = demo_target_refusal(url, allow_remote=False)
+    assert reason is not None
+    assert "--i-know-this-is-not-production" in reason
+    assert "p@" not in reason  # no credentials in the message
+    assert demo_target_refusal(url, allow_remote=True) is None
+
+
+def test_the_cli_refuses_a_remote_database_before_it_connects_or_reads_the_password(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    def no_engine(*args: Any, **kwargs: Any) -> Any:
+        raise AssertionError("must not connect")
+
+    monkeypatch.setattr("app.cli.make_engine", no_engine)
+    stdin(monkeypatch)
+    url = "postgresql://demo:secret-pw@db.example.com/prod"
+    assert seed(url) == 2
+    err = capsys.readouterr().err
+    assert "--i-know-this-is-not-production" in err
+    assert "secret-pw" not in err
+
+
+def test_the_flag_allows_a_remote_database_to_be_tried(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from sqlalchemy.exc import OperationalError
+
+    attempted: list[str] = []
+
+    def fake_engine(url: str, *args: Any, **kwargs: Any) -> Any:
+        attempted.append("engine")
+        raise OperationalError("connect", {}, Exception("could not connect"))
+
+    monkeypatch.setattr("app.cli.make_engine", fake_engine)
+    stdin(monkeypatch)
+    assert seed("postgresql://demo:pw@db.example.com/prod", "--i-know-this-is-not-production") == 1
+    assert attempted == ["engine"]
+
+
+def test_the_flag_never_overrides_production(
+    migrated: str, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setenv("ENV", "production")
+    stdin(monkeypatch)
+    assert seed(migrated, "--i-know-this-is-not-production") == 2
+    assert "production" in capsys.readouterr().err
+    monkeypatch.delenv("ENV")
+    assert agency_slugs(migrated) == []
+
+
+def test_the_flag_is_harmless_on_a_local_database(
+    migrated: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    stdin(monkeypatch)
+    assert seed(migrated, "--i-know-this-is-not-production") == 0

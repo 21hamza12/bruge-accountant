@@ -33,7 +33,13 @@ from app.auth.ratelimit import purge_expired_windows
 from app.auth.temp_passwords import TEMP_PASSWORD_TTL
 from app.clock import utc_now
 from app.db import default_database_url, make_engine, make_session_factory
-from app.demo import ALL_PHONES, seed_demo
+from app.demo import (
+    ALL_PHONES,
+    OVERRIDE_FLAG,
+    DemoCollisionError,
+    demo_target_refusal,
+    seed_demo,
+)
 from app.formatting import money
 from app.ingest import IngestResult, check_bytes, ingest_report, sanitize_filename
 from app.parsing.amadeus import MAX_FILE_BYTES, ParseError, parse_report
@@ -170,8 +176,17 @@ def _build_parser() -> argparse.ArgumentParser:
             "two staff linked to the signs 0004SV and 0009ER, and demo-b receives the fixture. "
             "One password for all four accounts is read from the first line of standard input "
             "(--password-stdin is required); it is never an argument and never printed. "
-            "Refuses when ENV=production and when the demo agencies already exist."
+            "Everything is created in one transaction (all or nothing). Refuses when "
+            "ENV=production, when any demo slug or phone is already taken (it names each one), "
+            "and when the database is neither SQLite nor on this machine unless the override "
+            "flag is given."
         ),
+    )
+    seed.add_argument(
+        OVERRIDE_FLAG,
+        action="store_true",
+        dest="allow_remote",
+        help="allow a database that is neither SQLite nor localhost (never ENV=production)",
     )
     seed.add_argument("--fixture", required=True, type=Path, help="an Amadeus report (.xlsx)")
     seed.add_argument(
@@ -411,6 +426,9 @@ def _purge_expired(url: str) -> int:
 
 
 def _seed_demo(url: str, args: argparse.Namespace) -> int:
+    refusal = demo_target_refusal(url, allow_remote=args.allow_remote)
+    if refusal is not None:
+        return _fail(refusal, EXIT_USAGE)
     try:
         password = _read_password(True)
     except ValueError as exc:
@@ -439,8 +457,12 @@ def _seed_demo(url: str, args: argparse.Namespace) -> int:
             password,
             _operator(),
         )
-    except AlreadyExistsError:
-        return _fail("the demo agencies already exist; nothing was changed", EXIT_USAGE)
+    except DemoCollisionError as exc:
+        return _fail(
+            f"the demo accounts already exist ({', '.join(exc.fields)} already taken); "
+            "nothing was changed",
+            EXIT_USAGE,
+        )
     finally:
         engine.dispose()
     _emit(

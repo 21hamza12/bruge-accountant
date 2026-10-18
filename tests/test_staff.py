@@ -34,6 +34,7 @@ from tests.web_support import (
 )
 
 NEW_PHONE = "+22212345650"
+EXPECTED = re.compile(r'name="expected_temp_id" value="(\d+)"')
 SECRET = re.compile(r'class="secret"><code>([A-Za-z0-9]+)</code>')
 
 
@@ -68,6 +69,14 @@ class Env:
 
     def create(self, c: TestClient, name: str, phone: str, role: str = "staff") -> httpx.Response:
         return self.post(c, "/staff", display_name=name, phone=phone, role=role)
+
+    def reissue(self, c: TestClient, user_id: int) -> httpx.Response:
+        """Press the button: read the detail page's hidden field, then POST it back."""
+        page = c.get(f"/staff/{user_id}")
+        assert page.status_code == 200
+        match = EXPECTED.search(page.text)
+        assert match, "the re-issue form has no expected_temp_id field"
+        return self.post(c, f"/staff/{user_id}/temp-password", expected_temp_id=match.group(1))
 
     def user(self, user_id: int, agency: int | None = None) -> User:
         with owner_session(self.db.owner_url) as s:
@@ -366,9 +375,9 @@ def test_role_changes(env: Env) -> None:
 # --- re-issuing -----------------------------------------------------------------------------------
 
 
-def test_a_manager_can_reissue_a_temporary_password(env: Env) -> None:
+def test_a_manager_can_reissue_a_temporary_password_for_staff(env: Env) -> None:
     c, staff = env.manager_a(), env.staff_a()
-    response = env.post(c, f"/staff/{env.seeded.staff_a}/temp-password")
+    response = env.reissue(c, env.seeded.staff_a)
     assert response.status_code == 200
     assert response.headers["cache-control"] == "no-store"
     match = SECRET.search(response.text)
@@ -376,20 +385,85 @@ def test_a_manager_can_reissue_a_temporary_password(env: Env) -> None:
     assert staff.get("/", follow_redirects=False).status_code == 303  # sessions revoked
     assert login(env.factory(), PHONE_STAFF_A, PASSWORD_S).status_code == 401
     assert login(env.factory(), PHONE_STAFF_A, match.group(1)).status_code == 303
-    second = env.post(c, f"/staff/{env.seeded.staff_a}/temp-password")
-    assert SECRET.search(second.text)
-    assert SECRET.search(second.text).group(1) != match.group(1)  # type: ignore[union-attr]
 
 
-def test_reissue_for_yourself_or_a_deactivated_user_is_refused(env: Env) -> None:
+def test_a_reload_of_the_reissue_post_does_not_silently_issue_another(env: Env) -> None:
     c = env.manager_a()
-    own = env.post(c, f"/staff/{env.seeded.manager_a}/temp-password")
-    assert own.status_code == 400
+    uid = env.seeded.staff_a
+    page = c.get(f"/staff/{uid}")
+    expected = EXPECTED.search(page.text)
+    assert expected
+    first = env.post(c, f"/staff/{uid}/temp-password", expected_temp_id=expected.group(1))
+    secret = SECRET.search(first.text)
+    assert first.status_code == 200 and secret
+    # the browser's "resend the form" replays the very same POST
+    replay = env.post(c, f"/staff/{uid}/temp-password", expected_temp_id=expected.group(1))
+    assert replay.status_code == 400
+    assert "déjà été émis" in replay.text
+    assert SECRET.search(replay.text) is None
+    with owner_session(env.db.owner_url) as s:
+        rebind_tenant(s, env.seeded.agency_a)
+        rows = list(s.scalars(select(TemporaryPassword).where(TemporaryPassword.user_id == uid)))
+    assert len(rows) == 1  # nothing was reissued: the first password is still the live one
+    assert login(env.factory(), PHONE_STAFF_A, secret.group(1)).status_code == 303
+    # a form that does not carry the field is refused as well (nothing is issued blindly)
+    assert env.post(c, f"/staff/{uid}/temp-password").status_code == 400
+
+
+def test_a_second_deliberate_reissue_from_a_fresh_page_works(env: Env) -> None:
+    c = env.manager_a()
+    first = SECRET.search(env.reissue(c, env.seeded.staff_a).text)
+    second = SECRET.search(env.reissue(c, env.seeded.staff_a).text)
+    assert first and second and first.group(1) != second.group(1)
+
+
+def test_a_manager_cannot_reset_another_manager_or_themselves(env: Env) -> None:
+    c = env.manager_a()
+    env.create(c, "Second", NEW_PHONE, "manager")
+    second = next(u for u in env.users(env.seeded.agency_a) if u.phone == NEW_PHONE).id
+    before_second = env.user(second).password_hash
+    for target in (second, env.seeded.manager_a):
+        page = c.get(f"/staff/{target}")
+        assert "expected_temp_id" not in page.text  # no button to press
+        response = env.post(c, f"/staff/{target}/temp-password", expected_temp_id="0")
+        assert response.status_code == 403
+        assert "Accès refusé" in response.text
+    assert env.user(second).password_hash == before_second
     assert env.user(env.seeded.manager_a).password_hash is not None
+    denied = audit_events(env.db.owner_url, env.seeded.agency_a, "permission_denied")
+    assert len(denied) == 2
+    assert {e.actor_user_id for e in denied} == {env.seeded.manager_a}
+    assert denied[0].details["path"] == f"/staff/{second}/temp-password"
+    # the manager is still logged in and nothing was issued to them
+    assert c.get("/", follow_redirects=False).status_code == 200
+    issued = audit_events(env.db.owner_url, env.seeded.agency_a, "temp_password_issued")
+    assert [e.details["user_id"] for e in issued] == [second]  # only the one made at creation
+
+
+def test_reissue_for_a_deactivated_user_is_refused(env: Env) -> None:
+    c = env.manager_a()
+    page = c.get(f"/staff/{env.seeded.staff_a}")
+    expected = EXPECTED.search(page.text)
+    assert expected
     env.post(c, f"/staff/{env.seeded.staff_a}/deactivate")
-    gone = env.post(c, f"/staff/{env.seeded.staff_a}/temp-password")
+    gone = env.post(
+        c, f"/staff/{env.seeded.staff_a}/temp-password", expected_temp_id=expected.group(1)
+    )
     assert gone.status_code == 400
     assert "désactivé" in gone.text
+
+
+def test_the_target_is_locked_before_a_temporary_password_is_issued() -> None:
+    from sqlalchemy.dialects import postgresql
+
+    from app import accounts
+
+    statement = accounts.user_query(1, 2, lock=True)
+    sql = str(statement.compile(dialect=postgresql.dialect()))  # type: ignore[no-untyped-call]
+    assert "FOR UPDATE" in sql
+    assert "FOR UPDATE" not in str(
+        accounts.user_query(1, 2).compile(dialect=postgresql.dialect())  # type: ignore[no-untyped-call]
+    )
 
 
 # --- another agency's ids are invisible -----------------------------------------------------
@@ -434,6 +508,41 @@ def test_a_missing_id_looks_the_same_as_another_agencys_id(env: Env) -> None:
     missing = b.get("/staff/987654")
     assert foreign.status_code == missing.status_code == 404
     assert _plain(foreign) == _plain(missing)
+
+
+OUT_OF_RANGE = [0, -1, 2**63, 2**64, 10**30]
+
+
+@pytest.mark.parametrize("bad", OUT_OF_RANGE)
+def test_out_of_range_ids_are_the_404_page_before_any_query(
+    env: Env, monkeypatch: pytest.MonkeyPatch, bad: int
+) -> None:
+    from app import accounts
+
+    def boom(*args: object, **kwargs: object) -> None:
+        raise AssertionError("the database was queried for an impossible id")
+
+    c = env.manager_a()
+    monkeypatch.setattr(accounts, "get_user", boom)
+    monkeypatch.setattr(accounts, "unlink_sign", boom)
+    page = c.get(f"/staff/{bad}")
+    assert page.status_code == 404
+    assert "Page introuvable" in page.text
+    for path in (
+        f"/staff/{bad}/signs",
+        f"/staff/{bad}/role",
+        f"/staff/{bad}/deactivate",
+        f"/staff/{bad}/temp-password",
+        f"/staff/{env.seeded.staff_a}/signs/{bad}/unlink",
+        f"/staff/{bad}/signs/{bad}/unlink",
+    ):
+        assert env.post(c, path).status_code == 404, path
+
+
+def test_the_largest_id_is_an_ordinary_not_found(env: Env) -> None:
+    c = env.manager_a()
+    assert c.get(f"/staff/{2**63 - 1}").status_code == 404
+    assert env.post(c, f"/staff/{env.seeded.staff_a}/signs/{2**63 - 1}/unlink").status_code == 404
 
 
 def test_non_numeric_ids_are_a_clean_400(env: Env) -> None:

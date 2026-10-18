@@ -38,13 +38,19 @@
   <button type="submit">{{ _("Changer le rôle") }}</button>
 </form>
 
-{% if target.is_active %}
+{% if can_reissue %}
 <h2>{{ _("Mot de passe temporaire") }}</h2>
 <form method="post" action="/staff/{{ target.id }}/temp-password">
   {% include "_csrf.html" %}
+  <input type="hidden" name="expected_temp_id" value="{{ expected_temp_id }}">
   <button type="submit">{{ _("Émettre un mot de passe temporaire") }}</button>
 </form>
+{% elif target.is_active and target.role == "manager" %}
+<h2>{{ _("Mot de passe temporaire") }}</h2>
+<p>{{ _("Le mot de passe d'un responsable est réinitialisé par l'administrateur de la plateforme.") }}</p>
+{% endif %}
 
+{% if target.is_active %}
 <h2>{{ _("Désactiver") }}</h2>
 <form method="post" action="/staff/{{ target.id }}/deactivate">
   {% include "_csrf.html" %}

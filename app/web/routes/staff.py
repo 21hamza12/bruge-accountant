@@ -6,6 +6,17 @@ is a 404, exactly like an id that does not exist.
 
 A temporary password is shown only in the response of the POST that issued it, never in a redirect,
 URL or later page, with ``Cache-Control: no-store``.
+
+A manager may issue a temporary password for STAFF only, never for another manager or for
+themselves (the 403 page and a ``permission_denied`` audit event). A locked-out manager is reset
+by the platform owner with the ``reset-password`` CLI command (docs/runbook.md).
+
+A reload of the POST response ("resend the form") must not issue a second password silently. The
+re-issue form carries ``expected_temp_id``, the id of the user's newest temporary password when
+the page was drawn; the POST refuses unless that is still the newest (checked with the user row
+locked). A replay carries the old id, so it is refused with a message. This is simpler than a
+single-use CSRF token (no extra state, and the session's token keeps working for every other
+form) and needs no confirmation page.
 """
 
 from __future__ import annotations
@@ -16,7 +27,7 @@ from fastapi import APIRouter, Depends, Form, HTTPException, Request
 from sqlalchemy.orm import Session
 from starlette.responses import RedirectResponse, Response
 
-from app import accounts
+from app import accounts, audit
 from app.accounts import AccountError
 from app.auth import temp_passwords
 from app.clock import Clock
@@ -24,12 +35,16 @@ from app.models import ROLE_STAFF, User
 from app.web.csrf import csrf_protect
 from app.web.deps import AuthContext, client_ip, get_clock, get_session, require_manager
 from app.web.pages import page
+from app.web.params import SignId, UserId
 
 router = APIRouter(prefix="/staff", dependencies=[Depends(csrf_protect)])
 
 NO_STORE = {"Cache-Control": "no-store"}
 DEACTIVATED = "Ce compte est désactivé."
-OWN_ACCOUNT = "Pour votre propre compte, utilisez « Changer le mot de passe »."
+ALREADY_ISSUED = (
+    "Un mot de passe temporaire a déjà été émis pour ce compte depuis l'affichage de cette page. "
+    "Rouvrez la fiche pour en émettre un nouveau si nécessaire."
+)
 
 
 def _list_page(
@@ -64,14 +79,16 @@ def _detail_page(
         status_code=status_code,
         csrf_token=auth.csrf_token,
         target=user,
+        can_reissue=user.role == ROLE_STAFF and user.is_active,
+        expected_temp_id=temp_passwords.latest_id(db, user),
         signs=accounts.get_signs(db, auth.user.agency_id, user.id),
         me=auth.user,
         error=error,
     )
 
 
-def _target(db: Session, auth: AuthContext, user_id: int) -> User:
-    user = accounts.get_user(db, auth.user.agency_id, user_id)
+def _target(db: Session, auth: AuthContext, user_id: int, *, lock: bool = False) -> User:
+    user = accounts.get_user(db, auth.user.agency_id, user_id, lock=lock)
     if user is None:
         raise HTTPException(status_code=404)
     return user
@@ -130,7 +147,7 @@ def staff_create(
 
 @router.get("/{user_id}")
 def staff_detail(
-    user_id: int,
+    user_id: UserId,
     db: Annotated[Session, Depends(get_session)],
     auth: Annotated[AuthContext, Depends(require_manager)],
 ) -> Response:
@@ -144,14 +161,15 @@ def _back(user_id: int) -> Response:
 @router.post("/{user_id}/signs")
 def staff_link_sign(
     request: Request,
-    user_id: int,
+    user_id: UserId,
     db: Annotated[Session, Depends(get_session)],
+    clock: Annotated[Clock, Depends(get_clock)],
     auth: Annotated[AuthContext, Depends(require_manager)],
     sign: Annotated[str, Form(max_length=256)] = "",
 ) -> Response:
     user = _target(db, auth, user_id)
     try:
-        accounts.link_sign(db, auth.user, user, sign, client_ip(request))
+        accounts.link_sign(db, auth.user, user, sign, clock(), client_ip(request))
         db.commit()
     except AccountError as exc:
         db.rollback()
@@ -162,13 +180,14 @@ def staff_link_sign(
 @router.post("/{user_id}/signs/{sign_id}/unlink")
 def staff_unlink_sign(
     request: Request,
-    user_id: int,
-    sign_id: int,
+    user_id: UserId,
+    sign_id: SignId,
     db: Annotated[Session, Depends(get_session)],
+    clock: Annotated[Clock, Depends(get_clock)],
     auth: Annotated[AuthContext, Depends(require_manager)],
 ) -> Response:
     user = _target(db, auth, user_id)
-    if not accounts.unlink_sign(db, auth.user, user, sign_id, client_ip(request)):
+    if not accounts.unlink_sign(db, auth.user, user, sign_id, clock(), client_ip(request)):
         raise HTTPException(status_code=404)
     db.commit()
     return _back(user_id)
@@ -177,14 +196,15 @@ def staff_unlink_sign(
 @router.post("/{user_id}/role")
 def staff_change_role(
     request: Request,
-    user_id: int,
+    user_id: UserId,
     db: Annotated[Session, Depends(get_session)],
+    clock: Annotated[Clock, Depends(get_clock)],
     auth: Annotated[AuthContext, Depends(require_manager)],
     role: Annotated[str, Form(max_length=32)] = "",
 ) -> Response:
     user = _target(db, auth, user_id)
     try:
-        accounts.change_role(db, auth.user, user, role, client_ip(request))
+        accounts.change_role(db, auth.user, user, role, clock(), client_ip(request))
         db.commit()
     except AccountError as exc:
         db.rollback()
@@ -195,7 +215,7 @@ def staff_change_role(
 @router.post("/{user_id}/deactivate")
 def staff_deactivate(
     request: Request,
-    user_id: int,
+    user_id: UserId,
     db: Annotated[Session, Depends(get_session)],
     clock: Annotated[Clock, Depends(get_clock)],
     auth: Annotated[AuthContext, Depends(require_manager)],
@@ -213,18 +233,32 @@ def staff_deactivate(
 @router.post("/{user_id}/temp-password")
 def staff_reissue_temp_password(
     request: Request,
-    user_id: int,
+    user_id: UserId,
     db: Annotated[Session, Depends(get_session)],
     clock: Annotated[Clock, Depends(get_clock)],
     auth: Annotated[AuthContext, Depends(require_manager)],
+    expected_temp_id: Annotated[str, Form(max_length=20)] = "",
 ) -> Response:
-    user = _target(db, auth, user_id)
+    now = clock()
+    user = _target(db, auth, user_id, lock=True)  # FOR UPDATE: one reissue at a time per user
+    if user.role != ROLE_STAFF:
+        # Managers (including the caller) are reset by the platform owner, not by a manager.
+        audit.record_and_commit(
+            db,
+            audit.PERMISSION_DENIED,
+            agency_id=auth.user.agency_id,
+            actor_user_id=auth.user.id,
+            ip=client_ip(request),
+            details={"path": request.url.path, "method": request.method, "reason": "manager_reset"},
+            now=now,
+        )
+        raise HTTPException(status_code=403)
     if not user.is_active:
         return _detail_page(db, auth, user, error=DEACTIVATED, status_code=400)
-    if user.id == auth.user.id:
-        return _detail_page(db, auth, user, error=OWN_ACCOUNT, status_code=400)
+    if expected_temp_id != str(temp_passwords.latest_id(db, user)):
+        return _detail_page(db, auth, user, error=ALREADY_ISSUED, status_code=400)
     plaintext = temp_passwords.issue_temporary_password(
-        db, user, clock(), actor_user_id=auth.user.id, ip=client_ip(request)
+        db, user, now, actor_user_id=auth.user.id, ip=client_ip(request)
     )
     db.commit()
     return _created_page(user, plaintext, auth)

@@ -23,8 +23,9 @@ import sqlite3
 import unicodedata
 from dataclasses import dataclass
 from datetime import datetime
+from typing import Any
 
-from sqlalchemy import delete, select
+from sqlalchemy import Select, delete, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -69,7 +70,15 @@ def normalize_staff_sign(raw: str) -> str:
 
 
 def clean_display_name(raw: str) -> str:
-    name = " ".join(unicodedata.normalize("NFC", raw).split())
+    """NFC, single spaces, and no invisible format characters.
+
+    Unicode category Cf (zero-width space and joiners, bidirectional overrides and isolates, the
+    BOM) is removed: it lets one name look like another, or reorder the text around it, in a
+    page that lists staff. Control characters (Cc) are refused outright.
+    """
+    name = unicodedata.normalize("NFC", raw)
+    name = "".join(c for c in name if unicodedata.category(c) != "Cf")
+    name = " ".join(name.split())
     if (
         not name
         or len(name) > MAX_NAME_LENGTH
@@ -107,10 +116,15 @@ def list_staff(db: Session, agency_id: int) -> list[StaffRow]:
     return [StaffRow(u, signs.get(u.id, [])) for u in users]
 
 
-def get_user(db: Session, agency_id: int, user_id: int) -> User | None:
-    return db.scalars(
-        select(User).where(User.agency_id == agency_id, User.id == user_id)
-    ).one_or_none()
+def user_query(agency_id: int, user_id: int, *, lock: bool = False) -> Select[Any]:
+    statement = select(User).where(User.agency_id == agency_id, User.id == user_id)
+    return statement.with_for_update() if lock else statement
+
+
+def get_user(db: Session, agency_id: int, user_id: int, *, lock: bool = False) -> User | None:
+    """The user of this agency, or None. ``lock`` takes ``FOR UPDATE`` (a no-op on SQLite): two
+    managers acting on the same account then run one after the other."""
+    return db.scalars(user_query(agency_id, user_id, lock=lock)).one_or_none()
 
 
 def get_signs(db: Session, agency_id: int, user_id: int) -> list[StaffSignLink]:
@@ -174,6 +188,7 @@ def create_user(
         actor_user_id=manager.id,
         ip=ip,
         details={"user_id": user.id, "role": role, "phone": mask_phone(e164)},
+        now=now,
     )
     return user, plaintext
 
@@ -181,7 +196,9 @@ def create_user(
 # --- signs --------------------------------------------------------------------------------------
 
 
-def link_sign(db: Session, manager: User, user: User, raw_sign: str, ip: str | None) -> None:
+def link_sign(
+    db: Session, manager: User, user: User, raw_sign: str, now: datetime, ip: str | None
+) -> None:
     sign = normalize_staff_sign(raw_sign)
     link = StaffSignLink(agency_id=user.agency_id, user_id=user.id, staff_sign=sign)
     try:
@@ -199,10 +216,13 @@ def link_sign(db: Session, manager: User, user: User, raw_sign: str, ip: str | N
         actor_user_id=manager.id,
         ip=ip,
         details={"user_id": user.id, "sign": sign},
+        now=now,
     )
 
 
-def unlink_sign(db: Session, manager: User, user: User, sign_id: int, ip: str | None) -> bool:
+def unlink_sign(
+    db: Session, manager: User, user: User, sign_id: int, now: datetime, ip: str | None
+) -> bool:
     """Remove one link of this user. False when there is no such link (a 404)."""
     link = db.scalars(
         select(StaffSignLink).where(
@@ -222,6 +242,7 @@ def unlink_sign(db: Session, manager: User, user: User, sign_id: int, ip: str | 
         actor_user_id=manager.id,
         ip=ip,
         details={"user_id": user.id, "sign": sign},
+        now=now,
     )
     return True
 
@@ -248,6 +269,7 @@ def deactivate_user(db: Session, manager: User, user: User, now: datetime, ip: s
     if _would_leave_no_manager(db, user):
         raise AccountError(LAST_MANAGER)
     user.is_active = False
+    user.updated_at = now
     sessions.revoke_all_for_user(db, user.agency_id, user.id, now)
     temp_passwords.retire_pending(db, user, now)
     audit.record(
@@ -257,10 +279,13 @@ def deactivate_user(db: Session, manager: User, user: User, now: datetime, ip: s
         actor_user_id=manager.id,
         ip=ip,
         details={"user_id": user.id},
+        now=now,
     )
 
 
-def change_role(db: Session, manager: User, user: User, role: str, ip: str | None) -> None:
+def change_role(
+    db: Session, manager: User, user: User, role: str, now: datetime, ip: str | None
+) -> None:
     if role not in ROLES:
         raise AccountError(BAD_ROLE)
     if role == user.role:
@@ -269,6 +294,7 @@ def change_role(db: Session, manager: User, user: User, role: str, ip: str | Non
         raise AccountError(LAST_MANAGER)
     previous = user.role
     user.role = role
+    user.updated_at = now
     audit.record(
         db,
         audit.USER_ROLE_CHANGED,
@@ -276,4 +302,5 @@ def change_role(db: Session, manager: User, user: User, role: str, ip: str | Non
         actor_user_id=manager.id,
         ip=ip,
         details={"user_id": user.id, "from": previous, "to": role},
+        now=now,
     )

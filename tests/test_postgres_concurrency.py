@@ -1,6 +1,8 @@
 """Two connections importing overlapping ticket sets at the same moment, on a real server.
 
 SQLite serialises writers, so this only means something on Postgres and is skipped elsewhere.
+It runs under row-level security in both deployment modes: each worker connects the way the
+application does (the app role, or the owner alone) and binds the tenant, as the importer does.
 """
 
 from __future__ import annotations
@@ -10,16 +12,16 @@ from typing import Any
 
 import pytest
 from sqlalchemy import func, select, text, update
-from sqlalchemy.engine import make_url
 from sqlalchemy.orm import Session
 
 from app import repository
-from app.db import Base, make_engine, make_session_factory
+from app.db import make_engine, make_session_factory
 from app.models import PRICE_STATUS_AWAITING, Ticket, Upload
 from app.parsing.amadeus import ParsedReport, parse_report
 from app.repository import create_agency, import_report
+from app.tenancy import bind_tenant
 from tests.builders import build_workbook, ticket_row
-from tests.conftest import SHA, allow_future_price_statuses
+from tests.conftest import SHA, RlsDatabase, allow_future_price_statuses
 
 ROUNDS = 5
 JOIN_TIMEOUT_S = 60
@@ -29,14 +31,9 @@ def _report(numbers: list[int]) -> ParsedReport:
     return parse_report(build_workbook([ticket_row(doc=f"{3940000000 + n}") for n in numbers]))
 
 
-@pytest.fixture
-def pg_url(db_url: str) -> str:
-    if make_url(db_url).get_backend_name() != "postgresql":
-        pytest.skip("needs a real Postgres server: set TEST_DATABASE_URL")
-    return db_url
-
-
-def test_overlapping_concurrent_imports(pg_url: str, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_overlapping_concurrent_imports(
+    rls_db: RlsDatabase, monkeypatch: pytest.MonkeyPatch
+) -> None:
     # Both sets span several upsert chunks and share 150 tickets; B is listed in reverse,
     # so only the repository's sort keeps the two writers locking rows in the same order.
     monkeypatch.setattr(repository, "UPSERT_CHUNK", 100)
@@ -45,8 +42,7 @@ def test_overlapping_concurrent_imports(pg_url: str, monkeypatch: pytest.MonkeyP
     union = set(set_a) | set(set_b)
     priced = {n for n in union if n % 10 == 0}
 
-    setup = make_engine(pg_url)
-    Base.metadata.create_all(setup)
+    setup = make_engine(rls_db.owner_url)
     with make_session_factory(setup)() as s:
         agency_id = create_agency(s, "a", "A").id
         import_report(s, agency_id, _report(sorted(priced)), "seed.xlsx", SHA)
@@ -71,7 +67,7 @@ def test_overlapping_concurrent_imports(pg_url: str, monkeypatch: pytest.MonkeyP
 
     def worker(parsed: ParsedReport, errors: list[BaseException]) -> None:
         first_chunk_done.value = False
-        engine = make_engine(pg_url)
+        engine = make_engine(rls_db.app_url)
         try:
             with make_session_factory(engine)() as sess:
                 import_report(sess, agency_id, parsed, "race.xlsx", SHA)
@@ -92,6 +88,7 @@ def test_overlapping_concurrent_imports(pg_url: str, monkeypatch: pytest.MonkeyP
         start_together.reset()
 
     with make_session_factory(setup)() as s:
+        bind_tenant(s, agency_id)  # the owner is subject to row-level security as well
         assert s.scalar(select(func.count()).select_from(Ticket)) == len(union)
         duplicates = s.execute(
             select(Ticket.agency_id, Ticket.ticket_no)

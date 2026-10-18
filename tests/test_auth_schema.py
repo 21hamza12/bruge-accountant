@@ -306,15 +306,14 @@ def test_upload_new_columns_are_nullable(migrated: Session) -> None:
         assert cols[name]["nullable"] is True
 
 
-def test_import_report_leaves_the_new_columns_unset(
+def test_import_report_records_counts_and_leaves_the_uploader_unset(
     migrated: Session, parsed_fixture: ParsedReport
 ) -> None:
     agency = create_agency(migrated, "x", "X")
     result = import_report(migrated, agency.id, parsed_fixture, "1OCT.xlsx", SHA)
     upload = migrated.get(Upload, result.upload_id)
     assert upload is not None
-    assert upload.inserted_count is None
-    assert upload.updated_count is None
+    assert (upload.inserted_count, upload.updated_count) == (48, 0)
     assert upload.uploaded_by_user_id is None
 
 

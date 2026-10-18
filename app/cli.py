@@ -28,6 +28,7 @@ from app.repository import (
     tickets_awaiting_price,
 )
 from app.settings import Settings
+from app.tenancy import bind_tenant
 
 EXIT_OK = 0
 EXIT_FAILURE = 1
@@ -148,6 +149,7 @@ def _import(url: str, file: Path, slug: str, override: date | None) -> int:
                     data = fh.read(MAX_FILE_BYTES + 1)
             except OSError as exc:
                 return _fail(f"cannot read {file}: {exc.strerror or exc}", EXIT_FAILURE)
+            bind_tenant(session, agency.id)  # row-level security: everything below is this agency
             parsed = parse_report(data)
             if override is not None:
                 parsed = dataclasses.replace(
@@ -183,6 +185,13 @@ def _database_failure(exc: SQLAlchemyError) -> int:
     lowered = detail.lower()
     if "no such table" in lowered or "does not exist" in lowered:
         return _fail("database is not ready; run: init-db", EXIT_FAILURE)
+    if "permission denied" in lowered:
+        return _fail(
+            f"database error: {detail}\nAdministrative commands (add-agency, bootstrap-agency) "
+            "need the owner connection, not the web application's role: run them with "
+            "DATABASE_URL set to the value of MIGRATION_DATABASE_URL.",
+            EXIT_FAILURE,
+        )
     return _fail(f"database error: {detail}", EXIT_FAILURE)
 
 

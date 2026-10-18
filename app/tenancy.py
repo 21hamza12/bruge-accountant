@@ -62,6 +62,11 @@ def bind_tenant(session: Session, agency_id: int) -> None:
             _set_config(connection, TENANT_SETTING, str(agency_id))
 
 
+def unbind_tenant(session: Session) -> None:
+    """Forget the bound agency; later transactions start with no tenant (zero rows)."""
+    session.info.pop(INFO_KEY, None)
+
+
 def lookup_scope(session: Session, key: str, value: str) -> None:
     """Set one narrow lookup setting for the current transaction only (not re-applied)."""
     if key not in LOOKUP_KEYS:

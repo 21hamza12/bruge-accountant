@@ -5,12 +5,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import Connection, func, select, text
+from sqlalchemy import Connection, text
 from sqlalchemy.orm import Session
 
 from app.db import make_engine, make_session_factory
 from app.models import (
-    Agency,
     AuditEvent,
     StaffSignLink,
     TemporaryPassword,
@@ -18,8 +17,7 @@ from app.models import (
     UserSession,
 )
 from app.parsing.amadeus import parse_report
-from app.repository import import_report
-from app.tenancy import bind_tenant
+from app.repository import create_agency, import_report
 from tests.builders import build_workbook, ticket_row
 from tests.conftest import SHA
 
@@ -37,26 +35,12 @@ class Tenant:
     user_id: int
 
 
-def create_agency_under_rls(session: Session, slug: str, name: str) -> int:
-    """Insert an agency where RLS applies to every role, the owner included.
-
-    The row's id must equal the tenant setting when it is inserted, so the id comes from the
-    sequence first, the tenant is bound, and only then is the row written.
-    """
-    new_id = session.scalar(select(func.nextval(func.pg_get_serial_sequence("agencies", "id"))))
-    assert new_id is not None
-    bind_tenant(session, int(new_id))
-    session.add(Agency(id=int(new_id), slug=slug, name=name))
-    session.commit()
-    return int(new_id)
-
-
 def seed_tenant(owner_url: str, slug: str, phone: str, token_hash: str, doc_base: int) -> Tenant:
     """One agency with a row in every agency-scoped table, written through its own tenant."""
     engine = make_engine(owner_url)
     try:
         with make_session_factory(engine)() as s:
-            agency_id = create_agency_under_rls(s, slug, slug.upper())
+            agency_id = create_agency(s, slug, slug.upper()).id
             user = User(agency_id=agency_id, phone=phone, role="manager")
             s.add(user)
             s.commit()

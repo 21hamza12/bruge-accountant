@@ -82,7 +82,7 @@ class Upload(Base):
     uploaded_at: Mapped[datetime] = mapped_column(
         UTCDateTime, default=_now, server_default=func.now()
     )
-    # Added by migration 0002; import_report does not write them yet (Phase 2, step 13).
+    # Added by migration 0002; import_report records them (the uploader once there are logins).
     inserted_count: Mapped[int | None] = mapped_column(Integer)
     updated_count: Mapped[int | None] = mapped_column(Integer)
     uploaded_by_user_id: Mapped[int | None] = mapped_column(BigIntType)

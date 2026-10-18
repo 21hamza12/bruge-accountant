@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 
 from app.models import PRICE_STATUS_AWAITING, Agency, Ticket, Upload
 from app.parsing.amadeus import ParsedReport, ParsedTicket
+from app.tenancy import bind_tenant, bound_tenant, lookup_scope, unbind_tenant
 
 UPSERT_CHUNK = 200
 
@@ -39,18 +40,45 @@ class ImportResult:
     updated: int
 
 
+def _next_agency_id(session: Session) -> int | None:
+    """Postgres: the next id from the sequence; SQLite: None (the insert picks the id).
+
+    Under row-level security a new agency row is only accepted when its id equals the tenant
+    setting, and ``INSERT .. RETURNING`` needs the row to be readable. So the id is taken first,
+    the tenant is bound to it, and only then is the row written.
+    """
+    if session.get_bind().dialect.name != "postgresql":
+        return None
+    sequence = func.pg_get_serial_sequence("agencies", "id")
+    return int(session.scalar(select(func.nextval(sequence))) or 0) or None
+
+
 def create_agency(session: Session, slug: str, name: str, currency: str = "MRU") -> Agency:
+    """Insert an agency and leave the session bound to it. Works under FORCEd row-level security."""
+    previous = bound_tenant(session)
+    agency_id = _next_agency_id(session)
+    if agency_id is not None:
+        bind_tenant(session, agency_id)  # before the INSERT: its WITH CHECK compares the id
     agency = Agency(slug=slug, name=name, currency=currency)
+    if agency_id is not None:
+        agency.id = agency_id
     session.add(agency)
     try:
         session.commit()
     except Exception:
         session.rollback()
+        if previous is None:
+            unbind_tenant(session)
+        else:
+            bind_tenant(session, previous)
         raise
+    bind_tenant(session, agency.id)
     return agency
 
 
 def get_agency_by_slug(session: Session, slug: str) -> Agency | None:
+    """Find one agency by its exact slug, before any tenant is bound (narrow lookup policy)."""
+    lookup_scope(session, "app.agency_slug", slug)
     return session.scalars(select(Agency).where(Agency.slug == slug)).one_or_none()
 
 
@@ -116,8 +144,13 @@ def import_report(
     parsed: ParsedReport,
     filename: str,
     sha256: str,
+    uploaded_by_user_id: int | None = None,
 ) -> ImportResult:
     """Store an upload and upsert its tickets in a single transaction.
+
+    The session is bound to ``agency_id`` first (row-level security). The commit at the end
+    ends the transaction and its tenant setting; the session's ``after_begin`` listener applies
+    the binding again to whatever the caller reads next.
 
     Each chunk is one atomic upsert, so concurrent imports of the same tickets cannot
     collide; rows go in ticket-number order so concurrent writers lock in the same order.
@@ -125,6 +158,7 @@ def import_report(
     another import commits the same tickets in between).
     """
     try:
+        bind_tenant(session, agency_id)
         if session.get(Agency, agency_id) is None:
             raise LookupError(f"unknown agency id {agency_id}")
 
@@ -139,6 +173,7 @@ def import_report(
             generated_on=header.generated_on,
             ticket_count=len(unique),
             warnings=list(parsed.warnings),
+            uploaded_by_user_id=uploaded_by_user_id,
         )
         session.add(upload)
         session.flush()
@@ -151,6 +186,8 @@ def import_report(
             _upsert_chunk(session, rows)
 
         upload_id = upload.id
+        upload.inserted_count = len(unique) - existing
+        upload.updated_count = existing
         session.commit()
     except Exception:
         session.rollback()
@@ -163,6 +200,7 @@ def import_report(
 
 
 def tickets_awaiting_price(session: Session, agency_id: int, report_date: date) -> list[Ticket]:
+    bind_tenant(session, agency_id)
     stmt = (
         select(Ticket)
         .where(

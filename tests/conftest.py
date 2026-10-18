@@ -23,6 +23,7 @@ from app.db_roles import ROLE_ENV_VAR
 from app.parsing.amadeus import ParsedReport, parse_report
 from app.settings import Settings
 from app.web.main import create_app
+from tests.web_support import WebDb
 
 FIXTURE = Path(__file__).parent / "fixtures" / "1OCT.xlsx"
 SHA = "a" * 64
@@ -234,6 +235,31 @@ def rls_db(request: pytest.FixtureRequest, db_url: str) -> RlsDatabase:
     assert_subject_to_rls(app_url)
     migrate(db_url, app_role=make_url(app_url).username)
     return RlsDatabase(mode, owner_url=db_url, app_url=app_url)
+
+
+@pytest.fixture(params=["default", "single-role"])
+def web_db(request: pytest.FixtureRequest, db_url: str) -> WebDb:
+    """A migrated database for the web tests, so every test runs under row-level security.
+
+    SQLite: one run, schema built from the models. Postgres: ``default`` is the separate
+    non-owner application role, ``single-role`` the owner alone (FORCE ROW LEVEL SECURITY only).
+    """
+    mode: str = request.param
+    if make_url(db_url).get_backend_name() != "postgresql":
+        if mode != "default":
+            pytest.skip("single-role mode needs Postgres")
+        engine = make_engine(db_url)
+        Base.metadata.create_all(engine)
+        engine.dispose()
+        return WebDb("sqlite", db_url, db_url)
+    assert_subject_to_rls(db_url)
+    if mode == "single-role":
+        migrate(db_url, app_role=None)
+        return WebDb(mode, db_url, db_url)
+    app_url = select_app_database_url(db_url, os.environ.get(TEST_APP_DATABASE_URL_ENV))
+    assert_subject_to_rls(app_url)
+    migrate(db_url, app_role=make_url(app_url).username)
+    return WebDb("app-role", db_url, app_url)
 
 
 @pytest.fixture

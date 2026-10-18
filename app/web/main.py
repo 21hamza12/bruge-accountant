@@ -11,28 +11,60 @@ from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager
 from typing import Annotated, Any
 
-from fastapi import Depends, FastAPI
+import anyio
+import anyio.to_thread
+from anyio.lowlevel import RunVar
+from fastapi import Depends, FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy import Engine, select
 from sqlalchemy.exc import SQLAlchemyError
-from sqlalchemy.orm import Session
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.middleware import Middleware
 from starlette.responses import Response
 
 from app import db_roles
+from app.clock import Clock, utc_now
 from app.db import make_engine, make_session_factory
 from app.observability import configure_logging
 from app.settings import Settings
-from app.web.deps import get_session, get_settings
-from app.web.errors import http_exception_handler, validation_exception_handler
+from app.web.deps import get_settings
+from app.web.errors import (
+    ResponseException,
+    http_exception_handler,
+    response_exception_handler,
+    validation_exception_handler,
+)
 from app.web.middleware import build_middleware
+from app.web.routes import auth as auth_routes
+from app.web.routes import home as home_routes
+from app.web.routes import password as password_routes
+from app.web.routes import staff as staff_routes
 from app.web.templating import TEMPLATES_DIR, render
 
 log = logging.getLogger("app.web")
 SERVICE_WORKER = TEMPLATES_DIR.parent / "sw.js"
+HEALTH_TIMEOUT_SECONDS = 2
+
+# /healthz must not queue behind request work: it runs its one tiny query on a worker thread
+# of its own (a dedicated limiter, not the 40 shared tokens) and gives up after two seconds.
+# One limiter per event loop (anyio limiters belong to the loop that created them).
+_health_limiter: RunVar[anyio.CapacityLimiter] = RunVar("bruge_health_limiter")
+
+
+def _get_health_limiter() -> anyio.CapacityLimiter:
+    try:
+        return _health_limiter.get()
+    except LookupError:
+        limiter = anyio.CapacityLimiter(1)
+        _health_limiter.set(limiter)
+        return limiter
+
+
+def _ping(engine: Engine) -> None:
+    with engine.connect() as connection:
+        connection.execute(select(1))
 
 
 class StaticAssets(StaticFiles):
@@ -56,12 +88,18 @@ def _check_database_role(engine: Engine, settings: Settings) -> None:
 
 
 def create_app(
-    settings: Settings | None = None, extra_middleware: Sequence[Middleware] = ()
+    settings: Settings | None = None,
+    extra_middleware: Sequence[Middleware] = (),
+    clock: Clock | None = None,
 ) -> FastAPI:
     """Build the application. Nothing happens at import time; run it with ``uvicorn --factory``."""
     settings = settings or Settings()
     configure_logging()
-    engine = make_engine(settings.database_url.get_secret_value())
+    engine = make_engine(
+        settings.database_url.get_secret_value(),
+        pool_size=settings.db_pool_size,
+        max_overflow=settings.db_max_overflow,
+    )
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
@@ -82,9 +120,15 @@ def create_app(
     app.state.settings = settings
     app.state.engine = engine
     app.state.sessionmaker = make_session_factory(engine)
+    app.state.clock = clock or utc_now  # injected in tests; sessions, limits and expiry use it
 
     app.add_exception_handler(StarletteHTTPException, http_exception_handler)
     app.add_exception_handler(RequestValidationError, validation_exception_handler)
+    app.add_exception_handler(ResponseException, response_exception_handler)
+    app.include_router(auth_routes.router)
+    app.include_router(home_routes.router)
+    app.include_router(password_routes.router)
+    app.include_router(staff_routes.router)
     app.mount("/static", StaticAssets(directory=TEMPLATES_DIR.parent / "static"), name="static")
 
     @app.get("/sw.js", include_in_schema=False)
@@ -101,13 +145,19 @@ def create_app(
         return HTMLResponse(render("offline.html"))
 
     @app.api_route("/healthz", methods=["GET", "HEAD"], include_in_schema=False)
-    def healthz(
-        settings: Annotated[Settings, Depends(get_settings)],
-        session: Annotated[Session, Depends(get_session)],
+    async def healthz(
+        request: Request, settings: Annotated[Settings, Depends(get_settings)]
     ) -> JSONResponse:
+        # Independent of the shared thread pool and of the per-request session dependency.
         try:
-            session.execute(select(1))
-        except SQLAlchemyError:
+            with anyio.fail_after(HEALTH_TIMEOUT_SECONDS):
+                await anyio.to_thread.run_sync(
+                    _ping,
+                    request.app.state.engine,
+                    limiter=_get_health_limiter(),
+                    abandon_on_cancel=True,
+                )
+        except (SQLAlchemyError, TimeoutError):
             log.exception("health check failed")
             return JSONResponse({"status": "error"}, status_code=503)
         return JSONResponse({"status": "ok", "version": settings.version})

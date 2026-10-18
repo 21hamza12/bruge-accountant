@@ -396,6 +396,7 @@ def test_purge_expired_on_sqlite(ready_db: str, capsys: pytest.CaptureFixture[st
         "user_sessions": 1,
         "temporary_passwords": 0,
         "audit_events": 0,
+        "rate_limit_buckets": 0,
         "total": 1,
     }
     assert main(["purge-expired", "--db", ready_db]) == 0

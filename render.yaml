@@ -1,4 +1,5 @@
-# Render Blueprint: one Docker web service plus a private managed Postgres, both in Frankfurt.
+# Render Blueprint: one Docker web service, an hourly purge cron job and a private managed
+# Postgres, all in Frankfurt.
 # Secrets are never written here: `sync: false` values are entered in the dashboard and
 # `fromDatabase` values are injected by Render. Setup steps: docs/runbook.md.
 databases:
@@ -39,6 +40,35 @@ services:
           property: connectionString
       # Dashboard: the owner URL until PR 2 creates the bruge_app role, then bruge_app.
       # No real agency data before that (docs/runbook.md).
+      - key: DATABASE_URL
+        sync: false
+      - key: SENTRY_DSN
+        sync: false
+
+  # Hourly housekeeping: expired sessions and temporary passwords, audit events past retention,
+  # old rate-limit windows. Same image as the web service, a different command; it needs the same
+  # environment (production settings validate ALLOWED_HOSTS and DATABASE_URL even for a CLI run),
+  # so the variables are repeated here, and the `sync: false` ones must also be entered in the
+  # dashboard for this job (docs/runbook.md, "Routine housekeeping").
+  - type: cron
+    name: bruge-purge
+    runtime: docker
+    region: frankfurt
+    plan: starter
+    dockerfilePath: ./Dockerfile
+    dockerCommand: python -m app purge-expired
+    schedule: "0 * * * *"
+    autoDeploy: false
+    envVars:
+      - key: ENV
+        value: production
+      - key: COOKIE_SECURE
+        value: "true"
+      - key: TRUSTED_PROXY_HOPS
+        value: "1"  # to be confirmed in the runbook
+      - key: ALLOWED_HOSTS
+        sync: false
+      # No MIGRATION_DATABASE_URL: the purge never reads the owner URL (least privilege).
       - key: DATABASE_URL
         sync: false
       - key: SENTRY_DSN

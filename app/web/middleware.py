@@ -11,7 +11,11 @@ Order, outermost first (a request passes top to bottom, a response bottom to top
 6. ``AllowedHostMiddleware``: host allowlist; rejects with the custom 400 page.
 7. ``ErrorBoundaryMiddleware``: turns an unhandled exception, or an ``HTTPException`` raised by
    a middleware below it, into the custom error page.
-8. Anything passed as ``extra_middleware``, then the router.
+8. ``RequestBodyLimitMiddleware``: 413 for a body over ``MAX_REQUEST_BYTES`` (declared length
+   checked before reading, streamed bodies counted). It is the first of the innermost layers, so
+   nothing after it (a caller's ``extra_middleware``, the dependencies, the routes) ever reads
+   more than the limit.
+9. Anything passed as ``extra_middleware``, then the router.
 
 Why this order: layers 1 to 4 wrap everything that can fail, so a 400 from the host check, a
 500 from the boundary and a 403 from a later middleware all still carry the security headers,
@@ -35,6 +39,7 @@ from starlette.middleware.cors import CORSMiddleware
 
 from app.observability import RequestLogMiddleware
 from app.settings import Settings
+from app.web.bodylimit import RequestBodyLimitMiddleware
 from app.web.errors import ErrorBoundaryMiddleware
 from app.web.proxy import ProxyHeadersMiddleware
 from app.web.security import (
@@ -65,5 +70,6 @@ def build_middleware(
         )
     stack.append(Middleware(AllowedHostMiddleware, allowed_hosts=settings.allowed_hosts))
     stack.append(Middleware(ErrorBoundaryMiddleware))
+    stack.append(Middleware(RequestBodyLimitMiddleware, max_bytes=settings.max_request_bytes))
     stack.extend(extra_middleware)
     return stack

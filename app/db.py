@@ -17,6 +17,8 @@ from app.settings import Settings
 DEFAULT_DATABASE_URL = "sqlite:///bruge.db"
 CONNECT_TIMEOUT_SECONDS = 3
 POOL_TIMEOUT_SECONDS = 5
+DEFAULT_POOL_SIZE = 5
+DEFAULT_MAX_OVERFLOW = 5
 
 NAMING_CONVENTION = {
     "ix": "ix_%(column_0_label)s",
@@ -69,7 +71,13 @@ def normalize_database_url(url: str) -> str:
     return url
 
 
-def make_engine(url: str | None = None) -> Engine:
+def make_engine(
+    url: str | None = None,
+    *,
+    pool_size: int = DEFAULT_POOL_SIZE,
+    max_overflow: int = DEFAULT_MAX_OVERFLOW,
+) -> Engine:
+    """``pool_size`` and ``max_overflow`` size the Postgres pool (SQLite keeps its default)."""
     url = normalize_database_url(url or default_database_url())
     if url.startswith("sqlite"):
         engine = create_engine(url)
@@ -80,6 +88,8 @@ def make_engine(url: str | None = None) -> Engine:
             url,
             pool_pre_ping=True,
             pool_timeout=POOL_TIMEOUT_SECONDS,
+            pool_size=pool_size,
+            max_overflow=max_overflow,
             connect_args={"connect_timeout": CONNECT_TIMEOUT_SECONDS},
         )
     if engine.dialect.name == "sqlite":

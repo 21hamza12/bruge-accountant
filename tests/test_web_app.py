@@ -47,10 +47,16 @@ def test_api_docs_are_disabled(client: TestClient, path: str) -> None:
     assert client.get(path).status_code == 404
 
 
-def test_all_endpoints_are_sync(client: TestClient) -> None:
+# Endpoints that are async on purpose. /healthz runs its one tiny query on a worker thread of its
+# own (a dedicated limiter), so it never queues behind the shared pool; see app.web.main.
+ASYNC_ENDPOINTS = {"/healthz"}
+
+
+def test_all_endpoints_are_sync_except_the_documented_ones(client: TestClient) -> None:
     routes = [r for r in client.app.routes if isinstance(r, APIRoute)]  # type: ignore[attr-defined]
     assert routes
-    assert not [r.path for r in routes if inspect.iscoroutinefunction(r.endpoint)]
+    async_paths = {r.path for r in routes if inspect.iscoroutinefunction(r.endpoint)}
+    assert async_paths == ASYNC_ENDPOINTS
 
 
 def test_engine_and_sessionmaker_live_on_app_state(

@@ -1,6 +1,7 @@
 """Command line interface.
 
-``python -m app <init-db|add-agency|bootstrap-agency|grant-app-role|purge-expired|import>``
+``python -m app <command>`` with command one of: init-db, add-agency, bootstrap-agency,
+reset-password, grant-app-role, purge-expired, import.
 
 Exit codes: 0 success, 1 failure (database, file, parse), 2 usage or refusal (bad arguments, a
 name already taken, a role that may not be used), 130 interrupted at the password prompt.
@@ -28,17 +29,22 @@ from sqlalchemy.exc import DBAPIError, IntegrityError, SQLAlchemyError
 
 from app import db_roles
 from app.auth.passwords import hash_password, password_policy_error
-from app.auth.phone import InvalidPhoneError, normalize_phone
+from app.auth.phone import InvalidPhoneError, mask_phone, normalize_phone
+from app.auth.ratelimit import purge_expired_windows
+from app.auth.temp_passwords import TEMP_PASSWORD_TTL
+from app.clock import utc_now
 from app.db import default_database_url, make_engine, make_session_factory
 from app.parsing.amadeus import MAX_FILE_BYTES, ParseError, parse_report
 from app.questions import build_questions
 from app.repository import (
     AlreadyExistsError,
+    ResetRefusedError,
     bootstrap_agency,
     create_agency,
     get_agency_by_slug,
     import_report,
     purge_expired,
+    reset_user_password,
     tickets_awaiting_price,
 )
 from app.settings import Settings
@@ -118,6 +124,22 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="read the password from the first line of standard input instead of prompting",
     )
+
+    reset = sub.add_parser(
+        "reset-password",
+        parents=[db_option],
+        allow_abbrev=False,
+        help="issue a temporary password to any user, a manager included (owner connection)",
+        description=(
+            "Issue a temporary password to the active user with this phone number, whatever "
+            "their role, revoke their sessions and audit it. This is how a locked-out manager "
+            "gets back in: a manager can only reset staff from the web. The temporary password "
+            "is printed ONCE on standard output (valid 30 minutes, usable once, the user must "
+            "change it at login); it is never logged or stored in clear. Run it with the owner "
+            'connection like bootstrap-agency: DATABASE_URL="$MIGRATION_DATABASE_URL".'
+        ),
+    )
+    reset.add_argument("--phone", required=True, help="the user's login phone number")
 
     grant = sub.add_parser(
         "grant-app-role",
@@ -300,6 +322,40 @@ def _bootstrap(url: str, args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+def _reset_password(url: str, args: argparse.Namespace) -> int:
+    try:
+        phone = normalize_phone(args.phone)
+    except InvalidPhoneError as exc:
+        return _fail(str(exc), EXIT_USAGE)
+    engine = make_engine(url)
+    try:
+        with make_session_factory(engine)() as session:
+            result = reset_user_password(session, phone, utc_now(), operator=_operator())
+    except ResetRefusedError as exc:
+        if exc.reason == "inactive":
+            return _fail("this account is deactivated; nothing was changed", EXIT_USAGE)
+        return _fail("no user has this phone number; nothing was changed", EXIT_USAGE)
+    finally:
+        engine.dispose()
+    print(
+        "The temporary password below is shown ONCE. Give it to the user now; it is valid for "
+        f"{int(TEMP_PASSWORD_TTL.total_seconds() // 60)} minutes and works once, and they must "
+        "choose a new password at login. Their other sessions were revoked.",
+        file=sys.stderr,
+    )
+    _emit(
+        {
+            "user_id": result.user_id,
+            "agency_id": result.agency_id,
+            "role": result.role,
+            "phone": mask_phone(phone),
+            "valid_minutes": int(TEMP_PASSWORD_TTL.total_seconds() // 60),
+            "temporary_password": result.temporary_password,
+        }
+    )
+    return EXIT_OK
+
+
 def _grant_app_role(url: str, role: str) -> int:
     try:
         db_roles.validate_role_name(role)
@@ -325,9 +381,17 @@ def _purge_expired(url: str) -> int:
     try:
         with make_session_factory(engine)() as session:
             counts = purge_expired(session)
+            windows = purge_expired_windows(session, utc_now())
+            session.commit()
     finally:
         engine.dispose()
-    _emit({**dataclasses.asdict(counts), "total": counts.total})
+    _emit(
+        {
+            **dataclasses.asdict(counts),
+            "rate_limit_buckets": windows,
+            "total": counts.total + windows,
+        }
+    )
     return EXIT_OK
 
 
@@ -451,6 +515,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             return _add_agency(url, args.slug, args.name)
         if args.command == "bootstrap-agency":
             return _bootstrap(url, args)
+        if args.command == "reset-password":
+            return _reset_password(url, args)
         if args.command == "grant-app-role":
             return _grant_app_role(url, args.role)
         if args.command == "purge-expired":

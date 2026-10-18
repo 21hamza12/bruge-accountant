@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import contextlib
 import secrets
+import threading
 from functools import cache
 
 from argon2 import PasswordHasher, Type, extract_parameters
@@ -32,6 +33,13 @@ _LOWER = "abcdefghijkmnpqrstuvwxyz"  # no l, o
 _DIGITS = "23456789"  # no 0, 1
 TEMP_PASSWORD_ALPHABET = _UPPER + _LOWER + _DIGITS
 TEMP_PASSWORD_LENGTH = 12
+
+# At most this many Argon2 computations run at once in the whole process. Each costs about 45 ms
+# and 19 MiB, so an unbounded login flood would exhaust the 512 MB instance; a bounded count keeps
+# memory flat and lets the rest of the request threads queue (cheaply) instead. The slot is taken
+# around every hash and every verification, the dummy one included.
+ARGON2_CONCURRENCY = 2
+_SLOTS = threading.BoundedSemaphore(ARGON2_CONCURRENCY)
 
 _HASHER = PasswordHasher(
     time_cost=TIME_COST, memory_cost=MEMORY_COST_KIB, parallelism=PARALLELISM, type=Type.ID
@@ -58,7 +66,8 @@ def _is_encodable(text: str) -> bool:
 def hash_password(password: str) -> str:
     if not _is_encodable(password):
         raise ValueError("the password cannot be encoded as UTF-8")
-    return _HASHER.hash(password)
+    with _SLOTS:
+        return _HASHER.hash(password)
 
 
 def _is_readable_hash(password_hash: str) -> bool:
@@ -87,7 +96,8 @@ def verify_password(password: str, password_hash: str | None) -> bool:
         verify_dummy()
         return False
     try:
-        return _HASHER.verify(password_hash, password)
+        with _SLOTS:
+            return _HASHER.verify(password_hash, password)
     except VerifyMismatchError:
         return False
     except (VerificationError, InvalidHashError):
@@ -105,13 +115,15 @@ def needs_rehash(password_hash: str) -> bool:
 @cache
 def _dummy_hash() -> str:
     # Built from the live parameters so it always costs what a real verification costs.
-    return _HASHER.hash(secrets.token_urlsafe(16))
+    with _SLOTS:
+        return _HASHER.hash(secrets.token_urlsafe(16))
 
 
 def verify_dummy() -> None:
     """Spend the time of one verification; call it when the user does not exist."""
-    with contextlib.suppress(VerificationError):
-        _HASHER.verify(_dummy_hash(), secrets.token_urlsafe(16))
+    dummy = _dummy_hash()
+    with contextlib.suppress(VerificationError), _SLOTS:
+        _HASHER.verify(dummy, secrets.token_urlsafe(16))
 
 
 _dummy_hash()  # warm at import: the first failed login must not pay for building it

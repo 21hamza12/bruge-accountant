@@ -117,7 +117,14 @@ User decisions: host on **Render** (Frankfurt, Docker web service plus managed P
 
 ### PR 3: Login and account management (security-reviewer blocking)
 16. Postgres-backed rate limiter (atomic upsert), shared across instances:
-    - login: 5 per 15 min per phone, 20 per 15 min per IP; uploads: 30 per hour per agency.
+    - login: 5 **failures** per 15 min per phone, 100 failures per 15 min per IP (a coarse
+      flood guard: an office shares one NAT address); uploads: 30 per hour per agency.
+    - Failures only: an attempt is counted before it is checked and given back on success
+      (the phone bucket is cleared, the IP hit refunded), so five successful logins in a row stay
+      allowed and the 6th failure is the first 429. A password change counts wrong current
+      passwords only.
+    - Anonymous floods write no database rows: `csrf_failed` goes to the JSON log only, and
+      `rate_limited` is one audit row per bucket window.
 17. Server-side sessions: create, lookup, touch, revoke, revoke-all.
 18. CSRF middleware and tests.
 19. Login and logout:
@@ -137,6 +144,17 @@ User decisions: host on **Render** (Frankfurt, Docker web service plus managed P
     - Filename sanitizing (basename, NFC, no control/bidi characters, `.xlsx`) and a zip magic check.
 25. Parse sandbox (timeout, memory cap, crash → ParseError; the fixture's peak memory is measured).
 26. Request body limit (413 before reading; streamed bodies are counted).
+    - **Already built in PR 3** as `app/web/bodylimit.py`: raw ASGI middleware, placed first among
+      the innermost layers (just inside the error boundary, before any caller `extra_middleware`),
+      so no dependency parses a byte past `MAX_REQUEST_BYTES` (default 10 MB + 64 KB). A
+      declared `Content-Length` over the limit is the custom 413 page before the body is read;
+      streamed bodies are counted and cut off (a `BodyTooLarge` HTTP 413 exception, which FastAPI
+      lets through where it would turn any other body-parsing error into a 400). The anonymous
+      login form is bounded the same way. PR 4 only has to use it.
+    - **CSRF for uploads:** `csrf_protect` reads the token from the `X-CSRF-Token` header first
+      and parses the body only when there is no header. The upload route must send the token in
+      that header (a `fetch`/htmx request does; a plain `<form>` cannot) so the check never
+      spools the file to a temporary file. A test pins that the body is not parsed.
 27. Upload page and POST:
     - CSRF and the rate limit; agency from the session only (a forged field is ignored);
       303 to the result page.
@@ -208,6 +226,9 @@ User decisions: host on **Render** (Frankfurt, Docker web service plus managed P
 8. Sentry EU as error processor, with passenger names scrubbed.
 9. Render Hobby workspace ($0); upgrade to Professional only if logs need longer retention.
 10. Alerts by email; the onrender.com address is fine for the pilot.
+11. Manager resets: a manager may issue temporary passwords for **staff only**, never for another
+    manager or themselves (decided: "No, only staff"). The platform owner resets a locked-out
+    manager with `python -m app reset-password --phone <phone>` (runbook).
 
 ## Risks
 - Render Postgres may not allow `CREATE ROLE` (checked in step 8). PR 2 no longer depends on it:
@@ -228,5 +249,7 @@ User decisions: host on **Render** (Frankfurt, Docker web service plus managed P
 - Web Starter: about $7
 - Postgres Basic-256mb: about $6, plus storage
 - Sentry, uptime monitor and Hobby workspace: free
+- Purge cron job (`bruge-purge`, hourly): billed for its few seconds of run time, with a monthly
+  minimum for its plan; check the current figure.
 - **Total about $13–15/month.** The free Postgres plan is not an option: free databases expire
   after 30 days.

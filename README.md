@@ -59,7 +59,9 @@ curl -i http://127.0.0.1:8000/nope                 # the French 404 page, with s
 
 Configuration comes from environment variables (see `app/settings.py`): `ENV` (`development` by
 default, `production` on Render), `DATABASE_URL`, `MIGRATION_DATABASE_URL` (used by `init-db` when
-set), `ALLOWED_HOSTS`, `CORS_ALLOWED_ORIGINS`, `COOKIE_SECURE`, `TRUSTED_PROXY_HOPS`, `SENTRY_DSN`.
+set), `ALLOWED_HOSTS`, `CORS_ALLOWED_ORIGINS`, `COOKIE_SECURE`, `TRUSTED_PROXY_HOPS`, `SESSION_IDLE_HOURS` (default 12),
+`SESSION_ABSOLUTE_DAYS` (default 7), `DB_POOL_SIZE` (default 5) and `DB_MAX_OVERFLOW` (default 5),
+`MAX_REQUEST_BYTES` (default 10 MB + 64 KB), `SENTRY_DSN`.
 List variables take `a,b` or a JSON array (`["a","b"]`). `TRUSTED_PROXY_HOPS` defaults to 0 (the
 `X-Forwarded-*` headers are ignored); on Render it is 1. A wildcard CORS origin is refused in every
 environment. In production the app also refuses to start without an explicit non-SQLite
@@ -67,6 +69,36 @@ environment. In production the app also refuses to start without an explicit non
 `ALLOWED_HOSTS`; and with `RENDER` set but `ENV` not `production`. The app is an application
 factory: run it with `uvicorn --factory app.web.main:create_app`. Logs are JSON lines on stdout (one per request, secrets redacted).
 Deploying to Render: [docs/runbook.md](docs/runbook.md).
+
+## Try the login locally
+
+Accounts are created by a manager (phone plus password). Locally, create the first agency and
+manager from the command line, then start the app. Everything below uses placeholders: pick your
+own values and never commit them.
+
+```bash
+uv run python -m app init-db
+printf '%s
+' '<a password of at least 10 characters>' | uv run python -m app bootstrap-agency     my-agency "My Agency" --manager-phone <8-digit phone> --manager-name "<your name>" --password-stdin
+COOKIE_SECURE=false uv run uvicorn --factory app.web.main:create_app     # http://127.0.0.1:8000
+```
+
+Open `http://127.0.0.1:8000/login` and sign in with that phone and password.
+
+- `COOKIE_SECURE=false` is for plain-http local use only. Browsers drop a `__Host-` cookie that is
+  not `Secure`, so with it off the cookies are named `session` and `login_csrf` instead of
+  `__Host-session` and `__Host-login_csrf`. Production refuses to start with it off.
+- The CSRF check compares `Origin` (or `Referer`) with the address you typed, so browse to the
+  same host name the server is listening on. Behind a TLS-terminating proxy set
+  `TRUSTED_PROXY_HOPS` so the app sees `https`.
+- As a manager, open **Gérer l'équipe** (`/staff`) to add a user: the temporary password is shown
+  once, valid 30 minutes and usable once, and the new user must choose their own at first login.
+  A manager can issue a new one for **staff** from the user's page; never for another manager.
+  A locked-out manager is reset by the owner: `python -m app reset-password --phone <phone>`
+  (docs/runbook.md).
+- Five failed sign-ins for one phone (or a hundred from one address) in 15 minutes show the
+  "too many attempts" page. Only failures count: a successful sign-in clears the phone's count.
+  The counters live in the database, so every server instance shares them.
 
 Development checks:
 

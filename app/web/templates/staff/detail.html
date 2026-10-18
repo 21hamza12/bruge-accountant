@@ -1,0 +1,60 @@
+{% extends "base.html" %}
+{% block title %}{{ target.display_name or target.phone }}{% endblock %}
+{% block content %}
+<h1>{{ target.display_name or target.phone }}</h1>
+<p><a href="/staff">{{ _("Retour à l'équipe") }}</a></p>
+{% if error %}<p class="error" role="alert">{{ error }}</p>{% endif %}
+<p>{{ target.phone }} -
+  {% if target.role == "manager" %}{{ _("Responsable") }}{% else %}{{ _("Employé") }}{% endif %} -
+  {% if target.is_active %}{{ _("Actif") }}{% else %}{{ _("Désactivé") }}{% endif %}</p>
+
+<h2>{{ _("Codes agent Amadeus") }}</h2>
+<ul>
+{% for link in signs %}
+  <li><code>{{ link.staff_sign }}</code>
+    <form class="inline-form" method="post" action="/staff/{{ target.id }}/signs/{{ link.id }}/unlink">
+      {% include "_csrf.html" %}
+      <button type="submit">{{ _("Retirer") }}</button>
+    </form>
+  </li>
+{% else %}
+  <li>{{ _("Aucun code agent associé.") }}</li>
+{% endfor %}
+</ul>
+<form method="post" action="/staff/{{ target.id }}/signs">
+  {% include "_csrf.html" %}
+  <label for="sign">{{ _("Associer un code agent (par exemple 0004SV)") }}</label>
+  <input id="sign" name="sign" type="text" required maxlength="32" autocapitalize="characters">
+  <button type="submit">{{ _("Associer") }}</button>
+</form>
+
+<h2>{{ _("Rôle") }}</h2>
+<form method="post" action="/staff/{{ target.id }}/role">
+  {% include "_csrf.html" %}
+  <select name="role">
+    <option value="staff"{% if target.role == "staff" %} selected{% endif %}>{{ _("Employé") }}</option>
+    <option value="manager"{% if target.role == "manager" %} selected{% endif %}>{{ _("Responsable") }}</option>
+  </select>
+  <button type="submit">{{ _("Changer le rôle") }}</button>
+</form>
+
+{% if can_reissue %}
+<h2>{{ _("Mot de passe temporaire") }}</h2>
+<form method="post" action="/staff/{{ target.id }}/temp-password">
+  {% include "_csrf.html" %}
+  <input type="hidden" name="expected_temp_id" value="{{ expected_temp_id }}">
+  <button type="submit">{{ _("Émettre un mot de passe temporaire") }}</button>
+</form>
+{% elif target.is_active and target.role == "manager" %}
+<h2>{{ _("Mot de passe temporaire") }}</h2>
+<p>{{ _("Le mot de passe d'un responsable est réinitialisé par l'administrateur de la plateforme.") }}</p>
+{% endif %}
+
+{% if target.is_active %}
+<h2>{{ _("Désactiver") }}</h2>
+<form method="post" action="/staff/{{ target.id }}/deactivate">
+  {% include "_csrf.html" %}
+  <button type="submit">{{ _("Désactiver ce compte") }}</button>
+</form>
+{% endif %}
+{% endblock %}

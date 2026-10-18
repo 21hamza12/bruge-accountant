@@ -1,0 +1,13 @@
+{% extends "base.html" %}
+{% block title %}{{ _("Accueil") }}{% endblock %}
+{% block content %}
+<h1>{{ _("Bonjour") }}, {{ user.display_name or user.phone }}</h1>
+<p>{{ _("Agence") }} : {{ agency.name }}</p>
+{% if user.role == "manager" %}
+<p><a href="/staff">{{ _("Gérer l'équipe") }}</a></p>
+{% endif %}
+<form method="post" action="/logout">
+  {% include "_csrf.html" %}
+  <button type="submit">{{ _("Se déconnecter") }}</button>
+</form>
+{% endblock %}

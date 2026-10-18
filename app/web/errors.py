@@ -7,6 +7,7 @@ import secrets
 from collections.abc import MutableMapping
 from typing import Any
 
+from fastapi.exceptions import RequestValidationError
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.requests import Request
 from starlette.responses import HTMLResponse, Response
@@ -19,7 +20,7 @@ log = logging.getLogger("app.web.errors")
 
 PAGES = {400, 401, 403, 404, 405, 413, 429, 500, 503}
 # Only headers that help the client are copied from an HTTPException; nothing else.
-FORWARDED_HEADERS = ("allow", "retry-after")
+FORWARDED_HEADERS = ("allow", "retry-after", "connection")
 
 
 def _context() -> dict[str, str | None]:
@@ -52,8 +53,32 @@ async def http_exception_handler(request: Request, exc: Exception) -> Response:
     return error_response(exc.status_code, ref, kept)
 
 
+_RANGE_ERRORS = frozenset({"greater_than_equal", "less_than_equal", "greater_than", "less_than"})
+
+
 async def validation_exception_handler(request: Request, exc: Exception) -> Response:
+    """400 for malformed input; 404 for a path id outside its allowed range (no such page)."""
+    if isinstance(exc, RequestValidationError):
+        errors = exc.errors()
+        if errors and all(e["loc"][:1] == ("path",) and e["type"] in _RANGE_ERRORS for e in errors):
+            return error_response(404, new_reference())
     return error_response(400, new_reference())
+
+
+class ResponseException(Exception):  # noqa: N818 - it carries a response, it is not an error
+    """Raised by a dependency to answer with a ready-made response (a redirect, a 401 with
+    ``HX-Redirect``). Registered as an exception handler, so the response still passes through
+    every middleware (security headers, request log)."""
+
+    def __init__(self, response: Response) -> None:
+        super().__init__("response")
+        self.response = response
+
+
+async def response_exception_handler(request: Request, exc: Exception) -> Response:
+    if isinstance(exc, ResponseException):
+        return exc.response
+    return error_response(500, new_reference())  # pragma: no cover - registered for this type
 
 
 class ErrorBoundaryMiddleware:

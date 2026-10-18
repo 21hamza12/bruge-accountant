@@ -11,7 +11,6 @@ import argparse
 import dataclasses
 import getpass
 import json
-import os
 import re
 import sqlite3
 import sys
@@ -49,7 +48,7 @@ from app.repository import (
     reset_user_password,
     tickets_awaiting_price,
 )
-from app.settings import Settings
+from app.settings import Settings, environment_is_production
 from app.tenancy import bind_tenant
 
 EXIT_OK = 0
@@ -558,7 +557,7 @@ def _default_url_for(command_name: str) -> str:
 def main(argv: Sequence[str] | None = None) -> int:
     _use_utf8_output()
     raw_argv = sys.argv[1:] if argv is None else list(argv)
-    if raw_argv[:1] == ["seed-demo"] and os.environ.get("ENV", "").strip().lower() == "production":
+    if raw_argv[:1] == ["seed-demo"] and environment_is_production():
         return _fail("seed-demo never runs in production (ENV=production)", EXIT_USAGE)
     if raw_argv[:1] in (["bootstrap-agency"], ["seed-demo"]):
         refusal = _password_argument_error(raw_argv)

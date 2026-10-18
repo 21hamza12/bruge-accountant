@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from typing import Annotated, Any, Literal
 
 from pydantic import Field, SecretStr, ValidationInfo, field_validator, model_validator
@@ -31,6 +32,15 @@ def _parse_list(value: Any, name: str) -> Any:
 
 
 CsvList = Annotated[list[str], NoDecode]
+
+
+def environment_is_production() -> bool:
+    """True when ``ENV=production``, read without validating the rest of the configuration.
+
+    For commands that must refuse to run in production before anything else (a production
+    configuration that is incomplete would otherwise fail ``Settings()`` first).
+    """
+    return os.environ.get("ENV", "").strip().lower() == "production"
 
 
 class Settings(BaseSettings):

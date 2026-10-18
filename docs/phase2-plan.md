@@ -170,6 +170,39 @@ User decisions: host on **Render** (Frankfurt, Docker web service plus managed P
     - cross-agency 404, staff-to-manager 403, missing CSRF 403
     - the 6th bad login → 429, an 11 MB upload → 413, error pages and headers
 
+#### PR 4 as built (measured results and deviations)
+
+- **Sandbox memory (step 25).** Peak resident memory of the spawned child, measured on Windows
+  (Python 3.14, `PeakWorkingSetSize`, `tests` measured with a wrapper around `parse_report`):
+  about **31 MB** for the 48-ticket synthetic fixture, about **49 MB** for a synthetic 20,000-row
+  report (0.7 MB file). The interpreter plus openpyxl is most of it (about 31 MB before parsing).
+  A 50,000-row workbook cannot be built as a valid test file: it expands past the 30 MB
+  uncompressed limit, so 20,000 rows is the largest realistic measurement. `RLIMIT_AS` limits
+  *virtual* address space, which is several times the resident size, so the default
+  `PARSE_MEMORY_MB` is 768 (not 512). It has not been measured on Linux or on the 512 MB Render
+  instance yet: the CI `docker-e2e` job runs real uploads under the cap, and the cap still needs
+  tuning on Render (see Risks).
+- **Sandbox wire format.** The child answers with a JSON message that the parent validates field by
+  field, not a pickle: unpickling bytes from a process that has just read an untrusted file would
+  run code in the parent if the child were ever compromised. The parent also reads the pipe before
+  joining the child (a large result would otherwise deadlock on a full pipe).
+- **Upload CSRF.** The decision above (header only, so the check never spools the file) was
+  relaxed: the upload form is a plain multipart form with the hidden `csrf_token` field, so it
+  works without JavaScript. The header still works first. The body limit runs before any
+  parsing, so a form is never bigger than `MAX_REQUEST_BYTES`.
+- **Hot-query plans (step 30): no migration 0005.** All nine queries already have their index
+  (`tests/test_query_plans.py`, run as the app role, under row-level security, on tables padded to
+  realistic volume and analysed). Notes from writing it: on a two-row table every index path costs
+  the same, so the test pads the tables first. For "recent uploads" the planner walks the primary
+  key backwards for an agency that owns nearly every row and uses an agency-leading index for a
+  small agency; the unique `(agency_id, id)` constraint covers both, so no new index is needed.
+- **`seed-demo` (step 31).** `--fixture` is loaded into `demo-b` only, so the two agencies hold
+  overlapping ticket numbers while `demo-a` stays empty for the person trying the upload and for
+  the end-to-end journey that checks 48 inserted, then 0 inserted and 48 updated.
+- **End-to-end in CI** runs the app container as a separate non-superuser role with
+  `COOKIE_SECURE=false` over plain http (cookies cannot be `Secure` there). Production mode and
+  HSTS stay covered by the existing `docker` job.
+
 ### PR 5: Production readiness, go-live, rollback drill
 32. Sentry with scrubbing (no cookies, headers, bodies or passenger names).
 33. Alert rules (Sentry, uptime, Render deploy failures), each triggered once and recorded.

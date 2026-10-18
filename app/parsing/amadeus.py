@@ -254,9 +254,7 @@ def _cost(value: object) -> Decimal | None:
     return result if result.is_finite() else None
 
 
-def _build_ticket(
-    cells: dict[str, Any], row_no: int, warnings: list[str]
-) -> ParsedTicket | None:
+def _build_ticket(cells: dict[str, Any], row_no: int, warnings: list[str]) -> ParsedTicket | None:
     ticket_no = _text(cells["ticket_no"], "DOC NUMBER", row_no, warnings)
     if not ticket_no:
         warnings.append(f"row {row_no}: blank DOC NUMBER, row skipped")

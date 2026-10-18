@@ -108,7 +108,9 @@ def _delete(ws) -> None:  # type: ignore[no-untyped-def]
 
 @pytest.mark.parametrize("mutate", [_clear, _junk, _delete], ids=["cleared", "junk", "deleted"])
 def test_hand_typed_columns_have_no_effect(
-    tmp_path: Path, report: ParsedReport, mutate  # type: ignore[no-untyped-def]
+    tmp_path: Path,
+    report: ParsedReport,
+    mutate,  # type: ignore[no-untyped-def]
 ) -> None:
     other = parse_report(_variant(tmp_path, "v.xlsx", mutate))
     assert other.header == report.header

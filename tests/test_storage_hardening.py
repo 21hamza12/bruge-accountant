@@ -34,6 +34,7 @@ from app.repository import (
     import_report,
     tickets_awaiting_price,
 )
+from app.tenancy import rebind_tenant
 from tests.builders import build_workbook, ticket_row
 from tests.conftest import SHA
 
@@ -363,6 +364,7 @@ def test_ticket_cannot_point_at_another_agencys_upload(
 ) -> None:
     a = create_agency(session, "a", "A")
     b = create_agency(session, "b", "B")
+    rebind_tenant(session, a.id)
     upload_a = import_report(session, a.id, parsed_fixture, "1OCT.xlsx", SHA).upload_id
     session.add(Ticket(**_ticket_kwargs(upload_a, b.id)))
     with pytest.raises(IntegrityError):

@@ -32,7 +32,7 @@ def _report(numbers: list[int]) -> ParsedReport:
 
 
 def test_overlapping_concurrent_imports(
-    rls_db: RlsDatabase, monkeypatch: pytest.MonkeyPatch
+    rls_db: RlsDatabase, monkeypatch: pytest.MonkeyPatch, request: pytest.FixtureRequest
 ) -> None:
     # Both sets span several upsert chunks and share 150 tickets; B is listed in reverse,
     # so only the repository's sort keeps the two writers locking rows in the same order.
@@ -43,6 +43,7 @@ def test_overlapping_concurrent_imports(
     priced = {n for n in union if n % 10 == 0}
 
     setup = make_engine(rls_db.owner_url)
+    request.addfinalizer(setup.dispose)  # also when an assertion below fails
     with make_session_factory(setup)() as s:
         agency_id = create_agency(s, "a", "A").id
         import_report(s, agency_id, _report(sorted(priced)), "seed.xlsx", SHA)
@@ -105,4 +106,3 @@ def test_overlapping_concurrent_imports(
         # Nothing left waiting on a lock once both imports have returned.
         waiting = s.scalar(text("SELECT count(*) FROM pg_locks WHERE NOT granted"))
         assert waiting == 0
-    setup.dispose()

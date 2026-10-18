@@ -24,6 +24,13 @@ depends_on: str | Sequence[str] | None = None
 BIGINT_ID = sa.BigInteger().with_variant(sa.Integer(), "sqlite")
 JSON_TYPE = sa.JSON().with_variant(postgresql.JSONB(), "postgresql")
 NOW = sa.func.now()
+# E.164: "+", then 8 to 15 digits, the first not 0. One portable expression: ``rtrim`` with a
+# character set exists in Postgres and SQLite and is empty only when every character is a digit.
+# (Frozen here on purpose; app/models.py carries the same text.)
+PHONE_E164_CHECK = (
+    "substr(phone, 1, 1) = '+' AND length(phone) BETWEEN 9 AND 16 "
+    "AND substr(phone, 2, 1) <> '0' AND rtrim(substr(phone, 2), '0123456789') = ''"
+)
 
 
 def _agency_fk(table: str) -> sa.ForeignKeyConstraint:
@@ -57,10 +64,7 @@ def upgrade() -> None:
         sa.Column("created_at", sa.DateTime(timezone=True), server_default=NOW, nullable=False),
         sa.Column("updated_at", sa.DateTime(timezone=True), server_default=NOW, nullable=False),
         sa.CheckConstraint("role IN ('manager', 'staff')", name=op.f("ck_users_role")),
-        sa.CheckConstraint(
-            "substr(phone, 1, 1) = '+' AND length(phone) BETWEEN 9 AND 16",
-            name=op.f("ck_users_phone_e164"),
-        ),
+        sa.CheckConstraint(PHONE_E164_CHECK, name=op.f("ck_users_phone_e164")),
         _agency_fk("users"),
         sa.PrimaryKeyConstraint("id", name=op.f("pk_users")),
         sa.UniqueConstraint("agency_id", "id", name=op.f("uq_users_agency_id_id")),
@@ -134,6 +138,10 @@ def upgrade() -> None:
         sa.Column("ip", sa.String(length=45), nullable=True),
         sa.Column("details", JSON_TYPE, nullable=False),
         sa.Column("created_at", sa.DateTime(timezone=True), server_default=NOW, nullable=False),
+        sa.CheckConstraint(
+            "agency_id IS NOT NULL OR actor_user_id IS NULL",
+            name=op.f("ck_audit_events_actor_has_agency"),
+        ),
         _agency_fk("audit_events"),
         _user_fk(op.f("fk_audit_events_agency_actor"), ["agency_id", "actor_user_id"]),
         sa.PrimaryKeyConstraint("id", name=op.f("pk_audit_events")),

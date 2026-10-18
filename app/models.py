@@ -32,6 +32,10 @@ from sqlalchemy.orm import Mapped, mapped_column
 from app.db import Base, BigIntType, JSONType, UTCDateTime
 
 PRICE_STATUS_AWAITING = "awaiting_price"
+PHONE_E164_CHECK = (
+    "substr(phone, 1, 1) = '+' AND length(phone) BETWEEN 9 AND 16 "
+    "AND substr(phone, 2, 1) <> '0' AND rtrim(substr(phone, 2), '0123456789') = ''"
+)
 
 
 def _now() -> datetime:
@@ -150,10 +154,10 @@ class User(Base):
         UniqueConstraint("agency_id", "id", name="uq_users_agency_id_id"),
         UniqueConstraint("phone", name="uq_users_phone"),
         CheckConstraint("role IN ('manager', 'staff')", name="role"),
-        # Shape only (+ and 8-15 digits); the digits are validated by app.auth.phone.
-        CheckConstraint(
-            "substr(phone, 1, 1) = '+' AND length(phone) BETWEEN 9 AND 16", name="phone_e164"
-        ),
+        # E.164: "+", then 8 to 15 digits, the first not 0. One expression for both engines: a
+        # regex (Postgres ``~``) or GLOB (SQLite) would need two spellings. ``rtrim`` with a
+        # character set exists in both, and is empty only when every character is a digit.
+        CheckConstraint(PHONE_E164_CHECK, name="phone_e164"),
     )
 
     id: Mapped[int] = mapped_column(BigIntType, primary_key=True)
@@ -268,6 +272,9 @@ class AuditEvent(Base):
             name="fk_audit_events_agency_actor",
             ondelete="RESTRICT",
         ),
+        # Without an agency the foreign key above is not enforced (a NULL column skips it), so an
+        # unscoped row could name any user as its actor. Only a row with an agency has an actor.
+        CheckConstraint("agency_id IS NOT NULL OR actor_user_id IS NULL", name="actor_has_agency"),
         Index("ix_audit_events_agency_created_at", "agency_id", "created_at"),
         Index("ix_audit_events_created_at", "created_at"),
         # A row without an agency is never readable (row-level security, migration 0003), and

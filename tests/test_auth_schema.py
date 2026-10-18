@@ -12,7 +12,7 @@ from typing import Any
 import pytest
 from alembic import command
 from alembic.config import Config
-from sqlalchemy import create_engine, inspect, select, text
+from sqlalchemy import create_engine, func, inspect, select, text
 from sqlalchemy.exc import DataError, IntegrityError
 from sqlalchemy.orm import Session
 
@@ -136,6 +136,32 @@ def test_valid_roles(migrated: Session, role: str) -> None:
 def test_phone_must_look_like_e164(migrated: Session, phone: str) -> None:
     a, _ = make_agencies(migrated)
     rejects(migrated, User(agency_id=a, phone=phone, role="staff"))
+
+
+@pytest.mark.parametrize(
+    "phone",
+    [
+        "+222 1111 1111",  # spaces inside
+        "+abcdefgh",  # letters
+        "+22212345678 ",  # a trailing space
+        " +22212345678",
+        "+222-1234-5678",
+        "+22212345678\n",
+        "+0221234567",  # a country code cannot start with 0
+        "+2221234567a",
+        "+٢٢٢١٢٣٤٥٦",  # Arabic-Indic digits
+        "++22212345678",
+    ],
+)
+def test_phone_must_be_digits_only_after_the_plus(migrated: Session, phone: str) -> None:
+    a, _ = make_agencies(migrated)
+    rejects(migrated, User(agency_id=a, phone=phone, role="staff"))
+
+
+@pytest.mark.parametrize("phone", ["+22212345678", "+33612345678", "+12345678", "+" + "1" * 15])
+def test_good_phone_spellings_are_accepted(migrated: Session, phone: str) -> None:
+    a, _ = make_agencies(migrated)
+    assert make_user(migrated, a, phone=phone).phone == phone
 
 
 def test_user_agency_must_exist(migrated: Session) -> None:
@@ -267,6 +293,28 @@ def test_audit_actor_must_belong_to_the_event_agency(migrated: Session) -> None:
     a, b = make_agencies(migrated)
     user_b = make_user(migrated, b)
     rejects(migrated, AuditEvent(agency_id=a, actor_user_id=user_b.id, event_type="x", details={}))
+
+
+def test_an_audit_row_without_an_agency_cannot_name_an_actor(migrated: Session) -> None:
+    """The composite foreign key is not enforced when agency_id is NULL, so without this CHECK an
+    unscoped row could claim any user as its actor (forgery)."""
+    a, _ = make_agencies(migrated)
+    user = make_user(migrated, a)
+    rejects(migrated, AuditEvent(agency_id=None, actor_user_id=user.id, event_type="x", details={}))
+    rejects(migrated, AuditEvent(agency_id=None, actor_user_id=424242, event_type="x", details={}))
+
+
+def test_an_audit_row_with_an_agency_may_have_an_actor_or_not(migrated: Session) -> None:
+    a, _ = make_agencies(migrated)
+    user = make_user(migrated, a)
+    migrated.add_all(
+        [
+            AuditEvent(agency_id=a, actor_user_id=user.id, event_type="x", details={}),
+            AuditEvent(agency_id=a, actor_user_id=None, event_type="y", details={}),
+        ]
+    )
+    migrated.commit()
+    assert migrated.scalar(select(func.count()).select_from(AuditEvent)) == 2
 
 
 # --- rate limit buckets --------------------------------------------------------------

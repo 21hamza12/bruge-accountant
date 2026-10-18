@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import os
+import time
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -28,6 +29,11 @@ SHA = "a" * 64
 ROOT = Path(__file__).resolve().parent.parent
 TEST_DATABASE_URL_ENV = "TEST_DATABASE_URL"
 TEST_APP_DATABASE_URL_ENV = "TEST_APP_DATABASE_URL"
+# Every test wipes and rebuilds the schema, so two test runs on one server would corrupt each
+# other. Each test takes this (session-level) advisory lock first; the second run waits its turn.
+ADVISORY_LOCK_KEY = 7_283_200_017
+LOCK_WAIT_SECONDS = 900.0
+LOCK_POLL_SECONDS = 0.5
 
 
 def select_test_database_url(tmp_path: Path) -> str:
@@ -100,6 +106,30 @@ def migrate(owner_url: str, app_role: str | None = None, revision: str = "head")
         command.upgrade(alembic_config(owner_url), revision)
 
 
+@contextmanager
+def database_lock(url: str) -> Iterator[None]:
+    """Hold the test-run advisory lock on the server for the duration of the block."""
+    engine = create_engine(url, isolation_level="AUTOCOMMIT")
+    try:
+        with engine.connect() as conn:
+            deadline = time.monotonic() + LOCK_WAIT_SECONDS
+            while not conn.execute(
+                text("SELECT pg_try_advisory_lock(:k)"), {"k": ADVISORY_LOCK_KEY}
+            ).scalar():
+                if time.monotonic() >= deadline:
+                    raise pytest.UsageError(
+                        "another test run has used this database for "
+                        f"{LOCK_WAIT_SECONDS:.0f} s; stop it, or wait for it to finish"
+                    )
+                time.sleep(LOCK_POLL_SECONDS)
+            try:
+                yield
+            finally:
+                conn.execute(text("SELECT pg_advisory_unlock(:k)"), {"k": ADVISORY_LOCK_KEY})
+    finally:
+        engine.dispose()
+
+
 def _reset_server_database(url: str) -> None:
     engine = create_engine(url)
     try:
@@ -130,12 +160,15 @@ def parsed_fixture() -> ParsedReport:
 
 
 @pytest.fixture
-def db_url(tmp_path: Path) -> str:
-    """An empty database for this test only."""
+def db_url(tmp_path: Path) -> Iterator[str]:
+    """An empty database for this test only. On a server, the test also holds the run lock."""
     url = select_test_database_url(tmp_path)
-    if not url.startswith("sqlite"):
+    if url.startswith("sqlite"):
+        yield url
+        return
+    with database_lock(url):
         _reset_server_database(url)
-    return url
+        yield url
 
 
 @pytest.fixture

@@ -14,6 +14,8 @@ from alembic import command
 from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.engine import make_url
 
+from app import db_roles
+from app.db_roles import apply_grants, revoke_statements, role_privilege_problem
 from tests.conftest import (
     TEST_APP_DATABASE_URL_ENV,
     RlsDatabase,
@@ -31,11 +33,12 @@ EXPECTED_TABLE_PRIVILEGES = {
     "uploads": READ_WRITE,
     "tickets": READ_WRITE,
     "users": READ_WRITE,
-    "temporary_passwords": READ_WRITE,
+    "temporary_passwords": READ_WRITE | {"DELETE"},  # purge of used and expired passwords
     "staff_sign_links": READ_WRITE | {"DELETE"},
     "user_sessions": READ_WRITE | {"DELETE"},
     "rate_limit_buckets": READ_WRITE | {"DELETE"},
-    "audit_events": {"SELECT", "INSERT"},
+    # DELETE exists for the retention policy only; no policy lets a session delete a recent row
+    "audit_events": {"SELECT", "INSERT", "DELETE"},
 }
 ALL_TABLE_PRIVILEGES = ("SELECT", "INSERT", "UPDATE", "DELETE", "TRUNCATE", "REFERENCES", "TRIGGER")
 
@@ -149,9 +152,14 @@ def test_a_missing_role_fails_loudly_and_changes_nothing(pg_url: str) -> None:
         migrate(pg_url, app_role="no_such_role")
     assert scalar(pg_url, "SELECT version_num FROM alembic_version") == "0002"
     assert "display_name" not in user_columns(pg_url)
-    assert scalar(pg_url, "SELECT count(*) FROM pg_policies") == 0
+    assert scalar(pg_url, "SELECT count(*) FROM pg_policies WHERE schemaname = 'public'") == 0
     assert (
-        scalar(pg_url, "SELECT count(*) FROM pg_proc WHERE proname = 'app_current_agency_id'") == 0
+        scalar(
+            pg_url,
+            "SELECT count(*) FROM pg_proc WHERE proname = 'app_current_agency_id' "
+            "AND pronamespace = 'public'::regnamespace",
+        )
+        == 0
     )
 
 
@@ -163,7 +171,7 @@ def test_an_invalid_role_name_is_refused_before_any_ddl(pg_url: str, name: str) 
     with pytest.raises(ValueError, match="APP_DB_ROLE"):
         migrate(pg_url, app_role=name)
     assert scalar(pg_url, "SELECT version_num FROM alembic_version") == "0002"
-    assert scalar(pg_url, "SELECT count(*) FROM pg_policies") == 0
+    assert scalar(pg_url, "SELECT count(*) FROM pg_policies WHERE schemaname = 'public'") == 0
 
 
 def tables_missing_rls_in(url: str) -> list[str]:
@@ -171,6 +179,72 @@ def tables_missing_rls_in(url: str) -> list[str]:
     try:
         with engine.connect() as conn:
             return tables_missing_rls(conn)
+    finally:
+        engine.dispose()
+
+
+# --- Postgres: the privileged-role guard ---------------------------------------------------
+
+
+def test_the_migration_refuses_a_superuser_or_bypassrls_app_role(
+    pg_url: str, app_role: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A role that skips row-level security would make every policy decorative. The real check
+    runs in every other test of this file (the test roles are plain); here the lookup is forced
+    to report a privileged role, because the local test server has no superuser to borrow."""
+    migrate(pg_url, revision="0002")
+    monkeypatch.setattr(
+        db_roles,
+        "role_privilege_problem",
+        lambda _conn, role=None: (
+            f"role {role!r} has BYPASSRLS, so row-level security would not apply"
+        ),
+    )
+    with pytest.raises(RuntimeError, match="BYPASSRLS"):
+        migrate(pg_url, app_role=app_role)
+    assert scalar(pg_url, "SELECT version_num FROM alembic_version") == "0002"
+    assert scalar(pg_url, "SELECT count(*) FROM pg_policies WHERE schemaname = 'public'") == 0
+
+
+def test_the_connecting_roles_of_the_tests_are_plain(pg_url: str, app_role: str) -> None:
+    engine = create_engine(pg_url)
+    try:
+        with engine.connect() as conn:
+            assert role_privilege_problem(conn) is None  # the owner (current_user)
+            assert role_privilege_problem(conn, app_role) is None
+            assert role_privilege_problem(conn, "no_such_role_at_all") is not None
+    finally:
+        engine.dispose()
+
+
+def test_apply_grants_is_idempotent_and_repairs_a_role_created_late(
+    pg_url: str, app_role: str
+) -> None:
+    migrate(pg_url, app_role=None)  # single-role: the app role exists but got nothing
+    for table in EXPECTED_TABLE_PRIVILEGES:
+        assert privileges(pg_url, app_role, table) == set(), table
+    engine = create_engine(pg_url)
+    try:
+        for _ in range(2):  # twice: the second run changes nothing and does not fail
+            with engine.begin() as conn:
+                apply_grants(conn, app_role)
+            for table, expected in EXPECTED_TABLE_PRIVILEGES.items():
+                assert privileges(pg_url, app_role, table) == expected, table
+        with engine.begin() as conn:
+            for statement in revoke_statements(app_role, "public"):
+                conn.execute(text(statement))
+        for table in EXPECTED_TABLE_PRIVILEGES:
+            assert privileges(pg_url, app_role, table) == set(), table
+    finally:
+        engine.dispose()
+
+
+def test_apply_grants_refuses_a_role_that_does_not_exist(pg_url: str) -> None:
+    migrate(pg_url, app_role=None)
+    engine = create_engine(pg_url)
+    try:
+        with engine.begin() as conn, pytest.raises(RuntimeError, match="does not exist"):
+            apply_grants(conn, "no_such_role")
     finally:
         engine.dispose()
 
@@ -208,7 +282,7 @@ def test_downgrade_removes_policies_function_and_grants(rls_db: RlsDatabase, app
     cfg = alembic_config(url)
     with app_role_env(role):
         command.downgrade(cfg, "0002")
-    assert scalar(url, "SELECT count(*) FROM pg_policies") == 0
+    assert scalar(url, "SELECT count(*) FROM pg_policies WHERE schemaname = 'public'") == 0
     assert (
         scalar(
             url,
@@ -217,7 +291,14 @@ def test_downgrade_removes_policies_function_and_grants(rls_db: RlsDatabase, app
         )
         == 0
     )
-    assert scalar(url, "SELECT count(*) FROM pg_proc WHERE proname = 'app_current_agency_id'") == 0
+    assert (
+        scalar(
+            url,
+            "SELECT count(*) FROM pg_proc WHERE proname = 'app_current_agency_id' "
+            "AND pronamespace = 'public'::regnamespace",
+        )
+        == 0
+    )
     assert "display_name" not in user_columns(url)
     for table in EXPECTED_TABLE_PRIVILEGES:
         assert privileges(url, app_role, table) == set(), table
@@ -247,5 +328,8 @@ def test_downgrade_without_the_role_still_works_and_warns(
     cfg = alembic_config(rls_db.owner_url)
     with app_role_env(None), caplog.at_level(logging.WARNING):
         command.downgrade(cfg, "0002")
-    assert scalar(rls_db.owner_url, "SELECT count(*) FROM pg_policies") == 0
+    assert (
+        scalar(rls_db.owner_url, "SELECT count(*) FROM pg_policies WHERE schemaname = 'public'")
+        == 0
+    )
     assert any("APP_DB_ROLE" in r.getMessage() for r in caplog.records)

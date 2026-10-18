@@ -357,7 +357,8 @@ def test_the_orm_can_write_an_unscoped_audit_row_but_not_ask_for_it_back(world: 
 
 
 def test_audit_rows_are_append_only_for_the_tenant(world: World) -> None:
-    """No UPDATE or DELETE policy exists, so even the owner in single-role mode cannot edit them."""
+    """The only DELETE policy on audit_events is the 400-day retention one, so a recent row cannot
+    be edited or removed, not even by the owner in single-role mode."""
     db, a, _ = world
     with app_session(db) as s:
         bind_tenant(s, a.agency_id)
@@ -365,11 +366,9 @@ def test_audit_rows_are_append_only_for_the_tenant(world: World) -> None:
             with pytest.raises(ProgrammingError, match="permission denied"):
                 s.execute(update(AuditEvent).values(event_type="edited"))
             s.rollback()
-            with pytest.raises(ProgrammingError, match="permission denied"):
-                s.execute(delete(AuditEvent))
         else:
             assert affected(s.execute(update(AuditEvent).values(event_type="edited"))) == 0
-            assert affected(s.execute(delete(AuditEvent))) == 0
+        assert affected(s.execute(delete(AuditEvent))) == 0  # granted, but no policy matches
         s.rollback()
         assert s.scalars(select(AuditEvent.event_type)).all() == ["seed"]
 
@@ -384,7 +383,7 @@ def app_role_world(world: World) -> World:
     return world
 
 
-@pytest.mark.parametrize("model", [Ticket, Upload, User, TemporaryPassword, Agency])
+@pytest.mark.parametrize("model", [Ticket, Upload, User, Agency])
 def test_app_role_cannot_delete_where_deleting_is_not_needed(
     app_role_world: World, model: Any
 ) -> None:
@@ -526,5 +525,8 @@ def test_the_exact_policies_installed(world: World) -> None:
         ("agencies", "slug_lookup", "SELECT"),
         ("audit_events", "tenant_read", "SELECT"),
         ("audit_events", "tenant_or_unscoped_insert", "INSERT"),
+        ("user_sessions", "purge_expired", "DELETE"),
+        ("temporary_passwords", "purge_expired", "DELETE"),
+        ("audit_events", "retention_purge", "DELETE"),
     }
     assert installed == expected

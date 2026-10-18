@@ -26,6 +26,16 @@ BANNED_NAMES = frozenset({"text", "TextClause", "literal_column", "Markup"})
 # Attributes banned wherever they appear (``sa.literal_column``, ``markupsafe.Markup``).
 BANNED_ATTRIBUTES = frozenset({"TextClause", "literal_column", "Markup", "exec_driver_sql"})
 SQL_MODULES = ("sqlalchemy",)
+# Names that are fine in exactly one module and banned everywhere else under app/.
+# ``set_config`` can switch the tenant (row-level security contains forgotten-filter and IDOR
+# bugs, not SQL injection: a query that can run set_config picks its own agency), so only
+# app/tenancy.py may build it. ``DDL`` runs a raw statement without bind parameters; only the
+# role/grant helpers, which validate and quote every identifier, may use it.
+RESTRICTED = {
+    "set_config": frozenset({"tenancy.py"}),
+    "DDL": frozenset({"db_roles.py"}),
+}
+_SET_CONFIG_IN_TEXT = re.compile(r"set_config", re.IGNORECASE)
 TEMPLATE_BYPASS = {
     "|safe": re.compile(r"\|\s*safe\b"),
     "autoescape false": re.compile(r"autoescape\s+false\b", re.IGNORECASE),
@@ -67,10 +77,35 @@ def _is_dynamic_sql(arg: ast.expr) -> bool:
     )
 
 
-def python_violations(source: str) -> list[tuple[int, str]]:
+def _restricted_violations(tree: ast.AST, allowed: frozenset[str]) -> list[tuple[int, str]]:
+    """Uses of RESTRICTED names in a file that is not on their allowlist."""
+    found: list[tuple[int, str]] = []
+    for name, files in RESTRICTED.items():
+        if allowed & files:
+            continue
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom | ast.Import):
+                if any(a.name.split(".")[-1] == name for a in node.names):
+                    found.append((node.lineno, f"import of {name}"))
+            elif (isinstance(node, ast.Attribute) and node.attr == name) or (
+                isinstance(node, ast.Name) and node.id == name
+            ):
+                found.append((node.lineno, f"use of {name}"))
+            elif (
+                name == "set_config"
+                and isinstance(node, ast.Constant)
+                and isinstance(node.value, str)
+                and _SET_CONFIG_IN_TEXT.search(node.value)
+            ):
+                found.append((node.lineno, "set_config in a string"))
+    return found
+
+
+def python_violations(source: str, allowed: frozenset[str] = frozenset()) -> list[tuple[int, str]]:
+    """``allowed``: the file name (relative to app/) this source is, for RESTRICTED names."""
     tree = ast.parse(source)
     sql_names = _sql_aliases(tree)
-    found: list[tuple[int, str]] = []
+    found: list[tuple[int, str]] = _restricted_violations(tree, allowed)
     for node in ast.walk(tree):
         if isinstance(node, ast.ImportFrom):
             for alias in node.names:
@@ -124,7 +159,9 @@ def find_violations(root: Path) -> list[str]:
         if "migrations" in relative.parts or "__pycache__" in relative.parts:
             continue
         if path.suffix == ".py":
-            hits = python_violations(path.read_text(encoding="utf-8"))
+            hits = python_violations(
+                path.read_text(encoding="utf-8"), frozenset({relative.as_posix()})
+            )
         elif "templates" in relative.parts[:-1]:
             # Every file under a templates directory, whatever its suffix.
             hits = template_violations(path.read_text(encoding="utf-8", errors="replace"))
@@ -167,6 +204,15 @@ PY_BYPASSES = [
     ("conn.execute('select ' + col)\n", "execute() with a built string"),
     ("conn.execute('select %s' % col)\n", "execute() with a built string"),
     ("session.execute('select {}'.format(col))\n", "execute() with a built string"),
+    # set_config can switch tenant: only app/tenancy.py may use it
+    ("session.execute(select(func.set_config('app.agency_id', '1', True)))\n", "use of set_config"),
+    ("import sqlalchemy as sa\nsa.func.set_config('a', 'b', True)\n", "use of set_config"),
+    ("from sqlalchemy.sql.functions import set_config\n", "import of set_config"),
+    ("f = getattr(func, 'set_config')\n", "set_config in a string"),
+    ("q = 'SELECT SET_CONFIG(1)'\n", "set_config in a string"),
+    # DDL runs raw statements: only app/db_roles.py may
+    ("from sqlalchemy import DDL\n", "import of DDL"),
+    ("import sqlalchemy as sa\nsa.DDL('x')\n", "use of DDL"),
     # template bypasses hiding in Python
     ("from jinja2 import Environment\nEnvironment(autoescape=False)\n", "autoescape=False"),
     ("render_string('{{ x|safe }}')\n", "|safe"),
@@ -202,6 +248,47 @@ def test_guard_scans_every_template_suffix(
     folder.mkdir(parents=True)
     (folder / f"page{suffix}").write_text(content, encoding="utf-8")
     assert any(v.endswith(label) for v in find_violations(tmp_path))
+
+
+@pytest.mark.parametrize(
+    ("file_name", "source"),
+    [
+        ("tenancy.py", "select(func.set_config(key, value, True))\n"),
+        ("db_roles.py", "from sqlalchemy import DDL\nconnection.execute(DDL(statement))\n"),
+    ],
+)
+def test_the_one_allowed_module_may_use_its_restricted_name(
+    tmp_path: Path, file_name: str, source: str
+) -> None:
+    (tmp_path / file_name).write_text(source, encoding="utf-8")
+    assert find_violations(tmp_path) == []
+
+
+@pytest.mark.parametrize(
+    ("file_name", "source", "label"),
+    [
+        ("db_roles.py", "select(func.set_config(key, value, True))\n", "use of set_config"),
+        ("tenancy.py", "from sqlalchemy import DDL\n", "import of DDL"),
+        ("sub/tenancy.py", "select(func.set_config(key, value, True))\n", "use of set_config"),
+        ("cli.py", "select(func.set_config(key, value, True))\n", "use of set_config"),
+    ],
+)
+def test_other_modules_may_not_use_a_restricted_name(
+    tmp_path: Path, file_name: str, source: str, label: str
+) -> None:
+    target = tmp_path / file_name
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(source, encoding="utf-8")
+    assert any(v.endswith(label) for v in find_violations(tmp_path))
+
+
+def test_the_real_app_uses_set_config_only_in_the_tenancy_module() -> None:
+    users = {
+        path.relative_to(APP_DIR).as_posix()
+        for path in APP_DIR.rglob("*.py")
+        if "set_config" in path.read_text(encoding="utf-8")
+    }
+    assert users == {"tenancy.py"}
 
 
 def test_guard_ignores_migrations_and_pycache(tmp_path: Path) -> None:

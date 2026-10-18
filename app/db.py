@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 import sqlite3
 from datetime import UTC, datetime
 from typing import Any
@@ -12,6 +11,8 @@ from sqlalchemy.dialects import postgresql
 from sqlalchemy.engine import Dialect
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 from sqlalchemy.types import JSON, TypeDecorator
+
+from app.settings import Settings
 
 DEFAULT_DATABASE_URL = "sqlite:///bruge.db"
 
@@ -54,7 +55,8 @@ class UTCDateTime(TypeDecorator[datetime]):
 
 
 def default_database_url() -> str:
-    return os.environ.get("DATABASE_URL") or DEFAULT_DATABASE_URL
+    """DATABASE_URL as read (and validated) by Settings, else the local SQLite file."""
+    return Settings().database_url.get_secret_value() or DEFAULT_DATABASE_URL
 
 
 def normalize_database_url(url: str) -> str:

@@ -27,6 +27,7 @@ def clean_env(monkeypatch: pytest.MonkeyPatch) -> None:
         "TRUSTED_PROXY_HOPS",
         "SENTRY_DSN",
         "RENDER_GIT_COMMIT",
+        "RENDER",
     ):
         monkeypatch.delenv(name, raising=False)
 
@@ -53,7 +54,12 @@ def test_reads_environment_and_splits_lists(monkeypatch: pytest.MonkeyPatch) -> 
 
 
 def production(**overrides: str) -> Settings:
-    values = {"env": "production", "allowed_hosts": "app.example.com", **overrides}
+    values = {
+        "env": "production",
+        "allowed_hosts": "app.example.com",
+        "database_url": "postgresql://app:pw@db.internal/bruge",
+        **overrides,
+    }
     return make(**values)
 
 
@@ -84,10 +90,10 @@ def test_production_requires_hosts_even_when_unset() -> None:
         make(env="production")
 
 
-def test_development_allows_wildcard_cors_and_insecure_cookies() -> None:
-    s = make(cors_allowed_origins="*", cookie_secure="false")
-    assert s.cors_allowed_origins == ["*"]
-    assert s.cookie_secure is False
+def test_development_allows_insecure_cookies_but_never_wildcard_cors() -> None:
+    assert make(cookie_secure="false").cookie_secure is False
+    with pytest.raises(ValidationError):
+        make(cors_allowed_origins="*")
 
 
 def test_unknown_env_is_rejected() -> None:

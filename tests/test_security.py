@@ -53,14 +53,15 @@ def dev_client(web_settings: Settings) -> Iterator[TestClient]:
 
 @pytest.fixture
 def prod_client(web_settings: Settings) -> Iterator[TestClient]:
-    settings = Settings.model_validate(
+    validated = Settings.model_validate(
         {
             "env": "production",
             "allowed_hosts": "testserver",
-            "database_url": web_settings.database_url,
+            "database_url": "postgresql://app:pw@db.invalid/bruge",
         }
     )
-    yield from build(settings)
+    # Production rules reject SQLite, so swap the test database in after validation.
+    yield from build(validated.model_copy(update={"database_url": web_settings.database_url}))
 
 
 @pytest.mark.parametrize("path", ["/healthz", "/nope", "/t/boom", "/t/validated?n=x", "/offline"])

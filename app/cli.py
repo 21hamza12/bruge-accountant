@@ -4,7 +4,6 @@ import argparse
 import dataclasses
 import hashlib
 import json
-import os
 import re
 import sys
 from collections.abc import Sequence
@@ -16,6 +15,7 @@ from typing import Any
 from alembic import command
 from alembic.config import Config
 from alembic.util.exc import CommandError
+from pydantic import ValidationError
 from sqlalchemy.exc import DBAPIError, IntegrityError, SQLAlchemyError
 
 from app.db import default_database_url, make_engine, make_session_factory
@@ -27,6 +27,7 @@ from app.repository import (
     import_report,
     tickets_awaiting_price,
 )
+from app.settings import Settings
 
 EXIT_OK = 0
 EXIT_FAILURE = 1
@@ -195,15 +196,23 @@ def _use_utf8_output() -> None:
 
 def _default_url_for(command_name: str) -> str:
     """init-db migrates as the owner role when MIGRATION_DATABASE_URL is set."""
-    if command_name == "init-db":
-        return os.environ.get("MIGRATION_DATABASE_URL") or default_database_url()
-    return default_database_url()
+    settings = Settings()
+    if command_name == "init-db" and settings.migration_database_url is not None:
+        owner_url = settings.migration_database_url.get_secret_value()
+        if owner_url:
+            return owner_url
+    return settings.database_url.get_secret_value() or default_database_url()
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     _use_utf8_output()
     args = _build_parser().parse_args(argv)
-    url: str = args.db or _default_url_for(args.command)
+    try:
+        url: str = args.db or _default_url_for(args.command)
+    except ValidationError as exc:
+        # Messages only: the offending values (URLs with passwords) are never echoed.
+        problems = "; ".join(f"{'.'.join(map(str, e['loc']))}: {e['msg']}" for e in exc.errors())
+        return _fail(f"invalid configuration: {problems}", EXIT_FAILURE)
     try:
         if args.command == "init-db":
             return _init_db(url)

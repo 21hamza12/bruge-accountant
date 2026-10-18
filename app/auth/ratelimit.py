@@ -10,6 +10,12 @@ The key is ``<limit name>:<sha256 of the subject>``: the table holds no phone nu
 in clear. The clock is passed in (never read here), and the caller commits: a login attempt must
 count even when the rest of the request fails, so the login route commits right after ``hit``.
 
+Counting only failures: a route "reserves" its attempt with ``hit`` before it verifies anything
+(so concurrent guesses cannot all slip under the limit, and the count survives a request that
+raises), and gives it back when the attempt turns out to be fine: ``reset`` forgets a phone after
+a successful login, ``refund`` takes one hit off a per-IP counter. The net effect is that only
+failures count, so five successful logins in a row from one office (one NAT address) stay allowed.
+
 Known trade-off of any per-phone limit: someone who knows a phone number can use up its five
 attempts and delay the real owner by up to 15 minutes. The per-IP limit is what bounds how many
 phones one client can do this to.
@@ -22,13 +28,14 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from sqlalchemy import delete
+from sqlalchemy import delete, select, tuple_, update
 from sqlalchemy.dialects import postgresql, sqlite
 from sqlalchemy.orm import Session
 
 from app.models import RateLimitBucket
 
 MAX_WINDOW_SECONDS = 3600  # the longest window below; purge keeps one of them as a margin
+PURGE_CHUNK = 10_000  # rows per DELETE statement, so a big backlog never holds a long lock
 
 
 @dataclass(frozen=True)
@@ -43,7 +50,8 @@ class Limit:
 
 
 LOGIN_PHONE = Limit("login_phone", 5, 15 * 60)
-LOGIN_IP = Limit("login_ip", 20, 15 * 60)
+# A coarse flood guard, not a precision tool: a whole office shares one NAT address.
+LOGIN_IP = Limit("login_ip", 100, 15 * 60)
 # Defined now, used by the upload route (PR 4).
 UPLOAD_AGENCY = Limit("upload_agency", 30, 3600)
 # Guesses at the current password of a logged-in account (stolen-session brute force).
@@ -55,6 +63,9 @@ class RateDecision:
     allowed: bool
     count: int
     retry_after: int  # seconds until the window ends
+    # True for exactly one hit per window: the first one over the limit. Callers write their
+    # audit event on that hit only, so a flood leaves one row, not one per request.
+    first_rejection: bool = False
 
 
 def _check_aware(now: datetime) -> None:
@@ -94,13 +105,57 @@ def hit(session: Session, limit: Limit, subject: str, now: datetime) -> RateDeci
     count = int(session.execute(statement).scalar_one())
     remaining = (start + timedelta(seconds=limit.window_seconds) - now).total_seconds()
     return RateDecision(
-        allowed=count <= limit.max_hits, count=count, retry_after=max(1, int(remaining))
+        allowed=count <= limit.max_hits,
+        count=count,
+        retry_after=max(1, int(remaining)),
+        first_rejection=count == limit.max_hits + 1,
+    )
+
+
+def refund(session: Session, limit: Limit, subject: str, now: datetime) -> None:
+    """Give one hit back in the current window (never below zero). The caller commits."""
+    session.execute(
+        update(RateLimitBucket)
+        .where(
+            RateLimitBucket.key == bucket_key(limit, subject),
+            RateLimitBucket.window_start == window_start(now, limit.window_seconds),
+            RateLimitBucket.count > 0,
+        )
+        .values(count=RateLimitBucket.count - 1)
+    )
+
+
+def reset(session: Session, limit: Limit, subject: str) -> None:
+    """Forget every window of one subject (a successful login clears the phone). The caller
+    commits."""
+    session.execute(
+        delete(RateLimitBucket).where(RateLimitBucket.key == bucket_key(limit, subject))
     )
 
 
 def purge_expired_windows(session: Session, now: datetime) -> int:
-    """Remove windows that ended more than ``MAX_WINDOW_SECONDS`` ago; returns how many."""
+    """Remove windows that ended more than ``MAX_WINDOW_SECONDS`` ago; returns how many.
+
+    Deletes ``PURGE_CHUNK`` rows per statement and commits after each, so an hourly job that
+    finds a big backlog never holds one long lock on a table every login writes to.
+    """
     _check_aware(now)
     cutoff = now - timedelta(seconds=MAX_WINDOW_SECONDS)
-    result = session.execute(delete(RateLimitBucket).where(RateLimitBucket.window_start < cutoff))
-    return int(getattr(result, "rowcount", 0) or 0)
+    total = 0
+    while True:
+        oldest = (
+            select(RateLimitBucket.key, RateLimitBucket.window_start)
+            .where(RateLimitBucket.window_start < cutoff)
+            .order_by(RateLimitBucket.window_start)
+            .limit(PURGE_CHUNK)
+        )
+        result = session.execute(
+            delete(RateLimitBucket).where(
+                tuple_(RateLimitBucket.key, RateLimitBucket.window_start).in_(oldest)
+            )
+        )
+        removed = int(getattr(result, "rowcount", 0) or 0)
+        session.commit()
+        total += removed
+        if removed < PURGE_CHUNK:
+            return total

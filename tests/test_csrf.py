@@ -58,6 +58,13 @@ class Env:
         self.app.add_api_route(
             "/t/secure", token_page, methods=["GET"], dependencies=[Depends(csrf_protect)]
         )
+
+        def raw_body() -> HTMLResponse:  # never touches the body, like a streaming upload
+            return HTMLResponse("raw ok")
+
+        self.app.add_api_route(
+            "/t/raw", raw_body, methods=["POST"], dependencies=[Depends(csrf_protect)]
+        )
         self.app.add_api_route(
             "/t/login", login_form, methods=["POST"], dependencies=[Depends(login_csrf_protect)]
         )
@@ -85,6 +92,31 @@ def test_matching_form_token_passes(env: Env) -> None:
 def test_matching_header_token_passes(env: Env) -> None:
     client, token = env.logged_in()
     assert client.post("/t/secure", headers={"X-CSRF-Token": token}).status_code == 200
+
+
+def test_the_header_token_is_enough_so_the_body_is_never_parsed(
+    env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Upload routes can send the token in X-CSRF-Token and avoid spooling the body to disk."""
+    from starlette.requests import Request
+
+    async def no_form(self: Request, *args: object, **kwargs: object) -> None:
+        raise AssertionError("the body was parsed although the header carried the token")
+
+    client, token = env.logged_in()
+    monkeypatch.setattr(Request, "form", no_form)
+    response = client.post(
+        "/t/raw",
+        content=b"--x" + b"A" * 5000,
+        headers={"X-CSRF-Token": token, "Content-Type": "multipart/form-data; boundary=x"},
+    )
+    assert response.status_code == 200
+    wrong = client.post(
+        "/t/raw",
+        content=b"--x",
+        headers={"X-CSRF-Token": "wrong", "Content-Type": "multipart/form-data; boundary=x"},
+    )
+    assert wrong.status_code == 403  # a wrong header is refused without a fallback
 
 
 @pytest.mark.parametrize(
@@ -234,7 +266,7 @@ def test_login_form_double_submit_passes(env: Env) -> None:
     ("cookie", "field"),
     [(None, "a" * 43), ("a" * 43, None), ("a" * 43, "b" * 43), ("a" * 43, ""), (None, None)],
 )
-def test_login_form_mismatch_is_refused_and_audited_without_agency(
+def test_login_form_mismatch_is_refused_and_logged_but_not_stored(
     env: Env, caplog: pytest.LogCaptureFixture, cookie: str | None, field: str | None
 ) -> None:
     before = audit_sequence(env.web_db.owner_url)
@@ -243,7 +275,7 @@ def test_login_form_mismatch_is_refused_and_audited_without_agency(
     with caplog.at_level(logging.INFO, logger="app.audit"):
         response = client.post("/t/login", data=data)
     assert response.status_code == 403
-    assert audit_sequence(env.web_db.owner_url) == before + 1
+    assert audit_sequence(env.web_db.owner_url) == before  # an anonymous client writes no rows
     records = [r for r in caplog.records if r.name == "app.audit"]
     assert [r.event_type for r in records] == ["csrf_failed"]  # type: ignore[attr-defined]
     assert records[0].agency_id is None  # type: ignore[attr-defined]

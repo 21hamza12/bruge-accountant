@@ -11,7 +11,8 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import select
 
-from app.auth import passwords
+import app.web.routes.auth as auth_routes
+from app.auth import passwords, ratelimit
 from app.models import RateLimitBucket, UserSession
 from app.settings import Settings
 from app.web.cookies import login_csrf_cookie_name, session_cookie_name
@@ -244,8 +245,6 @@ def test_each_failure_spends_exactly_one_argon2_verification(
 def test_a_csrf_failure_touches_neither_the_limiter_nor_the_user_table(
     env: Env, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    import app.web.routes.auth as auth_routes
-
     def boom(*args: object, **kwargs: object) -> None:
         raise AssertionError("the user lookup ran before CSRF was checked")
 
@@ -264,8 +263,6 @@ def test_a_csrf_failure_touches_neither_the_limiter_nor_the_user_table(
 def test_the_rate_limit_runs_before_the_user_lookup(
     env: Env, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    import app.web.routes.auth as auth_routes
-
     with env.client() as c:
         for _ in range(5):
             assert login(c, PHONE_A, "wrong-password-x").status_code == 401
@@ -314,10 +311,13 @@ def test_different_spellings_of_one_phone_share_one_limit(env: Env) -> None:
         assert login(c, "1234-5601", "wrong-password-z").status_code == 429
 
 
-def test_one_ip_is_limited_across_many_phones_and_forwarded_for_is_ignored(env: Env) -> None:
+def test_one_ip_is_limited_across_many_phones_and_forwarded_for_is_ignored(
+    env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(ratelimit, "LOGIN_IP", ratelimit.Limit("login_ip", 6, 15 * 60))
     with env.client() as c:
         statuses = []
-        for n in range(21):
+        for n in range(7):
             phone = f"+2227{n:07d}"
             page = c.get("/login")
             response = c.post(
@@ -330,7 +330,7 @@ def test_one_ip_is_limited_across_many_phones_and_forwarded_for_is_ignored(env: 
                 headers={"X-Forwarded-For": f"203.0.113.{n}"},  # spoofing must not help
             )
             statuses.append(response.status_code)
-    assert statuses == [401] * 20 + [429]
+    assert statuses == [401] * 6 + [429]
 
 
 def test_rate_limit_keys_hold_no_phone(env: Env) -> None:
@@ -340,6 +340,149 @@ def test_rate_limit_keys_hold_no_phone(env: Env) -> None:
         keys = list(s.scalars(select(RateLimitBucket.key)))
     assert len(keys) == 2
     assert not any("2221234" in key for key in keys)
+
+
+def _bucket_count(env: Env, limit: ratelimit.Limit, subject: str) -> int:
+    key = ratelimit.bucket_key(limit, subject)
+    with owner_session(env.db.owner_url) as s:
+        rows = list(s.scalars(select(RateLimitBucket).where(RateLimitBucket.key == key)))
+    return sum(r.count for r in rows)
+
+
+def _fresh_login(env: Env, phone: str, password: str) -> int:
+    """One login from a browser with no session (a logged-in browser never sees the form)."""
+    with env.client() as browser:
+        return login(browser, phone, password).status_code
+
+
+def test_successful_logins_do_not_count_against_the_phone(env: Env) -> None:
+    assert [_fresh_login(env, PHONE_A, PASSWORD_A) for _ in range(7)] == [303] * 7
+    assert _bucket_count(env, ratelimit.LOGIN_PHONE, PHONE_A) == 0  # reset on success
+    with env.client() as c:
+        failures = [login(c, PHONE_A, f"wrong-password-{n}").status_code for n in range(6)]
+    assert failures == [401] * 5 + [429]  # the sixth FAILURE is the first 429
+
+
+def test_a_success_clears_the_failures_before_it(env: Env) -> None:
+    with env.client() as c:
+        for n in range(4):
+            assert login(c, PHONE_A, f"wrong-password-{n}").status_code == 401
+        assert login(c, PHONE_A, PASSWORD_A).status_code == 303
+    with env.client() as c:
+        again = [login(c, PHONE_A, f"wrong-password-x{n}").status_code for n in range(5)]
+    assert again == [401] * 5
+
+
+def test_successful_logins_do_not_use_up_the_ip_limit(
+    env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(ratelimit, "LOGIN_IP", ratelimit.Limit("login_ip", 3, 15 * 60))
+    statuses = [_fresh_login(env, PHONE_A, PASSWORD_A) for _ in range(6)]
+    assert _bucket_count(env, ratelimit.LOGIN_IP, "testclient") == 0
+    with env.client() as c:
+        failed = [login(c, PHONE_A, "wrong-password-1").status_code for _ in range(4)]
+    assert statuses == [303] * 6
+    assert failed == [401, 401, 401, 429]
+
+
+def test_the_failure_count_survives_a_request_that_raises(
+    env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def boom(*args: object, **kwargs: object) -> None:
+        raise RuntimeError("the database went away mid-request")
+
+    monkeypatch.setattr(auth_routes, "authenticate", boom)
+    client = TestClient(
+        env.factory.app,  # type: ignore[attr-defined]
+        base_url="https://testserver",
+        headers={"Origin": "https://testserver"},
+        raise_server_exceptions=False,
+    )
+    with client:
+        page = client.get("/login")
+        response = client.post(
+            "/login",
+            data={"phone": PHONE_A, "password": "x" * 12, "csrf_token": form_token(page)},
+        )
+    assert response.status_code == 500
+    assert _bucket_count(env, ratelimit.LOGIN_PHONE, PHONE_A) == 1
+    assert _bucket_count(env, ratelimit.LOGIN_IP, "testclient") == 1
+
+
+def test_an_ip_over_its_limit_does_not_burn_a_victims_phone_bucket(
+    env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(ratelimit, "LOGIN_IP", ratelimit.Limit("login_ip", 1, 15 * 60))
+    with env.client() as c:
+        assert login(c, PHONE_A, "wrong-password-1").status_code == 401
+        for _ in range(4):
+            assert login(c, PHONE_A, "wrong-password-2").status_code == 429  # blocked by the IP
+    assert _bucket_count(env, ratelimit.LOGIN_PHONE, PHONE_A) == 1  # only the first attempt
+
+
+def test_an_unknown_client_address_skips_the_ip_limit_and_warns(
+    env: Env, caplog: pytest.LogCaptureFixture
+) -> None:
+    from starlette.middleware import Middleware
+    from starlette.types import ASGIApp, Receive, Scope, Send
+
+    from app.web.main import create_app
+
+    class NoClient:
+        def __init__(self, app: ASGIApp) -> None:
+            self.app = app
+
+        async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+            if scope["type"] == "http":
+                scope["client"] = None
+            await self.app(scope, receive, send)
+
+    app = create_app(
+        env.settings.model_copy(), extra_middleware=[Middleware(NoClient)], clock=env.clock
+    )
+    with (
+        caplog.at_level(logging.WARNING),
+        TestClient(
+            app, base_url="https://testserver", headers={"Origin": "https://testserver"}
+        ) as c,
+    ):
+        statuses = [login(c, PHONE_A, f"wrong-password-{n}").status_code for n in range(6)]
+    assert statuses == [401] * 5 + [429]  # the phone limit still applies
+    with owner_session(env.db.owner_url) as s:
+        keys = list(s.scalars(select(RateLimitBucket.key)))
+    assert keys
+    assert all(k.startswith("login_phone:") for k in keys)  # no shared "unknown" bucket
+    assert any("without an address" in r.getMessage() for r in caplog.records)
+
+
+def test_bare_posts_write_no_audit_rows_and_touch_no_bucket(
+    env: Env, caplog: pytest.LogCaptureFixture
+) -> None:
+    before = audit_sequence(env.db.owner_url)
+    with caplog.at_level(logging.INFO, logger="app.audit"), env.client() as c:
+        statuses = {c.post("/login").status_code for _ in range(30)}
+        statuses |= {
+            c.post("/login", data={"phone": "1", "csrf_token": "x"}).status_code for _ in range(30)
+        }
+    assert statuses == {403}
+    assert audit_sequence(env.db.owner_url) == before  # no row per bare POST
+    logged = [r for r in caplog.records if r.name == "app.audit"]
+    assert len(logged) == 60  # the JSON log keeps every one
+    assert {r.event_type for r in logged} == {"csrf_failed"}  # type: ignore[attr-defined]
+    with owner_session(env.db.owner_url) as s:
+        assert s.scalars(select(RateLimitBucket)).first() is None
+
+
+def test_a_flood_past_the_ip_limit_leaves_one_rate_limited_row(
+    env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(ratelimit, "LOGIN_IP", ratelimit.Limit("login_ip", 2, 15 * 60))
+    before = audit_sequence(env.db.owner_url)
+    with env.client() as c:
+        statuses = [login(c, UNKNOWN_PHONE, "wrong-password-1").status_code for _ in range(30)]
+    assert statuses == [401, 401] + [429] * 28
+    # two failed logins and ONE rate_limited row, however long the flood lasts
+    assert audit_sequence(env.db.owner_url) - before == 3
 
 
 # --- audit and logs ---------------------------------------------------------------------------
@@ -427,11 +570,107 @@ def test_logout_is_post_only(env: Env) -> None:
         assert c.get("/logout").status_code == 405
 
 
-def test_anonymous_logout_post_is_the_401_page(env: Env) -> None:
+def test_anonymous_logout_is_idempotent_and_clears_the_cookies(env: Env) -> None:
     with env.client() as c:
-        response = c.post("/logout", data={"csrf_token": "x"})
-    assert response.status_code == 401
-    assert "Connexion requise" in response.text
+        response = c.post("/logout", data={"csrf_token": "x"}, follow_redirects=False)
+        again = c.post("/logout", follow_redirects=False)
+    for r in (response, again):
+        assert r.status_code == 303
+        assert r.headers["location"] == "/login"
+        cleared = [v for k, v in r.headers.multi_items() if k == "set-cookie"]
+        assert any(v.startswith("__Host-session=") and "Max-Age=0" in v for v in cleared)
+
+
+def test_a_stale_logout_after_the_session_ended_goes_to_the_login_page(env: Env) -> None:
+    with env.client() as c:
+        login(c, PHONE_A, PASSWORD_A)
+        csrf = csrf_for(c)
+        env.clock.advance(days=8)  # past the absolute expiry
+        response = c.post("/logout", data={"csrf_token": csrf}, follow_redirects=False)
+    assert response.status_code == 303
+    assert response.headers["location"] == "/login"
+
+
+def test_the_401_and_403_pages_link_to_the_way_out(env: Env) -> None:
+    with env.client() as c:
+        unauthorised = c.post("/password/change", data={"csrf_token": "x"})
+        login(c, PHONE_STAFF_A, PASSWORD_S)
+        forbidden = c.get("/staff")
+    assert unauthorised.status_code == 401
+    assert '<a href="/login">Se connecter</a>' in unauthorised.text
+    assert forbidden.status_code == 403
+    assert '<a href="/">Retour à l\'accueil</a>' in forbidden.text
+
+
+def _drop_cookie(c: TestClient, name: str) -> str:
+    """Remove every cookie of that name from the jar; return the value it had (or "")."""
+    value = ""
+    for cookie in list(c.cookies.jar):
+        if cookie.name == name:
+            value = cookie.value or ""
+            c.cookies.jar.clear(cookie.domain, cookie.path, cookie.name)
+    return value
+
+
+def _cookie_header(env: Env, **cookies: str) -> dict[str, str]:
+    return {"Cookie": "; ".join(f"{k}={v}" for k, v in cookies.items())}
+
+
+def _login_with_stale_cookie(env: Env, stale: str, phone: str, password: str) -> httpx.Response:
+    """A login from a browser that still sends ``stale`` as its session cookie."""
+    login_cookie = login_csrf_cookie_name(env.settings)
+    with env.client() as c:
+        page = c.get("/login")
+        token = form_token(page)
+        response: httpx.Response = c.post(
+            "/login",
+            data={"phone": phone, "password": password, "csrf_token": token},
+            headers=_cookie_header(
+                env, **{login_cookie: token, session_cookie_name(env.settings): stale}
+            ),
+            follow_redirects=False,
+        )
+    return response
+
+
+def _session_cookie(response: httpx.Response, env: Env) -> str:
+    name = session_cookie_name(env.settings)
+    for k, v in response.headers.multi_items():
+        if k == "set-cookie" and v.startswith(f"{name}="):
+            return v.split(";")[0].split("=", 1)[1]
+    raise AssertionError("no session cookie was set")
+
+
+def _home_status(env: Env, session: str) -> int:
+    with env.client() as c:
+        response = c.get(
+            "/",
+            headers=_cookie_header(env, **{session_cookie_name(env.settings): session}),
+            follow_redirects=False,
+        )
+    return int(response.status_code)
+
+
+def test_login_revokes_the_session_the_browser_presented(env: Env) -> None:
+    with env.client() as c:
+        first = login(c, PHONE_A, PASSWORD_A)
+    old = _session_cookie(first, env)
+    assert _home_status(env, old) == 200
+    second = _login_with_stale_cookie(env, old, PHONE_A, PASSWORD_A)
+    assert second.status_code == 303
+    new = _session_cookie(second, env)
+    assert new != old
+    assert _home_status(env, old) == 303  # the presented session is dead
+    assert _home_status(env, new) == 200
+
+
+def test_login_with_a_cookie_of_another_agency_still_works(env: Env) -> None:
+    with env.client() as c:
+        other = _session_cookie(login(c, PHONE_B, PASSWORD_B), env)
+    response = _login_with_stale_cookie(env, other, PHONE_A, PASSWORD_A)
+    assert response.status_code == 303  # no TenantBindingError
+    assert _home_status(env, _session_cookie(response, env)) == 200
+    assert _home_status(env, other) == 200  # another agency's session is left alone
 
 
 def test_home_requires_login(env: Env) -> None:

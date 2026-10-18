@@ -9,6 +9,8 @@
 * Expiry: idle (sliding) and absolute (hard ceiling), both measured with the injected clock.
   ``last_seen_at`` is only written when it is at least ``TOUCH_INTERVAL`` old, so a page view does
   not cost a write; the idle deadline therefore slides in steps of at most five minutes.
+* A "must change the password" session (opened with a temporary password) has an absolute expiry
+  of ``FORCED_CHANGE_TTL`` after login and no idle slide beyond that.
 * Rotation: a new token is issued at login and at password change (``create_session``), never a
   reused one; the old sessions are then revoked.
 * Revocation is a timestamp (``revoked_at``): instant, and the purge job removes the row later.
@@ -32,6 +34,10 @@ from app.settings import Settings
 from app.tenancy import bind_tenant, lookup_scope, unbind_tenant
 
 TOUCH_INTERVAL = timedelta(minutes=5)
+# A session opened while the user still has to change the password (after a temporary password)
+# lives this long in absolute terms, and never slides beyond it: it exists only to reach the
+# password-change page. Same length as the temporary password itself.
+FORCED_CHANGE_TTL = timedelta(minutes=30)
 MAX_TOKEN_LENGTH = 128  # a real token is 43 characters; anything longer is not worth a query
 
 
@@ -75,6 +81,9 @@ def create_session(db: Session, user: User, now: datetime, policy: SessionPolicy
     The caller commits.
     """
     bind_tenant(db, user.agency_id)
+    absolute = now + policy.absolute
+    if user.must_change_password:
+        absolute = min(absolute, now + FORCED_CHANGE_TTL)
     token = new_token()
     row = UserSession(
         agency_id=user.agency_id,
@@ -83,8 +92,8 @@ def create_session(db: Session, user: User, now: datetime, policy: SessionPolicy
         csrf_token=secrets.token_urlsafe(32),
         created_at=now,
         last_seen_at=now,
-        idle_expires_at=min(now + policy.idle, now + policy.absolute),
-        absolute_expires_at=now + policy.absolute,
+        idle_expires_at=min(now + policy.idle, absolute),
+        absolute_expires_at=absolute,
     )
     db.add(row)
     db.flush()
@@ -132,6 +141,28 @@ def revoke_session(db: Session, row: UserSession, now: datetime) -> None:
     if row.revoked_at is None:
         row.revoked_at = now
         db.flush()
+
+
+def revoke_by_token(db: Session, token: str, agency_id: int, now: datetime) -> bool:
+    """Revoke the live session of one agency that a cookie token names. True when one was.
+
+    Used at login to retire the session the browser still presented. Row-level security limits
+    this to the agency the request is bound to, so a cookie of another agency is left alone (it
+    simply expires).
+    """
+    if not token or len(token) > MAX_TOKEN_LENGTH:
+        return False
+    result = db.execute(
+        update(UserSession)
+        .where(
+            UserSession.agency_id == agency_id,
+            UserSession.token_hash == hash_token(token),
+            UserSession.revoked_at.is_(None),
+        )
+        .values(revoked_at=now)
+        .returning(UserSession.id)
+    )
+    return result.first() is not None
 
 
 def revoke_all_for_user(

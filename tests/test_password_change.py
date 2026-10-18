@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from typing import Any
 
 import httpx
 import pytest
@@ -230,3 +231,81 @@ def test_the_gate_still_blocks_everything_else_until_the_change(env: Env) -> Non
     c = env.pending_client()
     assert c.get("/", follow_redirects=False).headers["location"] == "/password/change"
     assert c.get("/password/change").status_code == 200
+
+
+# --- the limit counts wrong guesses only -------------------------------------------------------
+
+
+def _attempts(env: Env, user_id: int) -> int:
+    from app.auth import ratelimit
+    from app.models import RateLimitBucket
+
+    key = ratelimit.bucket_key(ratelimit.PASSWORD_CHANGE_USER, f"{env.seeded.agency_a}:{user_id}")
+    with owner_session(env.db.owner_url) as s:
+        return sum(
+            r.count for r in s.scalars(select(RateLimitBucket).where(RateLimitBucket.key == key))
+        )
+
+
+def test_policy_failures_with_the_right_password_are_never_limited(env: Env) -> None:
+    c = env.pending_client()
+    statuses = [env.change(c, OLD_TEMP, "short").status_code for _ in range(12)]
+    mismatch = [
+        env.change(c, OLD_TEMP, NEW_PASSWORD, confirm="different-1234").status_code
+        for _ in range(3)
+    ]
+    assert statuses == [400] * 12
+    assert mismatch == [400] * 3
+    assert _attempts(env, env.pending_id) == 0
+    assert env.change(c, OLD_TEMP, NEW_PASSWORD).status_code == 303
+
+
+def test_only_wrong_current_passwords_use_up_the_five_attempts(env: Env) -> None:
+    c = env.pending_client()
+    for n in range(4):
+        assert env.change(c, f"wrong-guess-number-{n}", NEW_PASSWORD).status_code == 400
+    assert env.change(c, OLD_TEMP, "short").status_code == 400  # right password, policy failure
+    assert _attempts(env, env.pending_id) == 4
+    assert env.change(c, "wrong-guess-number-5", NEW_PASSWORD).status_code == 400  # the 5th
+    assert env.change(c, "wrong-guess-number-6", NEW_PASSWORD).status_code == 429  # the 6th
+
+
+def test_a_successful_change_leaves_no_attempts_behind(env: Env) -> None:
+    c = env.pending_client()
+    assert env.change(c, "wrong-guess-number-1", NEW_PASSWORD).status_code == 400
+    assert env.change(c, OLD_TEMP, NEW_PASSWORD).status_code == 303
+    assert _attempts(env, env.pending_id) == 1  # the wrong guess stays; the success cost nothing
+
+
+def test_the_password_change_limit_audits_once_per_window(env: Env) -> None:
+    c = env.pending_client()
+    for n in range(20):
+        env.change(c, f"wrong-guess-number-{n}", NEW_PASSWORD)
+    events = audit_events(env.db.owner_url, env.seeded.agency_a, "rate_limited")
+    assert len(events) == 1
+    assert events[0].details == {"scope": "password_change"}
+
+
+def test_no_connection_is_held_while_the_current_password_is_verified(
+    env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from app.auth import passwords
+
+    c = env.pending_client()
+    engine = env.factory.app.state.engine  # type: ignore[attr-defined]
+    seen: list[int] = []
+    real = passwords._HASHER
+
+    class Spy:
+        def verify(self, *args: Any) -> bool:
+            seen.append(int(engine.pool.checkedout()))
+            return bool(real.verify(*args))
+
+        def __getattr__(self, name: str) -> object:
+            return getattr(real, name)
+
+    monkeypatch.setattr(passwords, "_HASHER", Spy())
+    env.change(c, "wrong-guess-number-1", NEW_PASSWORD)
+    env.change(c, OLD_TEMP, NEW_PASSWORD)
+    assert seen
+    assert set(seen) == {0}

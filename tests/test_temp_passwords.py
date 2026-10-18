@@ -168,7 +168,9 @@ def test_wrong_guesses_do_not_burn_the_temporary_password(env: Env) -> None:
     assert env.try_login(plaintext).status_code == 303
 
 
-def test_the_spend_is_atomic_across_two_engines(env: Env) -> None:
+def test_a_second_engine_cannot_respend_an_already_spent_password(env: Env) -> None:
+    """Sequential, on purpose: the second engine arrives after the first has committed. The
+    simultaneous case is the next test."""
     env.issue()
     (row,) = env.temp_rows()
     results = []
@@ -183,6 +185,34 @@ def test_the_spend_is_atomic_across_two_engines(env: Env) -> None:
         for engine in engines:
             engine.dispose()
     assert results == [True, False]
+
+
+def test_two_simultaneous_spends_have_exactly_one_winner(env: Env) -> None:
+    import threading
+
+    env.issue()
+    (row,) = env.temp_rows()
+    results: list[bool] = []
+    barrier = threading.Barrier(2)
+
+    def spend() -> None:
+        engine = make_engine(env.db.app_url)
+        try:
+            with make_session_factory(engine)() as s:
+                bind_tenant(s, env.agency)
+                s.connection()  # connect first, so both statements fire together
+                barrier.wait(10)
+                results.append(temp_passwords.consume_temporary_password(s, row.id, env.clock()))
+                s.commit()
+        finally:
+            engine.dispose()
+
+    threads = [threading.Thread(target=spend) for _ in range(2)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(30)
+    assert sorted(results) == [False, True]
 
 
 def test_consume_refuses_at_the_exact_expiry_instant(env: Env) -> None:
@@ -307,3 +337,126 @@ def test_the_plaintext_appears_nowhere_it_should_not(
     assert plaintext not in database_text(env.db.owner_url, [env.seeded.agency_a])
     # and the DB keeps no trace under another encoding either
     assert plaintext.lower() not in database_text(env.db.owner_url, [env.seeded.agency_a]).lower()
+
+
+# --- the session a temporary password opens is as short as the password ------------------------
+
+
+def _session_rows(env: Env) -> list[UserSession]:
+    with owner_session(env.db.owner_url) as s:
+        rebind_tenant(s, env.agency)
+        return list(
+            s.scalars(
+                select(UserSession).where(UserSession.user_id == env.user).order_by(UserSession.id)
+            )
+        )
+
+
+def _change(c: TestClient, current: str) -> httpx.Response:
+    response: httpx.Response = c.post(
+        "/password/change",
+        data={
+            "current_password": current,
+            "new_password": NEW_PASSWORD,
+            "confirm_password": NEW_PASSWORD,
+            "csrf_token": csrf_for(c, "/password/change"),
+        },
+        follow_redirects=False,
+    )
+    return response
+
+
+def test_a_temp_login_session_expires_30_minutes_after_the_spend(env: Env) -> None:
+    plaintext = env.issue()
+    with env.factory() as c:
+        login(c, PHONE_STAFF_A, plaintext)
+        (row,) = _session_rows(env)
+        assert row.absolute_expires_at == env.clock() + timedelta(minutes=30)
+        assert row.idle_expires_at <= row.absolute_expires_at
+        env.clock.advance(minutes=29)
+        assert c.get("/password/change", follow_redirects=False).status_code == 200
+        env.clock.advance(minutes=2)
+        dead = c.get("/password/change", follow_redirects=False)
+    assert dead.status_code == 303
+    assert dead.headers["location"] == "/login"
+
+
+def test_the_forced_session_does_not_slide_past_the_30_minutes(env: Env) -> None:
+    plaintext = env.issue()
+    with env.factory() as c:
+        login(c, PHONE_STAFF_A, plaintext)
+        env.clock.advance(minutes=20)
+        assert c.get("/password/change", follow_redirects=False).status_code == 200  # activity
+        (row,) = _session_rows(env)
+        assert (
+            row.idle_expires_at
+            <= row.absolute_expires_at
+            == env.clock() - timedelta(minutes=20) + timedelta(minutes=30)
+        )
+        env.clock.advance(minutes=11)
+        assert c.get("/password/change", follow_redirects=False).status_code == 303
+
+
+def test_the_change_works_at_29_minutes(env: Env) -> None:
+    plaintext = env.issue()
+    with env.factory() as c:
+        login(c, PHONE_STAFF_A, plaintext)
+        env.clock.advance(minutes=29)
+        assert _change(c, plaintext).status_code == 303
+        env.clock.advance(minutes=60)  # the new session is a normal one
+        assert c.get("/", follow_redirects=False).status_code == 200
+
+
+def test_after_31_minutes_the_session_is_dead_and_the_change_is_refused(env: Env) -> None:
+    plaintext = env.issue()
+    with env.factory() as c:
+        login(c, PHONE_STAFF_A, plaintext)
+        token = csrf_for(c, "/password/change")
+        env.clock.advance(minutes=31)
+        refused = c.post(
+            "/password/change",
+            data={
+                "current_password": plaintext,
+                "new_password": NEW_PASSWORD,
+                "confirm_password": NEW_PASSWORD,
+                "csrf_token": token,
+            },
+            follow_redirects=False,
+        )
+    assert refused.status_code == 401
+    assert env.user_row().password_hash is None
+
+
+def test_the_spent_temp_password_is_only_the_current_password_for_30_minutes(env: Env) -> None:
+    plaintext = env.issue()
+    assert env.try_login(plaintext).status_code == 303
+    user = env.user_row()
+    engine = make_engine(env.db.app_url)
+    try:
+        with make_session_factory(engine)() as s:
+            bind_tenant(s, env.agency)
+            at = env.clock()
+            assert temp_passwords.spent_temporary_matches(
+                s, user, plaintext, at + timedelta(minutes=29)
+            )
+            assert not temp_passwords.spent_temporary_matches(
+                s, user, plaintext, at + timedelta(minutes=31)
+            )
+            assert not temp_passwords.spent_temporary_matches(
+                s, user, "not-the-password-1", at + timedelta(minutes=1)
+            )
+    finally:
+        engine.dispose()
+
+
+# --- reasons in the audit trail ----------------------------------------------------------------
+
+
+def test_reusing_a_spent_temp_password_is_audited_as_no_credentials(env: Env) -> None:
+    plaintext = env.issue()
+    assert env.try_login(plaintext).status_code == 303
+    assert env.try_login(plaintext).status_code == 401
+    (event,) = audit_events(env.db.owner_url, env.agency, "login_failure")
+    assert event.details["reason"] == "no_credentials"
+    assert event.actor_user_id == env.user
+    assert plaintext not in str(event.details)

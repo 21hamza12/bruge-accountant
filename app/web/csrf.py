@@ -13,9 +13,14 @@ Two schemes, both also checking where the request came from:
   them on a POST. This needs ``TRUSTED_PROXY_HOPS`` right behind a TLS-terminating proxy, so the
   scheme the app sees is the one the browser used.
 
-Tokens are compared in constant time. A failure writes a ``csrf_failed`` audit event (committed
-first: the error rolls the request back) and answers with the custom 403 page. Safe methods
-(GET, HEAD, OPTIONS) are never checked.
+Tokens are compared in constant time. A failure answers with the custom 403 page. For a logged-in
+user it also writes a ``csrf_failed`` audit event (committed first: the error rolls the request
+back); for an anonymous client it only goes to the JSON log, so a flood of bare POSTs cannot
+become a flood of database rows. Safe methods (GET, HEAD, OPTIONS) are never checked.
+
+The token is read from the ``X-CSRF-Token`` header first and the body is parsed only when there
+is no header. A route that receives a large body (the PR 4 upload) sends the header, so the check
+never spools the upload to a temporary file.
 """
 
 from __future__ import annotations
@@ -31,9 +36,18 @@ from sqlalchemy.orm import Session
 from starlette.concurrency import run_in_threadpool
 
 from app import audit
+from app.clock import Clock
 from app.settings import Settings
 from app.web.cookies import login_csrf_cookie_name
-from app.web.deps import AuthContext, client_ip, get_session, get_settings, require_login
+from app.web.deps import (
+    AuthContext,
+    client_ip,
+    get_auth,
+    get_clock,
+    get_session,
+    get_settings,
+    require_login,
+)
 
 CSRF_FIELD = "csrf_token"
 CSRF_HEADER = "X-CSRF-Token"
@@ -95,28 +109,52 @@ async def submitted_token(request: Request) -> str | None:
 
 
 async def _refuse(
-    request: Request, db: Session, reason: str, auth: AuthContext | None = None
+    request: Request,
+    db: Session,
+    clock: Clock,
+    reason: str,
+    auth: AuthContext | None = None,
 ) -> HTTPException:
-    """Audit the failure (committed now) and return the 403 to raise."""
+    """Record the failure and return the 403 to raise.
+
+    Logged-in: an audit row, committed now. Anonymous: the JSON log only (see the module doc).
+    """
+    details = {"reason": reason, "method": request.method}
+    if auth is None:
+        audit.log_only(audit.CSRF_FAILED, ip=client_ip(request), details=details)
+        return HTTPException(status_code=403)
 
     def write() -> None:
         audit.record_and_commit(
             db,
             audit.CSRF_FAILED,
-            agency_id=auth.user.agency_id if auth else None,
-            actor_user_id=auth.user.id if auth else None,
+            agency_id=auth.user.agency_id,
+            actor_user_id=auth.user.id,
             ip=client_ip(request),
-            details={"reason": reason, "method": request.method},
+            details=details,
+            now=clock(),
         )
 
     await run_in_threadpool(write)
     return HTTPException(status_code=403)
 
 
+async def _check_logged_in(
+    request: Request, db: Session, settings: Settings, clock: Clock, auth: AuthContext
+) -> None:
+    if request.method in SAFE_METHODS:
+        return
+    if not origin_allowed(request, settings):
+        raise await _refuse(request, db, clock, "origin", auth)
+    if not tokens_match(auth.csrf_token, await submitted_token(request)):
+        raise await _refuse(request, db, clock, "token", auth)
+
+
 async def csrf_protect(
     request: Request,
     db: Annotated[Session, Depends(get_session)],
     settings: Annotated[Settings, Depends(get_settings)],
+    clock: Annotated[Clock, Depends(get_clock)],
     auth: Annotated[AuthContext, Depends(require_login)],
 ) -> None:
     """Logged-in forms: synchronizer token plus origin check, on unsafe methods only.
@@ -124,24 +162,33 @@ async def csrf_protect(
     An anonymous request never gets here: ``require_login`` answers it first (login redirect,
     htmx 401 with ``HX-Redirect``, or the 401 page for a stale POST).
     """
-    if request.method in SAFE_METHODS:
-        return
-    if not origin_allowed(request, settings):
-        raise await _refuse(request, db, "origin", auth)
-    if not tokens_match(auth.csrf_token, await submitted_token(request)):
-        raise await _refuse(request, db, "token", auth)
+    await _check_logged_in(request, db, settings, clock, auth)
+
+
+async def csrf_protect_if_logged_in(
+    request: Request,
+    db: Annotated[Session, Depends(get_session)],
+    settings: Annotated[Settings, Depends(get_settings)],
+    clock: Annotated[Clock, Depends(get_clock)],
+    auth: Annotated[AuthContext | None, Depends(get_auth)],
+) -> None:
+    """For ``/logout``: a logged-in user must present the token; an anonymous one passes
+    (logging out of nothing is harmless and must be idempotent)."""
+    if auth is not None:
+        await _check_logged_in(request, db, settings, clock, auth)
 
 
 async def login_csrf_protect(
     request: Request,
     db: Annotated[Session, Depends(get_session)],
     settings: Annotated[Settings, Depends(get_settings)],
+    clock: Annotated[Clock, Depends(get_clock)],
 ) -> None:
     """The anonymous login form: double-submit cookie plus origin check."""
     if request.method in SAFE_METHODS:
         return
     if not origin_allowed(request, settings):
-        raise await _refuse(request, db, "origin")
+        raise await _refuse(request, db, clock, "origin")
     cookie = request.cookies.get(login_csrf_cookie_name(settings))
     if not tokens_match(cookie, await submitted_token(request)):
-        raise await _refuse(request, db, "token")
+        raise await _refuse(request, db, clock, "token")

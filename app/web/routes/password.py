@@ -3,8 +3,10 @@
 A session whose user must change the password can reach this page and ``/logout`` and nothing
 else (``require_login`` does not apply the gate; ``current_user`` does). A successful change:
 
-* checks the current password (the rate limit counts wrong guesses: a stolen session must not be
-  a free password oracle),
+* checks the current password. The rate limit (5 per 15 minutes per user) counts WRONG guesses
+  only: the attempt is counted before the check, so parallel guesses cannot slip under the limit,
+  and given back when the current password turns out to be right (a policy failure or a success
+  costs nothing). A stolen session must not be a free password oracle,
 * applies the password policy together with the user's phone,
 * rotates the session token (a new session, a new CSRF secret),
 * revokes every other session of the user, and clears the must-change flag.
@@ -12,6 +14,7 @@ else (``require_login`` does not apply the gate; ``current_user`` does). A succe
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Request
@@ -58,11 +61,11 @@ def change_form(auth: Annotated[AuthContext, Depends(require_login)]) -> Respons
     return _form(auth)
 
 
-def current_password_is_right(db: Session, auth: AuthContext, supplied: str) -> bool:
+def current_password_is_right(db: Session, auth: AuthContext, supplied: str, now: datetime) -> bool:
     """The real password, or - for an account that only has a temporary one - the temporary
-    password it just logged in with."""
+    password it logged in with less than 30 minutes ago."""
     if auth.user.password_hash is None:
-        return temp_passwords.spent_temporary_matches(db, auth.user, supplied)
+        return temp_passwords.spent_temporary_matches(db, auth.user, supplied, now)
     return verify_password(supplied, auth.user.password_hash)
 
 
@@ -79,21 +82,36 @@ def change_submit(
 ) -> Response:
     now = clock()
     user = auth.user
-    decision = ratelimit.hit(db, ratelimit.PASSWORD_CHANGE_USER, f"{user.agency_id}:{user.id}", now)
-    db.commit()
+    subject = f"{user.agency_id}:{user.id}"
+    decision = ratelimit.hit(db, ratelimit.PASSWORD_CHANGE_USER, subject, now)
+    db.commit()  # counted before the check; this also releases the connection before Argon2
     if not decision.allowed:
-        audit.record_and_commit(
-            db,
-            audit.RATE_LIMITED,
-            agency_id=user.agency_id,
-            actor_user_id=user.id,
-            ip=client_ip(request),
-            details={"scope": "password_change"},
-        )
+        ip = client_ip(request)
+        details = {"scope": "password_change"}
+        if decision.first_rejection:  # one audit row per window, however long the guessing goes on
+            audit.record_and_commit(
+                db,
+                audit.RATE_LIMITED,
+                agency_id=user.agency_id,
+                actor_user_id=user.id,
+                ip=ip,
+                details=details,
+                now=now,
+            )
+        else:
+            audit.log_only(
+                audit.RATE_LIMITED,
+                agency_id=user.agency_id,
+                actor_user_id=user.id,
+                ip=ip,
+                details=details,
+            )
         raise HTTPException(status_code=429, headers={"Retry-After": str(decision.retry_after)})
 
-    if not current_password_is_right(db, auth, current_password):
+    if not current_password_is_right(db, auth, current_password, now):
         return _form(auth, WRONG_CURRENT, 400)
+    ratelimit.refund(db, ratelimit.PASSWORD_CHANGE_USER, subject, now)  # only wrong guesses count
+    db.commit()
     if new_password != confirm_password:
         return _form(auth, MISMATCH, 400)
     if new_password == current_password:
@@ -104,6 +122,7 @@ def change_submit(
 
     user.password_hash = hash_password(new_password)
     user.must_change_password = False
+    user.updated_at = now
     temp_passwords.retire_pending(db, user, now)
     policy = SessionPolicy.from_settings(settings)
     created = sessions.create_session(db, user, now, policy)  # rotate: a brand new token
@@ -114,6 +133,7 @@ def change_submit(
         agency_id=user.agency_id,
         actor_user_id=user.id,
         ip=client_ip(request),
+        now=now,
     )
     db.commit()
     response = RedirectResponse("/", status_code=303)

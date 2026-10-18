@@ -3,14 +3,20 @@
 from __future__ import annotations
 
 import secrets
+import subprocess
+import sys
 import time
 from collections.abc import Callable
+from pathlib import Path
+from typing import Any
 
 import pytest
 from argon2 import PasswordHasher, Type
 
 from app.auth import passwords
+from app.auth.common_passwords import COMMON_PASSWORDS
 from app.auth.passwords import (
+    MAX_VERIFY_LENGTH,
     TEMP_PASSWORD_ALPHABET,
     TEMP_PASSWORD_LENGTH,
     generate_temporary_password,
@@ -113,22 +119,80 @@ def test_an_unparseable_hash_needs_a_rehash() -> None:
 # --- unknown users take the same time ------------------------------------------------
 
 
-def _best_of(fn: Callable[[], object], runs: int = 4) -> float:
-    best = float("inf")
-    for _ in range(runs):
-        start = time.perf_counter()
-        fn()
-        best = min(best, time.perf_counter() - start)
-    return best
+class SpyHasher:
+    """Wraps the real hasher and records every verify call (hash, password)."""
+
+    def __init__(self, real: PasswordHasher) -> None:
+        self._real = real
+        self.verify_calls: list[tuple[str, str]] = []
+
+    def verify(self, password_hash: str, password: str) -> bool:
+        self.verify_calls.append((password_hash, password))
+        return self._real.verify(password_hash, password)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._real, name)
 
 
-def test_dummy_verify_costs_about_as_much_as_a_real_verify(good_hash: str) -> None:
-    verify_dummy()  # warm up (builds the dummy hash once)
-    real = _best_of(lambda: verify_password("wrong password!", good_hash))
-    dummy = _best_of(verify_dummy)
-    # Generous bounds: the point is "same order of magnitude", not equality.
-    assert real / 5 < dummy < real * 5
-    assert dummy > 0.001  # it really hashes, it does not return immediately
+@pytest.fixture
+def spy(monkeypatch: pytest.MonkeyPatch) -> SpyHasher:
+    hasher = SpyHasher(passwords._HASHER)
+    monkeypatch.setattr(passwords, "_HASHER", hasher)
+    return hasher
+
+
+def _failure_cases(good_hash: str) -> list[tuple[str, str | None]]:
+    return [
+        ("wrong password!", good_hash),  # the normal failure
+        (PASSWORD, None),  # no hash yet
+        (PASSWORD, ""),  # bad stored hashes
+        (PASSWORD, "not a hash"),
+        (PASSWORD, "$argon2id$garbage"),
+        (PASSWORD, "\x00"),
+        ("a" * (MAX_VERIFY_LENGTH + 1), good_hash),  # over-long
+        ("bad \ud800 surrogate", good_hash),  # not encodable
+    ]
+
+
+def test_every_failure_path_spends_exactly_one_verification(spy: SpyHasher, good_hash: str) -> None:
+    for password, stored in _failure_cases(good_hash):
+        spy.verify_calls.clear()
+        assert verify_password(password, stored) is False
+        assert len(spy.verify_calls) == 1, (password[:12], stored)
+
+
+def test_the_success_path_spends_one_verification_too(spy: SpyHasher, good_hash: str) -> None:
+    assert verify_password(PASSWORD, good_hash) is True
+    assert len(spy.verify_calls) == 1
+
+
+def test_the_dummy_costs_a_real_verification_and_never_sees_the_input(
+    spy: SpyHasher, good_hash: str
+) -> None:
+    long_password = "a" * (MAX_VERIFY_LENGTH + 1)
+    verify_password(long_password, good_hash)
+    ((hash_used, password_used),) = spy.verify_calls
+    assert password_used != long_password  # the hasher never receives the oversized input
+    assert hash_used.startswith("$argon2id$v=19$m=19456,t=2,p=1$")  # same cost as a real hash
+
+
+def test_timing_smoke_test_failure_paths_cost_about_one_verify(good_hash: str) -> None:
+    """One generous wall-clock check; the spy tests above are the precise ones."""
+    verify_dummy()
+
+    def best_of(fn: Callable[[], object], runs: int = 3) -> float:
+        best = float("inf")
+        for _ in range(runs):
+            start = time.perf_counter()
+            fn()
+            best = min(best, time.perf_counter() - start)
+        return best
+
+    real = best_of(lambda: verify_password("wrong password!", good_hash))
+    cases = [(PASSWORD, None), ("a" * 5000, good_hash), (PASSWORD, "garbage")]
+    for password, stored in cases:
+        elapsed = best_of(lambda p=password, h=stored: verify_password(p, h))  # type: ignore[misc]
+        assert real / 5 < elapsed < real * 5
 
 
 def test_dummy_verify_never_raises() -> None:
@@ -136,21 +200,60 @@ def test_dummy_verify_never_raises() -> None:
     verify_dummy()
 
 
-def test_missing_password_hash_also_spends_the_dummy_time(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    called: list[bool] = []
-    monkeypatch.setattr(passwords, "verify_dummy", lambda: called.append(True))
-    assert verify_password(PASSWORD, None) is False
-    assert called == [True]
+def test_the_dummy_hash_is_built_at_import_not_on_the_first_login() -> None:
+    root = Path(__file__).resolve().parent.parent
+    code = "import app.auth.passwords as p; print(p._dummy_hash.cache_info().currsize)"
+    out = subprocess.run(  # noqa: S603
+        [sys.executable, "-c", code], cwd=root, capture_output=True, text=True, check=True
+    )
+    assert out.stdout.strip() == "1"
+
+
+def test_the_length_guard_is_what_stops_oversized_input() -> None:
+    """Without the guard the right (huge) password would verify: only the guard makes it fail."""
+    exact = "a" * MAX_VERIFY_LENGTH
+    too_long = "a" * (MAX_VERIFY_LENGTH + 1)
+    assert verify_password(exact, hash_password(exact)) is True
+    assert verify_password(too_long, hash_password(too_long)) is False
+
+
+# --- strings that cannot be UTF-8 -----------------------------------------------------
+
+SURROGATES = ["\ud800", "abc\udfffdef" * 3, "a" * 20 + "\ud83d"]
+
+
+@pytest.mark.parametrize("bad", SURROGATES)
+def test_surrogates_never_verify_and_never_raise(good_hash: str, bad: str) -> None:
+    assert verify_password(bad, good_hash) is False
+    assert verify_password(bad, None) is False
+
+
+@pytest.mark.parametrize("bad", SURROGATES)
+def test_surrogates_cannot_be_hashed(bad: str) -> None:
+    with pytest.raises(ValueError, match="UTF-8"):
+        hash_password(bad)
+
+
+@pytest.mark.parametrize("bad", SURROGATES)
+def test_surrogates_are_refused_by_the_policy_in_french(bad: str) -> None:
+    message = password_policy_error(bad)
+    assert message is not None
+    assert "caractères" in message
+    assert bad not in message
+
+
+def test_real_astral_characters_are_not_surrogates() -> None:
+    pw = "clé \U0001f511 secrète"
+    assert password_policy_error(pw) is None
+    assert verify_password(pw, hash_password(pw)) is True
 
 
 # --- policy --------------------------------------------------------------------------
 
 
 def test_a_good_password_passes() -> None:
-    assert password_policy_error("a" * 10) is None
-    assert password_policy_error("a" * 128) is None
+    assert password_policy_error("abcdefghjk") is None
+    assert password_policy_error("ab" * 64) is None
     assert password_policy_error(PASSWORD, "+22212345678") is None
 
 
@@ -169,9 +272,9 @@ def test_too_long_is_refused_in_french() -> None:
 
 
 def test_length_counts_characters_not_bytes() -> None:
-    assert password_policy_error("é" * 10) is None
-    assert password_policy_error("é" * 9) is not None
-    assert password_policy_error("\U0001f600" * 10) is None
+    assert password_policy_error("éè" * 5) is None
+    assert password_policy_error("éè" * 4 + "é") == passwords.TOO_SHORT
+    assert password_policy_error("\U0001f600\U0001f601" * 5) is None
 
 
 @pytest.mark.parametrize(
@@ -210,6 +313,44 @@ def test_other_countries_phone_forms() -> None:
 
 def test_an_unparseable_phone_does_not_block_a_password() -> None:
     assert password_policy_error(PASSWORD, "not a phone") is None
+
+
+# --- weak passwords -------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("pw", ["aaaaaaaaaa", "0000000000", "z" * 16, "é" * 12, "a" * 128])
+def test_a_single_repeated_character_is_refused_in_french(pw: str) -> None:
+    message = password_policy_error(pw)
+    assert message is not None
+    assert "répété" in message
+
+
+def test_two_alternating_characters_are_not_a_single_repeat() -> None:
+    assert password_policy_error("abababababab") is None
+
+
+@pytest.mark.parametrize(
+    "pw", ["password12", "Password12", "PASSWORD12", "PaSsWoRd12", "1234567890", "qwertyuiop"]
+)
+def test_common_passwords_are_refused_in_any_case(pw: str) -> None:
+    message = password_policy_error(pw)
+    assert message is not None
+    assert "courant" in message
+
+
+def test_the_denylist_is_small_lowercase_and_long_enough_to_matter() -> None:
+    assert 200 <= len(COMMON_PASSWORDS) <= 2000
+    assert all(entry == entry.casefold() for entry in COMMON_PASSWORDS)
+    assert all(len(entry) >= 10 for entry in COMMON_PASSWORDS)  # shorter ones fail on length
+
+
+def test_a_phrase_that_merely_contains_a_common_word_is_allowed() -> None:
+    assert password_policy_error("correct horse battery staple") is None
+    assert password_policy_error("my password is long enough") is None
+
+
+def test_length_is_still_checked_before_the_denylist() -> None:
+    assert password_policy_error("password1") == passwords.TOO_SHORT
 
 
 # --- temporary passwords -------------------------------------------------------------

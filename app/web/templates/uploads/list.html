@@ -1,27 +1,33 @@
 {% extends "base.html" %}
 {% block title %}{{ _("Rapports récents") }}{% endblock %}
 {% block content %}
-<h1>{{ _("Rapports récents") }}</h1>
-<p><a href="/">{{ _("Accueil") }}</a> · <a href="/uploads/new">{{ _("Envoyer un rapport") }}</a></p>
-{% if uploads %}
-<table>
-  <thead>
-    <tr><th>{{ _("Fichier") }}</th><th>{{ _("Date du rapport") }}</th><th>{{ _("Envoyé le") }}</th><th>{{ _("Ajoutés") }}</th><th>{{ _("Mis à jour") }}</th><th>{{ _("Envoyé par") }}</th></tr>
-  </thead>
-  <tbody>
-  {% for u in uploads %}
-    <tr>
-      <td><a href="/uploads/{{ u.id }}">{{ u.filename }}</a></td>
-      <td>{{ u.report_date.isoformat() }}</td>
-      <td>{{ u.uploaded_at.strftime("%Y-%m-%d %H:%M") }}</td>
-      <td>{{ u.inserted_count if u.inserted_count is not none else "-" }}</td>
-      <td>{{ u.updated_count if u.updated_count is not none else "-" }}</td>
-      <td>{{ names.get(u.uploaded_by_user_id or 0, "-") }}</td>
-    </tr>
-  {% endfor %}
-  </tbody>
-</table>
-{% else %}
-<p>{{ _("Aucun rapport envoyé pour le moment.") }}</p>
-{% endif %}
+<section class="card" aria-labelledby="uploads-title">
+  <div class="card-head">
+    <h2 class="card-title" id="uploads-title">{{ _("Rapports envoyés") }}</h2>
+    <a class="btn btn-primary" href="/uploads/new">{{ _("Envoyer un rapport") }}</a>
+  </div>
+  {% if uploads %}
+  <div class="table-wrap">
+    <table class="table">
+      <thead>
+        <tr><th scope="col">{{ _("Fichier") }}</th><th scope="col">{{ _("Date du rapport") }}</th><th scope="col">{{ _("Envoyé le") }}</th><th scope="col" class="col-end">{{ _("Ajoutés") }}</th><th scope="col" class="col-end">{{ _("Mis à jour") }}</th><th scope="col">{{ _("Envoyé par") }}</th></tr>
+      </thead>
+      <tbody>
+      {% for u in uploads %}
+        <tr>
+          <td><a href="/uploads/{{ u.id }}">{{ u.filename }}</a></td>
+          <td>{{ u.report_date.isoformat() }}</td>
+          <td>{{ u.uploaded_at.strftime("%Y-%m-%d %H:%M") }}</td>
+          <td class="col-end">{{ u.inserted_count if u.inserted_count is not none else "-" }}</td>
+          <td class="col-end">{{ u.updated_count if u.updated_count is not none else "-" }}</td>
+          <td>{{ names.get(u.uploaded_by_user_id or 0, "-") }}</td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <p class="muted">{{ _("Aucun rapport envoyé pour le moment.") }}</p>
+  {% endif %}
+</section>
 {% endblock %}

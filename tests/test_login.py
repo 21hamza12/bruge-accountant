@@ -597,9 +597,9 @@ def test_the_401_and_403_pages_link_to_the_way_out(env: Env) -> None:
         login(c, PHONE_STAFF_A, PASSWORD_S)
         forbidden = c.get("/staff")
     assert unauthorised.status_code == 401
-    assert '<a href="/login">Se connecter</a>' in unauthorised.text
+    assert '<a class="btn btn-primary" href="/login">Se connecter</a>' in unauthorised.text
     assert forbidden.status_code == 403
-    assert '<a href="/">Retour à l\'accueil</a>' in forbidden.text
+    assert '<a class="btn btn-primary" href="/">Retour à l\'accueil</a>' in forbidden.text
 
 
 def _drop_cookie(c: TestClient, name: str) -> str:

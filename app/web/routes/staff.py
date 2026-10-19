@@ -36,6 +36,7 @@ from app.web.csrf import csrf_protect
 from app.web.deps import AuthContext, client_ip, get_clock, get_session, require_manager
 from app.web.pages import page
 from app.web.params import SignId, UserId
+from app.web.shell import ACTIVE_STAFF, shell_context
 
 router = APIRouter(prefix="/staff", dependencies=[Depends(csrf_protect)])
 
@@ -58,7 +59,7 @@ def _list_page(
     return page(
         "staff/list.html",
         status_code=status_code,
-        csrf_token=auth.csrf_token,
+        **shell_context(db, auth, ACTIVE_STAFF),
         rows=accounts.list_staff(db, auth.user.agency_id),
         me=auth.user,
         error=error,
@@ -77,7 +78,7 @@ def _detail_page(
     return page(
         "staff/detail.html",
         status_code=status_code,
-        csrf_token=auth.csrf_token,
+        **shell_context(db, auth, ACTIVE_STAFF),
         target=user,
         can_reissue=user.role == ROLE_STAFF and user.is_active,
         expected_temp_id=temp_passwords.latest_id(db, user),
@@ -94,11 +95,11 @@ def _target(db: Session, auth: AuthContext, user_id: int, *, lock: bool = False)
     return user
 
 
-def _created_page(user: User, plaintext: str, auth: AuthContext) -> Response:
+def _created_page(db: Session, user: User, plaintext: str, auth: AuthContext) -> Response:
     return page(
         "staff/created.html",
         headers=NO_STORE,
-        csrf_token=auth.csrf_token,
+        **shell_context(db, auth, ACTIVE_STAFF),
         target=user,
         temp_password=plaintext,
     )
@@ -142,7 +143,7 @@ def staff_create(
             form={"display_name": display_name, "phone": phone, "role": role},
             status_code=400,
         )
-    return _created_page(user, plaintext, auth)
+    return _created_page(db, user, plaintext, auth)
 
 
 @router.get("/{user_id}")
@@ -261,4 +262,4 @@ def staff_reissue_temp_password(
         db, user, now, actor_user_id=auth.user.id, ip=client_ip(request)
     )
     db.commit()
-    return _created_page(user, plaintext, auth)
+    return _created_page(db, user, plaintext, auth)

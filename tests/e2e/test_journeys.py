@@ -173,7 +173,8 @@ def test_1_login_home_and_logout() -> None:
     try:
         home = b.http.get("/")
         assert home.status_code == 200
-        assert "Bonjour" in home.text
+        assert "Tableau de bord" in home.text  # the manager dashboard
+        assert '<aside class="sidebar"' in home.text
         out = b.http.post("/logout", data={"csrf_token": b.token("/")})
         assert out.status_code == 303
         assert out.headers["location"] == "/login"
@@ -299,18 +300,18 @@ def test_4_manager_sees_every_sign_and_staff_see_their_own(
     page = manager_a.http.get(f"/questions?date={REPORT_DAY}")
     assert page.status_code == 200
     assert _SIGNS.findall(page.text) == ["0004SV", "0009ER"]
-    assert page.text.count('<article class="question">') == 33  # 25 + 8
+    assert page.text.count('<details class="booking"') == 33  # 25 + 8
 
     er = signed_in(PHONE_STAFF_ER)
     sv = signed_in(PHONE_STAFF_SV)
     try:
         own = er.http.get(f"/questions?date={REPORT_DAY}")
         assert _SIGNS.findall(own.text) == ["0009ER"]
-        assert own.text.count('<article class="question">') == 8
+        assert own.text.count('<details class="booking"') == 8
         assert "0004SV" not in own.text
         other = sv.http.get(f"/questions?date={REPORT_DAY}")
         assert _SIGNS.findall(other.text) == ["0004SV"]
-        assert other.text.count('<article class="question">') == 25
+        assert other.text.count('<details class="booking"') == 25
     finally:
         er.close()
         sv.close()
@@ -327,7 +328,7 @@ def staff_id_of(browser: Browser, phone_digits: str) -> int:
     """The id of a user in the manager's staff list, found by the phone shown in its row."""
     page = browser.http.get("/staff")
     row = re.search(
-        rf'href="/staff/(\d+)">[^<]*</a></td>\s*<td>{re.escape(phone_digits)}</td>', page.text
+        rf'href="/staff/(\d+)">[^<]*</a></td>\s*<td[^>]*>{re.escape(phone_digits)}</td>', page.text
     )
     assert row, "the user is not in the staff list"
     return int(row.group(1))

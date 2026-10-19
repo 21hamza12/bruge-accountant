@@ -1,9 +1,10 @@
 {% extends "base.html" %}
 {% block title %}{{ _("Mot de passe temporaire") }}{% endblock %}
 {% block content %}
-<h1>{{ _("Mot de passe temporaire") }}</h1>
-<p>{{ _("Compte") }} : {{ target.display_name or target.phone }} ({{ target.phone }})</p>
-<p class="notice">{{ _("Communiquez ce mot de passe à l'utilisateur maintenant. Il ne sera plus jamais affiché, il est valable 30 minutes et ne peut servir qu'une seule fois.") }}</p>
-<p class="secret"><code>{{ temp_password }}</code></p>
-<p><a href="/staff">{{ _("Retour à l'équipe") }}</a></p>
+<section class="card" aria-labelledby="temp-title">
+  <h2 class="card-title" id="temp-title">{{ _("Compte") }} : {{ target.display_name or target.phone }} ({{ target.phone }})</h2>
+  <p class="notice">{{ _("Communiquez ce mot de passe à l'utilisateur maintenant. Il ne sera plus jamais affiché, il est valable 30 minutes et ne peut servir qu'une seule fois.") }}</p>
+  <p class="secret"><code>{{ temp_password }}</code></p>
+  <p><a class="btn btn-primary" href="/staff">{{ _("Retour à l'équipe") }}</a></p>
+</section>
 {% endblock %}

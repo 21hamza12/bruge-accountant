@@ -1,37 +1,49 @@
 {% extends "base.html" %}
 {% block title %}{{ _("Équipe") }}{% endblock %}
 {% block content %}
-<h1>{{ _("Équipe") }}</h1>
-<p><a href="/">{{ _("Accueil") }}</a></p>
-{% if error %}<p class="error" role="alert">{{ error }}</p>{% endif %}
-<table>
-  <thead>
-    <tr><th>{{ _("Nom") }}</th><th>{{ _("Téléphone") }}</th><th>{{ _("Rôle") }}</th><th>{{ _("Codes agent") }}</th><th>{{ _("État") }}</th></tr>
-  </thead>
-  <tbody>
-  {% for row in rows %}
-    <tr>
-      <td><a href="/staff/{{ row.user.id }}">{{ row.user.display_name or row.user.phone }}</a></td>
-      <td>{{ row.user.phone }}</td>
-      <td>{% if row.user.role == "manager" %}{{ _("Responsable") }}{% else %}{{ _("Employé") }}{% endif %}</td>
-      <td>{% for link in row.signs %}<code>{{ link.staff_sign }}</code> {% else %}-{% endfor %}</td>
-      <td>{% if row.user.is_active %}{{ _("Actif") }}{% else %}{{ _("Désactivé") }}{% endif %}</td>
-    </tr>
-  {% endfor %}
-  </tbody>
-</table>
-<h2>{{ _("Ajouter un utilisateur") }}</h2>
-<form method="post" action="/staff">
-  {% include "_csrf.html" %}
-  <label for="display_name">{{ _("Nom") }}</label>
-  <input id="display_name" name="display_name" type="text" required maxlength="100" value="{{ form.display_name or '' }}">
-  <label for="phone">{{ _("Numéro de téléphone") }}</label>
-  <input id="phone" name="phone" type="tel" inputmode="tel" required maxlength="64" value="{{ form.phone or '' }}">
-  <label for="role">{{ _("Rôle") }}</label>
-  <select id="role" name="role">
-    <option value="staff"{% if form.role != "manager" %} selected{% endif %}>{{ _("Employé") }}</option>
-    <option value="manager"{% if form.role == "manager" %} selected{% endif %}>{{ _("Responsable") }}</option>
-  </select>
-  <button type="submit">{{ _("Créer le compte") }}</button>
-</form>
+{% if error %}<p class="error-box" role="alert">{{ error }}</p>{% endif %}
+<section class="card" aria-labelledby="team-title">
+  <h2 class="card-title" id="team-title">{{ _("Utilisateurs") }}</h2>
+  <div class="table-wrap">
+    <table class="table">
+      <thead>
+        <tr><th scope="col">{{ _("Nom") }}</th><th scope="col">{{ _("Téléphone") }}</th><th scope="col">{{ _("Rôle") }}</th><th scope="col">{{ _("Codes agent") }}</th><th scope="col">{{ _("État") }}</th></tr>
+      </thead>
+      <tbody>
+      {% for row in rows %}
+        <tr>
+          <td><a href="/staff/{{ row.user.id }}">{{ row.user.display_name or row.user.phone }}</a></td>
+          <td class="num">{{ row.user.phone }}</td>
+          <td>{% if row.user.role == "manager" %}{{ _("Responsable") }}{% else %}{{ _("Employé") }}{% endif %}</td>
+          <td>{% for link in row.signs %}<code>{{ link.staff_sign }}</code> {% else %}-{% endfor %}</td>
+          <td>{% if row.user.is_active %}<span class="pill pill-green">{{ _("Actif") }}</span>{% else %}<span class="pill pill-neutral">{{ _("Désactivé") }}</span>{% endif %}</td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<section class="card" aria-labelledby="add-title">
+  <h2 class="card-title" id="add-title">{{ _("Ajouter un utilisateur") }}</h2>
+  <form class="form" method="post" action="/staff">
+    {% include "_csrf.html" %}
+    <div class="field">
+      <label for="display_name">{{ _("Nom") }}</label>
+      <input id="display_name" name="display_name" type="text" required maxlength="100" value="{{ form.display_name or '' }}">
+    </div>
+    <div class="field">
+      <label for="phone">{{ _("Numéro de téléphone") }}</label>
+      <input id="phone" name="phone" type="tel" inputmode="tel" required maxlength="64" value="{{ form.phone or '' }}">
+    </div>
+    <div class="field">
+      <label for="role">{{ _("Rôle") }}</label>
+      <select id="role" name="role">
+        <option value="staff"{% if form.role != "manager" %} selected{% endif %}>{{ _("Employé") }}</option>
+        <option value="manager"{% if form.role == "manager" %} selected{% endif %}>{{ _("Responsable") }}</option>
+      </select>
+    </div>
+    <button class="btn btn-primary btn-lg" type="submit">{{ _("Créer le compte") }}</button>
+  </form>
+</section>
 {% endblock %}

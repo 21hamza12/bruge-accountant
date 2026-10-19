@@ -1,73 +1,18 @@
-"""Step 29: the read-only questions page, visibility rules and the fixture's numbers."""
+"""The questions page: summary, tabs, agent groups, expandable bookings, search, visibility rules
+and the fixture's numbers (synthetic report: 0004SV 34 tickets / 25 bookings / 746 423, 0009ER
+14 tickets / 8 bookings / 372 434)."""
 
 from __future__ import annotations
 
 import re
-from pathlib import Path
+from datetime import date
+from typing import Any
 
 import pytest
-from fastapi.testclient import TestClient
 
-from app.ingest import ingest_report
-from app.models import StaffSignLink
-from app.tenancy import rebind_tenant
 from tests.builders import build_workbook, ticket_row
-from tests.web_support import (
-    PASSWORD_A,
-    PASSWORD_B,
-    PASSWORD_S,
-    PHONE_A,
-    PHONE_B,
-    PHONE_STAFF_A,
-    FakeClock,
-    Seeded,
-    WebDb,
-    add_user,
-    login,
-    make_client,
-    owner_session,
-    seed,
-)
-
-FIXTURE = Path(__file__).parent / "fixtures" / "1OCT.xlsx"
-DAY = "2026-10-01"
-
-
-class Env:
-    def __init__(self, web_db: WebDb) -> None:
-        self.db = web_db
-        self.seeded: Seeded = seed(web_db.owner_url)
-        self.factory = make_client(web_db, FakeClock())
-
-    def as_user(self, phone: str, password: str) -> TestClient:
-        c = self.factory()
-        assert login(c, phone, password).status_code == 303
-        return c
-
-    def manager_a(self) -> TestClient:
-        return self.as_user(PHONE_A, PASSWORD_A)
-
-    def staff_a(self) -> TestClient:
-        return self.as_user(PHONE_STAFF_A, PASSWORD_S)
-
-    def manager_b(self) -> TestClient:
-        return self.as_user(PHONE_B, PASSWORD_B)
-
-    def load(self, agency_id: int | None = None, data: bytes | None = None) -> None:
-        with owner_session(self.db.owner_url) as s:
-            ingest_report(
-                s,
-                agency_id or self.seeded.agency_a,
-                FIXTURE.read_bytes() if data is None else data,
-                "1OCT.xlsx",
-            )
-
-    def link(self, user_id: int, sign: str, agency_id: int | None = None) -> None:
-        agency = agency_id or self.seeded.agency_a
-        with owner_session(self.db.owner_url) as s:
-            rebind_tenant(s, agency)
-            s.add(StaffSignLink(agency_id=agency, user_id=user_id, staff_sign=sign))
-            s.commit()
+from tests.page_support import DAY, Env, fr
+from tests.web_support import WebDb, add_user
 
 
 @pytest.fixture
@@ -75,10 +20,14 @@ def env(web_db: WebDb) -> Env:
     return Env(web_db)
 
 
+def squash(html: str) -> str:
+    return re.sub(r"[ \t\r\n]+", " ", re.sub(r"<[^>]+>", " ", html)).strip()
+
+
 def sections(text: str) -> dict[str, str]:
-    """The page cut into one block per staff sign, keyed by the sign."""
+    """The page cut into one block per staff sign (the group bar and its bookings), by sign."""
     out: dict[str, str] = {}
-    for block in text.split('<section class="sign">')[1:]:
+    for block in text.split('<div class="sign"')[1:]:
         match = re.search(r'<code class="sign-code">([^<]*)</code>', block)
         assert match
         out[match.group(1)] = block.split("</section>")[0]
@@ -89,6 +38,11 @@ def number(block: str, css: str) -> str:
     match = re.search(rf'class="{css}">([^<]*)<', block)
     assert match, css
     return match.group(1)
+
+
+def bookings(block: str) -> list[str]:
+    """Each booking (a ``<details>``) of a block, as its HTML."""
+    return [b.split("</details>")[0] for b in block.split('<details class="booking"')[1:]]
 
 
 # --- the fixture's numbers ----------------------------------------------------------------------
@@ -103,51 +57,134 @@ def test_a_manager_sees_every_sign_with_the_fixture_numbers(env: Env) -> None:
     assert list(by_sign) == ["0004SV", "0009ER"]
     sv, er = by_sign["0004SV"], by_sign["0009ER"]
     assert (number(sv, "ticket-count"), number(sv, "group-count")) == ("34", "25")
-    assert number(sv, "total") == "746423"
+    assert number(sv, "total") == fr(746423)
+    assert number(sv, "confirmed-count") == "0"
     assert (number(er, "ticket-count"), number(er, "group-count")) == ("14", "8")
-    assert number(er, "total") == "372434"
-    assert sv.count('<article class="question">') == 25
-    assert er.count('<article class="question">') == 8
+    assert number(er, "total") == fr(372434)
+    assert len(bookings(sv)) == 25
+    assert len(bookings(er)) == 8
     assert response.headers["cache-control"] == "no-store"
+    assert '<h1 class="page-title">Questions de prix</h1>' in response.text
 
 
-def test_each_question_shows_passengers_airlines_and_costs(env: Env) -> None:
+def test_the_summary_tiles(env: Env) -> None:
     env.load()
     with env.manager_a() as c:
-        text = c.get(f"/questions?date={DAY}").text
-    block = next(b for b in text.split('<article class="question">')[1:] if "QA0013" in b)
-    block = block.split("</article>")[0]
-    assert block.count("PAX24/GIVEN24") == 3
-    assert "157" in block
-    assert "199" in block
-    assert number(block, "ticket-count") == "3"
-    assert "Adulte" in block
-    er = next(b for b in text.split('<article class="question">')[1:] if "QA0030" in b)
+        html = c.get(f"/questions?date={DAY}").text
+    tiles = [squash(t) for t in re.findall(r'<div class="card tile">(.*?)</div>', html, re.S)]
+    assert tiles == [
+        "À tarifer 33",
+        "Confirmées 0",
+        "Billets 48",
+        f"Coût total {fr(1118857)} MRU",
+    ]
+
+
+def test_each_booking_row_shows_reference_passenger_airlines_tickets_cost_and_status(
+    env: Env,
+) -> None:
+    env.load()
+    with env.manager_a() as c:
+        html = c.get(f"/questions?date={DAY}").text
+    row = next(b for b in bookings(html) if "QA0013" in b.split("</summary>")[0])
+    summary = row.split("<summary>")[1].split("</summary>")[0]
+    assert re.search(r'<span class="b-ref">QA0013</span>', summary)
+    assert "PAX24/GIVEN24" in summary and "+2" in summary  # lead passenger and the others
+    assert "Qatar Airways" in summary and "Tunisair" in summary  # names, not 157 / 199
+    assert "3 billets" in squash(summary)
+    assert re.search(r'<span class="pill pill-amber">En attente</span>', summary)
+    assert re.search(r'class="b-cost">[^<]*\d', summary)
+
+
+def test_expanding_a_booking_shows_each_passenger_with_type_airline_and_cost(env: Env) -> None:
+    env.load()
+    with env.manager_a() as c:
+        html = c.get(f"/questions?date={DAY}").text
+    row = next(b for b in bookings(html) if "QA0013" in b.split("</summary>")[0])
+    detail = row.split('<div class="booking-detail">')[1]
+    lines = re.findall(r'<div class="pax-line">(.*?)</div>', detail, re.S)
+    assert len(lines) == 3
+    assert all("PAX24/GIVEN24" in squash(line) for line in lines)
+    assert all("Adulte" in squash(line) for line in lines)
+    airlines = sorted(re.search(r"(Qatar Airways|Tunisair)", squash(x)).group(1) for x in lines)  # type: ignore[union-attr]
+    assert airlines == ["Qatar Airways", "Qatar Airways", "Tunisair"]
+    assert all(re.search(r"\d", squash(line)) for line in lines)
+    assert all("999" in line for line in lines)  # the ticket numbers (mono)
+    er = next(b for b in bookings(html) if "QA0030" in b.split("</summary>")[0])
     assert "Enfant" in er
-    assert "Bébé" in er
+    assert any("Bébé" in b for b in bookings(html))
 
 
-def test_money_uses_the_shared_formatting() -> None:
+def test_airline_codes_are_never_shown_bare(env: Env) -> None:
+    env.load()
+    with env.manager_a() as c:
+        html = c.get(f"/questions?date={DAY}").text
+    assert "Royal Air Maroc" in html and "Turkish Airlines" in html and "Cie 495" in html
+    assert not re.search(r"<code>(147|157|199|235|495)</code>", html)
+
+
+def test_money_uses_the_french_grouping() -> None:
     from decimal import Decimal
 
     from app.web.templating import render_string
 
     assert render_string("{{ v|money }}", v=Decimal("1234.5")) == "1234.50"
-    assert render_string("{{ v|money }}", v=Decimal("746423.00")) == "746423"
+    assert render_string("{{ v|money_fr }}", v=Decimal("746423.00")) == fr(746423)
+
+
+# --- tabs, date and default ---------------------------------------------------------------------
+
+
+def test_the_filter_tabs_are_plain_links_with_counts(env: Env) -> None:
+    env.load()
+    with env.manager_a() as c:
+        html = c.get(f"/questions?date={DAY}").text
+    tabs = html.split('<nav class="tabs"')[1].split("</nav>")[0]
+    links = re.findall(r'<a class="tab-link"([^>]*)>(.*?)</a>', tabs, re.S)
+    assert [squash(label) for _, label in links] == ["À tarifer · 33", "Confirmées · 0", "Toutes"]
+    assert 'aria-current="true"' in links[0][0]
+    assert 'aria-current="true"' not in links[1][0]
+    assert f'href="/questions?date={DAY}&amp;status=confirmed"' in tabs
+    assert f'href="/questions?date={DAY}&amp;status=all"' in tabs
+
+
+def test_the_confirmed_tab_is_empty_for_now_and_the_all_tab_lists_everything(env: Env) -> None:
+    env.load()
+    with env.manager_a() as c:
+        confirmed = c.get(f"/questions?date={DAY}&status=confirmed")
+        everything = c.get(f"/questions?date={DAY}&status=all")
+    assert confirmed.status_code == 200 and everything.status_code == 200
+    assert sections(confirmed.text) == {}
+    assert "Aucune question de prix" in confirmed.text
+    assert sum(len(bookings(b)) for b in sections(everything.text).values()) == 33
+    assert re.search(r'<a class="tab-link" aria-current="true"[^>]*>\s*Toutes', everything.text)
+
+
+@pytest.mark.parametrize(
+    "params", [{"status": "nope"}, {"limit": "0"}, {"limit": "x"}, {"limit": "100000"}]
+)
+def test_invalid_status_or_limit_is_the_400_page(env: Env, params: dict[str, str]) -> None:
+    env.load()
+    with env.manager_a() as c:
+        response = c.get("/questions", params={"date": DAY, **params})
+    assert response.status_code == 400
+    assert "Référence" in response.text
 
 
 def test_the_default_date_is_the_latest_report_date_with_tickets(env: Env) -> None:
     env.load()
     env.load(data=build_workbook([ticket_row(doc="3940000999", rloc="LATE00")], range_raw="05OCT"))
     with env.manager_a() as c:
-        default = c.get("/questions")
+        default = c.get("/")
+        questions = c.get("/questions")
         older = c.get(f"/questions?date={DAY}")
     assert default.status_code == 200
-    assert "2026-10-05" in default.text
-    assert set(sections(default.text)) == {"0004SV"}
-    assert "LATE00" in default.text
+    assert 'value="2026-10-05"' in questions.text
+    assert set(sections(questions.text)) == {"0004SV"}
+    assert "LATE00" in questions.text
     assert len(sections(older.text)) == 2
     assert "LATE00" not in older.text
+    assert f'href="/questions?date={DAY}"' in questions.text  # the recent dates stay linked
 
 
 def test_no_data_at_all_is_a_friendly_empty_page(env: Env) -> None:
@@ -193,6 +230,126 @@ def test_an_empty_date_means_the_default(env: Env) -> None:
         assert c.get("/questions?date=").status_code == 200
 
 
+# --- show more ----------------------------------------------------------------------------------
+
+
+def test_the_limit_shows_the_first_rows_of_each_agent_and_links_to_the_rest(env: Env) -> None:
+    env.load()
+    with env.manager_a() as c:
+        html = c.get(f"/questions?date={DAY}&limit=3").text
+    by_sign = sections(html)
+    assert len(bookings(by_sign["0004SV"])) == 3
+    assert len(bookings(by_sign["0009ER"])) == 3
+    assert "Afficher les 22 autres réservations" in squash(by_sign["0004SV"])
+    assert "Afficher les 5 autres réservations" in squash(by_sign["0009ER"])
+    more = re.search(r'<a class="more-link" href="([^"]+)"', by_sign["0004SV"])
+    assert more
+    assert "limit=" in more.group(1) and "#agent-0004SV" in more.group(1)
+    assert number(by_sign["0004SV"], "group-count") == "25"  # the header counts all of them
+
+
+def test_following_the_more_links_ends_with_every_row(env: Env) -> None:
+    env.load()
+    with env.manager_a() as c:
+        html = c.get(f"/questions?date={DAY}&limit=3").text
+        shown = [len(bookings(sections(html)["0004SV"]))]
+        for _ in range(10):
+            link = re.search(r'<a class="more-link" href="([^"]+)"', sections(html)["0004SV"])
+            if link is None:
+                break
+            html = c.get(link.group(1).replace("&amp;", "&").split("#")[0]).text
+            shown.append(len(bookings(sections(html)["0004SV"])))
+    assert shown == sorted(shown) and len(set(shown)) == len(shown)
+    assert shown[0] == 3 and shown[-1] == 25
+    assert "more-link" not in html
+
+
+def test_the_default_limit_shows_all_the_fixture_rows(env: Env) -> None:
+    env.load()
+    with env.manager_a() as c:
+        html = c.get(f"/questions?date={DAY}").text
+    assert "more-link" not in html
+
+
+# --- search -------------------------------------------------------------------------------------
+
+
+def test_search_by_booking_reference(env: Env) -> None:
+    env.load()
+    with env.manager_a() as c:
+        html = c.get(f"/questions?date={DAY}&q=qa0013").text
+    found = [b for s in sections(html).values() for b in bookings(s)]
+    assert len(found) == 1 and "QA0013" in found[0]
+    assert 'value="qa0013"' in html  # the box keeps what was typed
+
+
+def test_search_by_passenger_and_by_ticket_number(env: Env) -> None:
+    env.load()
+    with env.manager_a() as c:
+        by_name = c.get(f"/questions?date={DAY}&q=GIVEN24").text
+        by_ticket = c.get(f"/questions?date={DAY}&q=9990000110").text
+    assert sum(len(bookings(s)) for s in sections(by_name).values()) >= 1
+    assert all("GIVEN24" in b for s in sections(by_name).values() for b in bookings(s))
+    found = [b for s in sections(by_ticket).values() for b in bookings(s)]
+    assert len(found) == 1 and "QA0009" in found[0]
+
+
+def test_search_with_no_match_says_so(env: Env) -> None:
+    env.load()
+    with env.manager_a() as c:
+        html = c.get(f"/questions?date={DAY}&q=zzzzzz").text
+    assert sections(html) == {}
+    assert "Aucun résultat" in html
+
+
+@pytest.mark.parametrize("query", ["%", "_", "' OR 1=1 --", "\\", "<b>", "é"])
+def test_search_treats_special_characters_literally(env: Env, query: str) -> None:
+    env.load()
+    with env.manager_a() as c:
+        response = c.get("/questions", params={"date": DAY, "q": query})
+    assert response.status_code == 200
+    assert sections(response.text) == {}
+    assert "<b>" not in response.text
+
+
+def test_search_text_is_escaped_in_the_box_and_the_message(env: Env) -> None:
+    env.load()
+    payload = '"><script>alert(1)</script>'
+    with env.manager_a() as c:
+        response = c.get("/questions", params={"date": DAY, "q": payload})
+    assert response.status_code == 200
+    assert "<script>alert(1)" not in response.text
+    assert "&lt;script&gt;" in response.text
+    assert not re.findall(r"<script(?![^>]*src=)", response.text)
+
+
+def test_a_very_long_search_is_the_400_page(env: Env) -> None:
+    with env.manager_a() as c:
+        assert c.get("/questions", params={"q": "x" * 500}).status_code == 400
+
+
+def test_search_keeps_the_date_and_the_tab_in_its_hidden_fields(env: Env) -> None:
+    env.load()
+    with env.manager_a() as c:
+        html = c.get(f"/questions?date={DAY}&status=all").text
+    form = re.search(r'<form class="search".*?</form>', html, re.S)
+    assert form
+    assert f'name="date" value="{DAY}"' in form.group(0)
+    assert 'name="status" value="all"' in form.group(0)
+
+
+def test_search_never_reaches_other_peoples_bookings_for_staff(env: Env) -> None:
+    env.load()
+    env.link(env.seeded.staff_a, "0009ER")
+    with env.staff_a() as c:
+        mine = c.get(f"/questions?date={DAY}&q=QA00")
+        # QA0009 belongs to 0004SV: not theirs, so not found
+        theirs = c.get(f"/questions?date={DAY}&q=QA0009")
+    assert set(sections(mine.text)) == {"0009ER"}
+    assert sections(theirs.text) == {}
+    assert "0004SV" not in theirs.text
+
+
 # --- who sees what ------------------------------------------------------------------------------
 
 
@@ -216,10 +373,13 @@ def test_staff_see_only_the_signs_linked_to_them(env: Env) -> None:
     by_sign = sections(response.text)
     assert list(by_sign) == ["0009ER"]
     assert number(by_sign["0009ER"], "group-count") == "8"
-    assert by_sign["0009ER"].count('<article class="question">') == 8
+    assert len(bookings(by_sign["0009ER"])) == 8
     assert "0004SV" not in response.text
     assert "Non attribué" not in response.text  # only managers see the flag
     assert 'href="/staff"' not in response.text
+    tiles = squash(response.text.split('aria-label="Résumé"')[1].split("</section>")[0])
+    assert "À tarifer 8" in tiles and "Billets 14" in tiles
+    assert fr(372434) in tiles and fr(1118857) not in response.text
 
 
 def test_a_staff_user_with_two_signs_sees_both(env: Env) -> None:
@@ -298,8 +458,8 @@ def test_the_page_is_read_only(env: Env) -> None:
     env.load()
     with env.manager_a() as c:
         text = c.get(f"/questions?date={DAY}").text
-        assert "<form" not in text.replace('<form method="get"', "")
-        assert 'type="submit"' not in text.replace('type="submit">Afficher', "")
+        post_forms = re.findall(r'<form[^>]*method="post"[^>]*>', text)
+        assert all('action="/logout"' in f for f in post_forms)  # only the sidebar sign-out
         assert c.post("/questions", follow_redirects=False).status_code in (403, 405)
 
 
@@ -328,3 +488,235 @@ def test_the_empty_state_is_not_cached(env: Env) -> None:
         response = c.get("/questions")
     assert "Aucun rapport" in response.text
     assert response.headers["cache-control"] == "no-store"
+
+
+def test_a_booking_is_reachable_by_its_anchor(env: Env) -> None:
+    env.load()
+    with env.manager_a() as c:
+        html = c.get(f"/questions?date={DAY}").text
+    assert 'id="b-0004SV-QA0009"' in html
+    assert 'id="agent-0004SV"' in html
+
+
+def test_no_inline_styles_on_the_questions_page(env: Env) -> None:
+    env.load()
+    with env.manager_a() as c:
+        html = c.get(f"/questions?date={DAY}&limit=2").text
+    assert not re.search(r"\sstyle=", html, re.I)
+    assert not re.search(r"<style", html, re.I)
+
+
+# --- staff listing, without a search ------------------------------------------------------------
+
+
+def test_the_staff_listing_without_a_search_shows_only_their_own_signs(env: Env) -> None:
+    """No ``q`` and no ``date``: the plain listing is already limited to the member's signs."""
+    env.load()
+    env.link(env.seeded.staff_a, "0009ER")
+    with env.staff_a() as c:
+        response = c.get("/questions")
+    assert response.status_code == 200
+    by_sign = sections(response.text)
+    assert list(by_sign) == ["0009ER"]
+    assert len(bookings(by_sign["0009ER"])) == 8
+    assert "0004SV" not in response.text and "QA0009" not in response.text
+    assert fr(746423) not in response.text and fr(1118857) not in response.text
+    assert [number(by_sign["0009ER"], c) for c in ("ticket-count", "group-count")] == ["14", "8"]
+
+
+def test_a_staff_member_whose_sign_has_no_tickets_that_day_sees_an_empty_list(env: Env) -> None:
+    env.load()
+    env.link(env.seeded.staff_a, "0555QQ")  # linked, but not in the report
+    with env.staff_a() as c:
+        response = c.get(f"/questions?date={DAY}")
+        default = c.get("/questions")
+    for page in (response, default):
+        assert page.status_code == 200
+        assert sections(page.text) == {}
+        assert "Aucune question de prix pour cette date" in page.text
+        assert "0004SV" not in page.text and "0009ER" not in page.text
+        assert "Aucun code agent" not in page.text  # they do have a sign
+    tiles = squash(response.text.split('aria-label="Résumé"')[1].split("</section>")[0])
+    assert "À tarifer 0" in tiles and "Billets 0" in tiles
+
+
+# --- the default day and the dates offered to staff ---------------------------------------------
+
+LATER = "2026-10-05"
+
+
+def _two_days(env: Env) -> None:
+    """Oct 1: the fixture (0004SV and 0009ER). Oct 5: one booking of 0004SV only."""
+    env.load()
+    env.load(data=build_workbook([ticket_row(doc="3940000999", rloc="LATE00")], range_raw="05OCT"))
+
+
+def date_hrefs(html: str) -> list[str]:
+    return re.findall(r'<a href="/questions\?date=([^"]+)"', html)
+
+
+def test_a_manager_opens_on_the_agencys_latest_day(env: Env) -> None:
+    _two_days(env)
+    with env.manager_a() as c:
+        html = c.get("/questions").text
+    assert f'value="{LATER}"' in html
+    assert date_hrefs(html) == [LATER, DAY]
+
+
+def test_staff_open_on_their_own_latest_day_not_the_agencys(env: Env) -> None:
+    _two_days(env)
+    env.link(env.seeded.staff_a, "0009ER")  # nothing of theirs on the 5th
+    with env.staff_a() as c:
+        html = c.get("/questions").text
+        home = c.get("/").text
+    assert f'value="{DAY}"' in html
+    assert list(sections(html)) == ["0009ER"] and len(bookings(sections(html)["0009ER"])) == 8
+    assert "LATE00" not in html
+    assert "1 octobre 2026" in squash(home) and "8 réservations" in squash(home)
+    assert (
+        '<span class="badge">8<span class="visually-hidden"> en attente' in html
+    )  # the badge counts the same day
+
+
+def test_staff_with_work_on_the_latest_day_open_on_it(env: Env) -> None:
+    _two_days(env)
+    env.link(env.seeded.staff_a, "0004SV")
+    with env.staff_a() as c:
+        html = c.get("/questions").text
+    assert f'value="{LATER}"' in html and "LATE00" in html
+
+
+def test_staff_with_no_tickets_at_all_fall_back_to_the_agencys_latest_day(env: Env) -> None:
+    _two_days(env)
+    env.link(env.seeded.staff_a, "0555QQ")
+    with env.staff_a() as c:
+        html = c.get("/questions").text
+        home = c.get("/").text
+    assert f'value="{LATER}"' in html
+    assert sections(html) == {} and "LATE00" not in html
+    assert "Aucun billet pour cette date" in home
+
+
+def test_staff_are_only_offered_the_days_that_have_their_tickets(env: Env) -> None:
+    _two_days(env)
+    env.link(env.seeded.staff_a, "0009ER")
+    with env.staff_a() as c:
+        html = c.get("/questions").text
+    assert date_hrefs(html) == [DAY]
+    assert LATER not in html and "5 octobre" not in html
+
+
+def test_the_dates_offered_are_written_in_french(env: Env) -> None:
+    _two_days(env)
+    with env.manager_a() as c:
+        links = squash(c.get("/questions").text.split('class="date-links"')[1].split("</nav>")[0])
+    assert "5 octobre 2026" in links and "1 octobre 2026" in links
+    assert LATER not in links
+
+
+# --- show more at the cap -----------------------------------------------------------------------
+
+
+def test_show_more_goes_away_at_the_cap_and_says_why(
+    env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from app.web.routes import questions
+
+    monkeypatch.setattr(questions, "MAX_LIMIT", 3)
+    env.load()
+    with env.manager_a() as c:
+        below = c.get(f"/questions?date={DAY}&limit=2").text
+        at_cap = c.get(f"/questions?date={DAY}&limit=3").text
+    link = re.search(r'<a class="more-link" href="([^"]+)"', sections(below)["0004SV"])
+    assert link and "limit=3" in link.group(1)  # doubled, but never past the cap
+    assert "more-link" not in at_cap
+    assert len(bookings(sections(at_cap)["0004SV"])) == 3
+    note = squash(sections(at_cap)["0004SV"])
+    assert "22" in note and "Affinez" in note  # 22 not shown, and what to do about it
+
+
+def test_the_cap_note_is_absent_when_everything_is_shown(env: Env) -> None:
+    env.load()
+    with env.manager_a() as c:
+        html = c.get(f"/questions?date={DAY}&limit=1000").text
+    assert "more-link" not in html and "more-note" not in html
+
+
+def test_the_agent_view_hides_the_link_at_the_cap() -> None:
+    from decimal import Decimal
+
+    from app.dashboard import AgentGroup
+    from app.web.routes.questions import MAX_LIMIT, _agent_view
+
+    bookings_standing_in: tuple[Any, ...] = tuple(range(5))
+    group = AgentGroup("0004SV", 5, 0, 5, Decimal(0), 0, bookings_standing_in)
+    day = date(2026, 10, 1)
+    at_cap = _agent_view(group, day, "awaiting", None, MAX_LIMIT)
+    assert at_cap.more_url is None and not at_cap.capped and at_cap.hidden == 0
+    below = _agent_view(group, day, "awaiting", None, 2)
+    assert below.hidden == 3 and below.more_url and not below.capped
+    # hidden rows and no further link: the cap itself
+    crowded: tuple[Any, ...] = tuple(range(1001))
+    over = _agent_view(
+        AgentGroup("0004SV", 1001, 0, 1001, Decimal(0), 0, crowded),
+        day,
+        "awaiting",
+        None,
+        MAX_LIMIT,
+    )
+    assert over.hidden == 1 and over.more_url is None and over.capped
+
+
+def test_the_staff_home_links_to_everything_not_to_a_list_cut_at_the_default(
+    env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from app.web.routes import home, questions
+
+    monkeypatch.setattr(home, "STAFF_LIST_LIMIT", 3)
+    env.load()
+    env.link(env.seeded.staff_a, "0009ER")
+    with env.staff_a() as c:
+        html = c.get("/").text
+        link = re.search(r'<a class="more-link" href="([^"]+)"', html)
+        assert link
+        url = link.group(1).replace("&amp;", "&")
+        assert "status=all" in url and f"limit={questions.MAX_LIMIT}" in url
+        everything = c.get(url).text
+    assert "5 autres réservations" in squash(html)
+    assert len(bookings(sections(everything)["0009ER"])) == 8
+    assert "more-link" not in everything
+
+
+# --- search text --------------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("q", ["a\x00b", "a\nb", "a\tb", "a\x1bb", "a\x7fb", "\n", "a\rb", "\x85"])
+def test_control_characters_in_the_search_are_the_400_page(env: Env, q: str) -> None:
+    env.load()
+    with env.manager_a() as c:
+        response = c.get("/questions", params={"date": DAY, "q": q})
+    assert response.status_code == 400
+    assert "Référence" in response.text
+
+
+def test_ordinary_unicode_in_the_search_is_still_fine(env: Env) -> None:
+    env.load()
+    with env.manager_a() as c:
+        assert c.get("/questions", params={"q": "é ñ 名前 🙂"}).status_code == 200
+        assert c.get("/questions", params={"q": "   "}).status_code == 200  # blank: no filter
+
+
+# --- airlines -----------------------------------------------------------------------------------
+
+
+def test_an_unknown_airline_code_is_shown_as_cie_and_the_number(env: Env) -> None:
+    env.load(
+        data=build_workbook([ticket_row(doc="3940000321", airline="888", rloc="ZZZZZZ")]),
+    )
+    with env.manager_a() as c:
+        html = c.get("/questions", params={"date": DAY, "q": "ZZZZZZ"}).text
+    row = bookings(html)[0]
+    summary = row.split("<summary>")[1].split("</summary>")[0]
+    assert "Cie 888" in squash(summary)
+    assert "Cie 888" in squash(row.split('<div class="booking-detail">')[1])
+    assert not re.search(r">\s*888\s*<", html)  # the bare code is never a text node

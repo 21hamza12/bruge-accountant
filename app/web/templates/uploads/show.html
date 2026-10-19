@@ -1,35 +1,51 @@
 {% extends "base.html" %}
+{% from "_icons.html" import icon %}
+{% from "_bookings.html" import ticket_count %}
 {% block title %}{{ _("Rapport envoyé") }}{% endblock %}
 {% block content %}
-<h1>{{ _("Rapport envoyé") }}</h1>
-<p><a href="/">{{ _("Accueil") }}</a> · <a href="/uploads/new">{{ _("Envoyer un rapport") }}</a> · <a href="/uploads">{{ _("Rapports récents") }}</a></p>
-<dl>
-  <dt>{{ _("Fichier") }}</dt><dd>{{ upload.filename }}</dd>
-  <dt>{{ _("Date du rapport") }}</dt><dd>{{ upload.report_date.isoformat() }}</dd>
-  <dt>{{ _("Envoyé par") }}</dt><dd>{{ uploader or "-" }}</dd>
-  <dt>{{ _("Envoyé le") }}</dt><dd>{{ upload.uploaded_at.strftime("%Y-%m-%d %H:%M") }} UTC</dd>
-</dl>
-<p>{{ _("Billets lus") }} : <strong>{{ upload.ticket_count }}</strong></p>
-<p>{{ _("Ajoutés") }} : <strong>{{ upload.inserted_count if upload.inserted_count is not none else "-" }}</strong></p>
-<p>{{ _("Mis à jour") }} : <strong>{{ upload.updated_count if upload.updated_count is not none else "-" }}</strong></p>
-{% if dates_differ %}
-<p class="notice" role="alert">{{ _("Attention : des billets de ce rapport existaient déjà. Ils gardent leur jour d'origine, qui n'est pas celui du rapport.") }}</p>
-{% endif %}
-{% if ticket_dates %}
-<h2>{{ _("Jours des billets") }}</h2>
-<ul>
-  {% for day, count in ticket_dates %}<li><a href="/questions?date={{ day.isoformat() }}">{{ day.isoformat() }}</a> : {{ count }} {{ _("billets") }}</li>
-  {% endfor %}
-</ul>
-{% else %}
-<p><a href="/questions?date={{ upload.report_date.isoformat() }}">{{ _("Voir les questions de prix de ce jour") }}</a></p>
-{% endif %}
+<section class="card" aria-labelledby="result-title">
+  <div class="card-head">
+    <h2 class="card-title" id="result-title">{{ _("Résultat") }}</h2>
+    <span class="status-line">{{ icon("check", small=true) }}{{ _("Rapport enregistré") }}</span>
+  </div>
+  <dl class="kv">
+    <dt>{{ _("Fichier") }}</dt><dd>{{ upload.filename }}</dd>
+    <dt>{{ _("Date du rapport") }}</dt><dd><time datetime="{{ upload.report_date.isoformat() }}">{{ upload.report_date|date_fr }}</time></dd>
+    <dt>{{ _("Envoyé par") }}</dt><dd>{{ uploader or "-" }}</dd>
+    <dt>{{ _("Envoyé le") }}</dt><dd><time datetime="{{ upload.uploaded_at.isoformat() }}">{{ upload.uploaded_at|datetime_fr }}</time> UTC</dd>
+  </dl>
+  <div class="mini-tiles">
+    <p class="card mini-tile"><span class="mini-label">{{ _("Billets lus") }} : <strong>{{ upload.ticket_count }}</strong></span></p>
+    <p class="card mini-tile"><span class="mini-label">{{ _("Ajoutés") }} : <strong>{{ upload.inserted_count if upload.inserted_count is not none else "-" }}</strong></span></p>
+    <p class="card mini-tile"><span class="mini-label">{{ _("Mis à jour") }} : <strong>{{ upload.updated_count if upload.updated_count is not none else "-" }}</strong></span></p>
+  </div>
+  {% if dates_differ %}
+  <p class="notice" role="alert">{{ _("Attention : des billets de ce rapport existaient déjà. Ils gardent leur jour d'origine, qui n'est pas celui du rapport.") }}</p>
+  {% endif %}
+</section>
+
+<section class="card" aria-labelledby="days-title">
+  {% if ticket_dates %}
+  <h2 class="card-title" id="days-title">{{ _("Jours des billets") }}</h2>
+  <ul class="list-plain">
+    {% for day, count in ticket_dates %}<li><a href="/questions?date={{ day.isoformat() }}">{{ day|date_fr }}</a> : {{ ticket_count(count) }}</li>
+    {% endfor %}
+  </ul>
+  {% else %}
+  <h2 class="card-title" id="days-title">{{ _("Questions de prix") }}</h2>
+  <p><a class="btn btn-primary" href="/questions?date={{ upload.report_date.isoformat() }}">{{ _("Voir les questions de prix de ce jour") }}</a></p>
+  {% endif %}
+  <p><a class="card-link" href="/uploads/new">{{ _("Envoyer un autre rapport") }}</a></p>
+</section>
+
 {% if show_warnings and warnings %}
-<h2>{{ _("Avertissements") }}</h2>
-<ul>
-  {% for warning in warnings %}<li class="warning">{{ warning }}</li>
-  {% endfor %}
-</ul>
-{% if more_warnings %}<p>{{ more_warnings }} {{ _("autres avertissements") }}</p>{% endif %}
+<section class="card" aria-labelledby="warnings-title">
+  <h2 class="card-title" id="warnings-title">{{ _("Avertissements") }}</h2>
+  <ul class="list-plain">
+    {% for warning in warnings %}<li class="warning">{{ warning }}</li>
+    {% endfor %}
+  </ul>
+  {% if more_warnings %}<p class="muted">{{ _("%(count)s autres avertissements", count=more_warnings) }}</p>{% endif %}
+</section>
 {% endif %}
 {% endblock %}

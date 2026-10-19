@@ -9,6 +9,7 @@ from __future__ import annotations
 import logging
 from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Annotated, Any
 
 import anyio
@@ -69,12 +70,22 @@ def _ping(engine: Engine) -> None:
         connection.execute(select(1))
 
 
-class StaticAssets(StaticFiles):
-    """Static files revalidate on every load (ETag makes that cheap), so a deploy ships at once."""
+IMMUTABLE_CACHE = "public, max-age=31536000, immutable"
 
-    def file_response(self, *args: Any, **kwargs: Any) -> Response:
-        response = super().file_response(*args, **kwargs)
-        response.headers["Cache-Control"] = "no-cache"
+
+class StaticAssets(StaticFiles):
+    """Static files revalidate on every load (ETag makes that cheap), so a deploy ships at once.
+
+    The one exception is the font files (``fonts/*.woff2``): a font never changes in place, a new
+    version gets a new file name (``app/web/VENDORED.md``, pinned by the hash test), so browsers
+    keep them for a year without asking.
+    """
+
+    def file_response(self, full_path: Any, *args: Any, **kwargs: Any) -> Response:
+        response = super().file_response(full_path, *args, **kwargs)
+        path = Path(str(full_path))
+        is_font = path.suffix == ".woff2" and path.parent.name == "fonts"
+        response.headers["Cache-Control"] = IMMUTABLE_CACHE if is_font else "no-cache"
         return response
 
 

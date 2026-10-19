@@ -1,12 +1,24 @@
 """Database access. Every query is scoped by ``agency_id``."""
 
 import logging
-from collections.abc import Iterator, Sequence
+from collections.abc import Collection, Iterator, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
 from typing import Any, cast
 
-from sqlalchemy import Boolean, CursorResult, String, column, delete, func, or_, select, table
+from sqlalchemy import (
+    Boolean,
+    CursorResult,
+    String,
+    case,
+    column,
+    delete,
+    distinct,
+    func,
+    or_,
+    select,
+    table,
+)
 from sqlalchemy.dialects import postgresql, sqlite
 from sqlalchemy.orm import Session
 
@@ -410,6 +422,61 @@ def tickets_awaiting_price(session: Session, agency_id: int, report_date: date) 
     return list(session.scalars(stmt))
 
 
+def tickets_for_day(
+    session: Session,
+    agency_id: int,
+    report_date: date,
+    staff_signs: Collection[str] | None = None,
+) -> list[Ticket]:
+    """Every ticket of one report day, whatever its price status, in sign/booking/ticket order.
+
+    ``staff_signs`` limits the result to those signs (what a staff member may see); an empty
+    collection is an empty result, never "all". Served by ``ix_tickets_agency_report_date_staff``.
+    """
+    bind_tenant(session, agency_id)
+    if staff_signs is not None and not staff_signs:
+        return []
+    stmt = select(Ticket).where(Ticket.agency_id == agency_id, Ticket.report_date == report_date)
+    if staff_signs is not None:
+        stmt = stmt.where(Ticket.staff_sign.in_(list(staff_signs)))
+    stmt = stmt.order_by(Ticket.staff_sign, Ticket.booking_ref, Ticket.ticket_no)
+    return list(session.scalars(stmt))
+
+
+def awaiting_counts_by_sign(
+    session: Session,
+    agency_id: int,
+    report_date: date,
+    staff_signs: Collection[str] | None = None,
+) -> dict[str, int]:
+    """How many price questions (bookings) still wait, per staff sign, on one report day.
+
+    Counted in SQL the way ``app.questions`` groups: one question per (sign, booking reference),
+    and every ticket without a reference is a question of its own. It feeds the badge and the
+    agent list on every page, so it must not load the tickets.
+    """
+    bind_tenant(session, agency_id)
+    if staff_signs is not None and not staff_signs:
+        return {}
+    has_ref = Ticket.booking_ref != ""
+    stmt = (
+        select(
+            Ticket.staff_sign,
+            func.count(distinct(case((has_ref, Ticket.booking_ref), else_=None))),
+            func.sum(case((has_ref, 0), else_=1)),
+        )
+        .where(
+            Ticket.agency_id == agency_id,
+            Ticket.report_date == report_date,
+            Ticket.price_status == PRICE_STATUS_AWAITING,
+        )
+        .group_by(Ticket.staff_sign)
+    )
+    if staff_signs is not None:
+        stmt = stmt.where(Ticket.staff_sign.in_(list(staff_signs)))
+    return {row[0]: int(row[1] or 0) + int(row[2] or 0) for row in session.execute(stmt)}
+
+
 def get_upload(
     session: Session, agency_id: int, upload_id: int, uploaded_by: int | None = None
 ) -> Upload | None:
@@ -468,22 +535,42 @@ def user_names(session: Session, agency_id: int, user_ids: Sequence[int | None])
     return {row.id: row.display_name or row.phone for row in rows}
 
 
-def latest_report_date(session: Session, agency_id: int) -> date | None:
-    """The newest report date that has tickets (None when the agency has none)."""
+def latest_report_date(
+    session: Session, agency_id: int, staff_signs: Collection[str] | None = None
+) -> date | None:
+    """The newest report date that has tickets (None when there are none).
+
+    ``staff_signs`` looks only at the tickets of those signs (what a staff member may see); an
+    empty collection is "no tickets", never "all".
+    """
     bind_tenant(session, agency_id)
-    return session.scalar(select(func.max(Ticket.report_date)).where(Ticket.agency_id == agency_id))
+    if staff_signs is not None and not staff_signs:
+        return None
+    stmt = select(func.max(Ticket.report_date)).where(Ticket.agency_id == agency_id)
+    if staff_signs is not None:
+        stmt = stmt.where(Ticket.staff_sign.in_(list(staff_signs)))
+    return session.scalar(stmt)
 
 
-def recent_report_dates(session: Session, agency_id: int, limit: int = 14) -> list[date]:
-    """The newest report dates that have tickets, latest first."""
+def recent_report_dates(
+    session: Session,
+    agency_id: int,
+    limit: int = 14,
+    staff_signs: Collection[str] | None = None,
+) -> list[date]:
+    """The newest report dates that have tickets, latest first.
+
+    ``staff_signs`` keeps only the days that hold a ticket of those signs, so a staff member is
+    never shown a day (or learns that a day exists) on which they have nothing; an empty
+    collection is an empty list.
+    """
     bind_tenant(session, agency_id)
-    stmt = (
-        select(Ticket.report_date)
-        .where(Ticket.agency_id == agency_id)
-        .distinct()
-        .order_by(Ticket.report_date.desc())
-        .limit(limit)
-    )
+    if staff_signs is not None and not staff_signs:
+        return []
+    stmt = select(Ticket.report_date).where(Ticket.agency_id == agency_id)
+    if staff_signs is not None:
+        stmt = stmt.where(Ticket.staff_sign.in_(list(staff_signs)))
+    stmt = stmt.distinct().order_by(Ticket.report_date.desc()).limit(limit)
     return list(session.scalars(stmt))
 
 

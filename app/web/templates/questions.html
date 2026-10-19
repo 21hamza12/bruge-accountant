@@ -1,9 +1,9 @@
 {% extends "base.html" %}
+{% from "_icons.html" import icon %}
+{% from "_bookings.html" import status_pill, lead, airlines, ticket_count %}
 {% block title %}{{ _("Questions de prix") }}{% endblock %}
-{% macro amount(total, known, missing) -%}
-  {%- if missing -%}{{ known|money }} {{ agency.currency }} ({{ _("partiel") }}, {{ missing }} {{ _("prix manquant(s)") }}){%- else -%}{{ total|money }} {{ agency.currency }}{%- endif -%}
-{%- endmacro %}
 {% set pax_labels = {"ADT": _("Adulte"), "CHD": _("Enfant"), "INF": _("Bébé")} %}
+{% set tab_labels = {"awaiting": _("À tarifer"), "confirmed": _("Confirmées"), "all": _("Toutes")} %}
 {% set flag_labels = {
   "missing_cost": _("Prix manquant"),
   "unknown_trnc": _("Type de transaction inconnu"),
@@ -13,53 +13,103 @@
   "field_too_long": _("Champ tronqué"),
   "cost_rounded": _("Prix arrondi"),
 } %}
+{% block search_hidden %}{% if day %}<input type="hidden" name="date" value="{{ day.isoformat() }}">{% endif %}{% if status != "awaiting" %}<input type="hidden" name="status" value="{{ status }}">{% endif %}{% endblock %}
 {% block content %}
-<h1>{{ _("Questions de prix") }}</h1>
-<p><a href="/">{{ _("Accueil") }}</a> · <a href="/uploads/new">{{ _("Envoyer un rapport") }}</a>{% if is_manager %} · <a href="/staff">{{ _("Équipe") }}</a>{% endif %}</p>
 {% if day is none %}
-<p>{{ _("Aucun rapport n'a encore été envoyé.") }} <a href="/uploads/new">{{ _("Envoyer un rapport") }}</a></p>
+<section class="card empty">
+  <h2 class="empty-title">{{ _("Aucun rapport n'a encore été envoyé.") }}</h2>
+  <p class="muted">{{ _("Envoyez le rapport quotidien des ventes Amadeus pour voir les questions de prix.") }}</p>
+  <a class="btn btn-primary btn-lg" href="/uploads/new">{{ icon("upload", small=true) }}{{ _("Envoyer un rapport") }}</a>
+</section>
 {% else %}
-<form method="get" action="/questions">
-  <label for="date">{{ _("Date du rapport") }}</label>
-  <input id="date" name="date" type="date" value="{{ day.isoformat() }}" required>
-  <button type="submit">{{ _("Afficher") }}</button>
-</form>
-{% if dates %}
-<p>{% for d in dates %}<a href="/questions?date={{ d.isoformat() }}">{{ d.isoformat() }}</a>{% if not loop.last %} · {% endif %}{% endfor %}</p>
-{% endif %}
-<h2>{{ day.isoformat() }}</h2>
-{% if not is_manager and not my_signs %}
-<p>{{ _("Aucun code agent ne vous est attribué. Demandez à votre responsable de lier votre code agent à votre compte.") }}</p>
-{% elif not groups %}
-<p>{{ _("Aucune question de prix pour cette date.") }}</p>
-{% endif %}
-{% for g in groups %}
-<section class="sign">
-  <h3><code class="sign-code">{{ g.staff_sign }}</code>
-    {% if is_manager %}
-      {% if owners.get(g.staff_sign) %} - {{ owners[g.staff_sign] }}
-      {% else %} - <span class="error">{{ _("Non attribué") }}</span> (<a href="/staff">{{ _("lier ce code à un employé") }}</a>)
-      {% endif %}
-    {% endif %}
-  </h3>
-  <p>{{ _("Billets") }} : <strong class="ticket-count">{{ g.ticket_count }}</strong>
-     · {{ _("Questions") }} : <strong class="group-count">{{ g.group_count }}</strong>
-     · {{ _("Total") }} : <strong class="total">{{ g.total_cost|money if g.total_cost is not none else g.known_cost_total|money }}</strong> {{ agency.currency }}{% if g.missing_cost_count %} ({{ _("partiel") }}, {{ g.missing_cost_count }} {{ _("prix manquant(s)") }}){% endif %}</p>
-  {% for q in g.questions %}
-  <article class="question">
-    <h4>{% if q.booking_ref %}<code>{{ q.booking_ref }}</code>{% else %}{{ _("(sans référence)") }}{% endif %}</h4>
-    <p>{{ _("Billets") }} : <strong class="ticket-count">{{ q.ticket_count }}</strong>
-       · {{ _("Compagnies") }} : {% for a in q.airlines %}<code>{{ a }}</code>{% if not loop.last %}, {% endif %}{% endfor %}
-       · {{ _("Total") }} : {{ amount(q.total_cost, q.known_cost_total, q.missing_cost_count) }}</p>
-    <ul>
-      {% for p in q.passengers %}
-      <li>{{ p.name }} ({{ pax_labels.get(p.pax_type, p.pax_type) }}) - <code>{{ p.airline }}</code> <code>{{ p.ticket_no }}</code>{% if p.cost is not none %} - {{ p.cost|money }}{% else %} - {{ _("prix manquant") }}{% endif %}</li>
+<div class="toolbar">
+  <form class="date-form" method="get" action="/questions">
+    <label for="date">{{ _("Date du rapport") }}</label>
+    <input id="date" name="date" type="date" value="{{ day.isoformat() }}" required aria-describedby="date-readout">
+    <span class="date-readout" id="date-readout">{{ day|date_fr }}</span>
+    {% if status != "awaiting" %}<input type="hidden" name="status" value="{{ status }}">{% endif %}
+    {% if q %}<input type="hidden" name="q" value="{{ q }}">{% endif %}
+    <button class="btn" type="submit">{{ _("Afficher") }}</button>
+  </form>
+  {% if dates %}
+  <nav class="date-links" aria-label="{{ _('Jours récents') }}">{% for d in dates %}<a href="/questions?date={{ d.isoformat() }}"{% if d == day %} aria-current="date"{% endif %}>{{ d|date_fr }}</a>{% endfor %}</nav>
+  {% endif %}
+</div>
+
+{% if not is_manager and not shell.my_signs %}
+<section class="card empty">
+  <h2 class="empty-title">{{ _("Aucun code agent") }}</h2>
+  <p class="muted">{{ _("Aucun code agent ne vous est attribué. Demandez à votre responsable de lier votre code agent à votre compte.") }}</p>
+</section>
+{% else %}
+<section class="tiles" aria-label="{{ _('Résumé') }}">
+  <div class="card tile"><span class="tile-label">{{ _("À tarifer") }}</span><span class="tile-value">{{ summary.awaiting_count }}</span></div>
+  <div class="card tile"><span class="tile-label">{{ _("Confirmées") }}</span><span class="tile-value">{{ summary.confirmed_count }}</span></div>
+  <div class="card tile"><span class="tile-label">{{ _("Billets") }}</span><span class="tile-value">{{ summary.ticket_count }}</span></div>
+  <div class="card tile"><span class="tile-label">{{ _("Coût total") }}</span><span class="tile-value">{{ summary.total_cost|money_fr }} <small>{{ agency.currency }}</small></span></div>
+</section>
+
+<section class="card card-flush" aria-labelledby="list-title">
+  <div class="card-head list-head">
+    <h2 class="card-title" id="list-title">{{ _("Réservations") }}{% if q %} <span class="faint">· « {{ q }} »</span>{% endif %}</h2>
+    <nav class="tabs" aria-label="{{ _('Filtrer') }}">
+      {% for tab in tabs %}
+      <a class="tab-link"{% if tab.current %} aria-current="true"{% endif %} href="{{ tab.url }}">{{ tab_labels[tab.key] }}{% if tab.count is not none %} · {{ tab.count }}{% endif %}</a>
       {% endfor %}
-    </ul>
-    {% if q.flags %}<p class="error">{% for f in q.flags %}{{ flag_labels.get(f, f) }}{% if not loop.last %}, {% endif %}{% endfor %}</p>{% endif %}
-  </article>
+    </nav>
+  </div>
+
+  {% if not groups %}
+  <p class="card-empty muted">{% if q %}{{ _("Aucun résultat pour cette recherche.") }}{% else %}{{ _("Aucune question de prix pour cette date.") }}{% endif %}</p>
+  {% endif %}
+
+  {% for g in groups %}
+  {% set total = totals[g.group.staff_sign] %}
+  <div class="sign" id="agent-{{ g.group.staff_sign }}" role="group" aria-labelledby="agent-title-{{ loop.index }}">
+    <div class="group-bar">
+      <h3 class="group-name" id="agent-title-{{ loop.index }}"><code class="sign-code">{{ g.group.staff_sign }}</code>
+        {% if is_manager %}
+          {% if shell.owners.get(g.group.staff_sign) %} · {{ shell.owners[g.group.staff_sign] }}
+          {% else %} · <span class="error">{{ _("Non attribué") }}</span> (<a href="/staff">{{ _("lier ce code à un employé") }}</a>)
+          {% endif %}
+        {% endif %}
+      </h3>
+      <span class="group-meta"><span class="confirmed-count">{{ total.confirmed_count }}</span> / <span class="group-count">{{ total.booking_count }}</span> {{ _("confirmées") }}
+        · <span class="total">{{ total.total_cost|money_fr }}</span> {{ agency.currency }}{% if total.missing_cost_count %} ({{ ngettext("partiel, %(num)d prix manquant", "partiel, %(num)d prix manquants", total.missing_cost_count) }}){% endif %}
+        · <span class="ticket-count">{{ total.ticket_count }}</span> {{ _("billets") }}</span>
+    </div>
+
+    {% for b in g.bookings %}
+    {% set question = b.question %}
+    <details class="booking" id="b-{{ b.staff_sign }}-{{ question.booking_ref or question.passengers[0].ticket_no }}">
+      <summary>
+        <span class="b-ref">{% if question.booking_ref %}{{ question.booking_ref }}{% else %}{{ _("(sans référence)") }}{% endif %}</span>
+        <span class="b-name">{{ lead(question) }}</span>
+        <span class="b-airlines">{{ airlines(question) }}</span>
+        <span class="b-tickets">{{ ticket_count(question.ticket_count) }}</span>
+        <span class="b-cost">{{ question.known_cost_total|money_fr }}{% if question.missing_cost_count %} <span class="faint">({{ _("partiel") }})</span>{% endif %}</span>
+        <span class="b-status">{{ status_pill(b) }}</span>
+      </summary>
+      <div class="booking-detail">
+        {% for p in question.passengers %}
+        <div class="pax-line">
+          <span class="pax-who">{{ p.name }} · {{ pax_labels.get(p.pax_type, p.pax_type) }} · {{ p.airline|airline }} · <span class="mono">{{ p.ticket_no }}</span></span>
+          <span class="pax-cost">{% if p.cost is not none %}{{ p.cost|money_fr }}{% else %}<span class="error">{{ _("prix manquant") }}</span>{% endif %}</span>
+        </div>
+        {% endfor %}
+        {% if question.flags %}<p class="error">{% for f in question.flags %}{{ flag_labels.get(f, f) }}{% if not loop.last %}, {% endif %}{% endfor %}</p>{% endif %}
+      </div>
+    </details>
+    {% endfor %}
+
+    {% if g.more_url %}
+    <a class="more-link" href="{{ g.more_url }}">{{ _("Afficher les %(count)s autres réservations", count=g.hidden) }}</a>
+    {% elif g.capped %}
+    <p class="more-note muted">{{ ngettext("%(num)d réservation de plus n'est pas affichée : la liste est limitée à %(limit)d par agent. Affinez la recherche pour la voir.", "%(num)d réservations de plus ne sont pas affichées : la liste est limitée à %(limit)d par agent. Affinez la recherche pour les voir.", g.hidden, limit=max_limit) }}</p>
+    {% endif %}
+  </div>
   {% endfor %}
 </section>
-{% endfor %}
+{% endif %}
 {% endif %}
 {% endblock %}

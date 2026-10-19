@@ -32,10 +32,13 @@ from app.db import make_engine, make_session_factory
 from app.ingest import ingest_report
 from app.models import StaffSignLink, Ticket, Upload, User
 from app.repository import (
+    awaiting_counts_by_sign,
     get_upload,
     latest_report_date,
+    recent_report_dates,
     recent_uploads,
     tickets_awaiting_price,
+    tickets_for_day,
     upload_ticket_dates,
 )
 from app.settings import Settings
@@ -235,10 +238,52 @@ def hot_queries(w: World) -> list[Hot]:
             frozenset({"ix_tickets_agency_report_date_staff"}),
         ),
         Hot(
+            "tickets for a day (all statuses)",
+            Scope(agency_id=a),
+            lambda s: tickets_for_day(s, a, date(2026, 10, 1)),
+            "FROM tickets",
+            frozenset({"ix_tickets_agency_report_date_staff"}),
+        ),
+        Hot(
+            "tickets for a day (some signs)",
+            Scope(agency_id=a),
+            lambda s: tickets_for_day(s, a, date(2026, 10, 1), ["0004SV"]),
+            "FROM tickets",
+            frozenset({"ix_tickets_agency_report_date_staff"}),
+        ),
+        Hot(
+            "awaiting counts by sign",
+            Scope(agency_id=a),
+            lambda s: awaiting_counts_by_sign(s, a, date(2026, 10, 1)),
+            "count(DISTINCT",
+            frozenset({"ix_tickets_agency_report_date_staff"}),
+        ),
+        Hot(
             "latest report date",
             Scope(agency_id=a),
             lambda s: latest_report_date(s, a),
             "max(tickets.report_date)",
+            frozenset({"ix_tickets_agency_report_date_staff"}),
+        ),
+        Hot(
+            "latest report date (some signs)",
+            Scope(agency_id=a),
+            lambda s: latest_report_date(s, a, ["0009ER", "0004SV"]),
+            "max(tickets.report_date)",
+            frozenset({"ix_tickets_agency_report_date_staff"}),
+        ),
+        Hot(
+            "recent report dates",
+            Scope(agency_id=a),
+            lambda s: recent_report_dates(s, a),
+            "DISTINCT tickets.report_date",
+            frozenset({"ix_tickets_agency_report_date_staff"}),
+        ),
+        Hot(
+            "recent report dates (some signs)",
+            Scope(agency_id=a),
+            lambda s: recent_report_dates(s, a, staff_signs=["0009ER", "0004SV"]),
+            "DISTINCT tickets.report_date",
             frozenset({"ix_tickets_agency_report_date_staff"}),
         ),
         Hot(
@@ -386,7 +431,13 @@ CASE_NAMES = [
     "session by token hash",
     "user by phone",
     "tickets awaiting price",
+    "tickets for a day (all statuses)",
+    "tickets for a day (some signs)",
+    "awaiting counts by sign",
     "latest report date",
+    "latest report date (some signs)",
+    "recent report dates",
+    "recent report dates (some signs)",
     "recent uploads (big agency)",
     "recent uploads (small agency)",
     "links by agency",
@@ -410,4 +461,4 @@ def test_the_hot_query_uses_its_index(world: World, name: str) -> None:
 
 
 def test_every_hot_query_is_covered() -> None:
-    assert len(CASE_NAMES) == len(set(CASE_NAMES)) == 10
+    assert len(CASE_NAMES) == len(set(CASE_NAMES)) == 16

@@ -38,6 +38,7 @@ from app.web.deps import (
     require_login,
 )
 from app.web.pages import page
+from app.web.shell import ACTIVE_PROFILE, shell_context
 
 router = APIRouter(dependencies=[Depends(csrf_protect)])
 
@@ -46,19 +47,29 @@ MISMATCH = "Les deux nouveaux mots de passe ne sont pas identiques."
 UNCHANGED = "Le nouveau mot de passe doit être différent de l'ancien."
 
 
-def _form(auth: AuthContext, error: str | None = None, status_code: int = 200) -> Response:
+def _form(
+    db: Session, auth: AuthContext, error: str | None = None, status_code: int = 200
+) -> Response:
+    """The form. A forced change gets a bare page (nothing else is reachable yet); otherwise the
+    page lives in the application shell as the user's profile."""
+    forced = auth.user.must_change_password
+    context = {"csrf_token": auth.csrf_token} if forced else shell_context(db, auth, ACTIVE_PROFILE)
     return page(
         "auth/password_change.html",
         status_code=status_code,
-        csrf_token=auth.csrf_token,
-        forced=auth.user.must_change_password,
+        forced=forced,
         error=error,
+        user=auth.user,
+        **context,
     )
 
 
 @router.get("/password/change")
-def change_form(auth: Annotated[AuthContext, Depends(require_login)]) -> Response:
-    return _form(auth)
+def change_form(
+    db: Annotated[Session, Depends(get_session)],
+    auth: Annotated[AuthContext, Depends(require_login)],
+) -> Response:
+    return _form(db, auth)
 
 
 def current_password_is_right(db: Session, auth: AuthContext, supplied: str, now: datetime) -> bool:
@@ -109,16 +120,16 @@ def change_submit(
         raise HTTPException(status_code=429, headers={"Retry-After": str(decision.retry_after)})
 
     if not current_password_is_right(db, auth, current_password, now):
-        return _form(auth, WRONG_CURRENT, 400)
+        return _form(db, auth, WRONG_CURRENT, 400)
     ratelimit.refund(db, ratelimit.PASSWORD_CHANGE_USER, subject, now)  # only wrong guesses count
     db.commit()
     if new_password != confirm_password:
-        return _form(auth, MISMATCH, 400)
+        return _form(db, auth, MISMATCH, 400)
     if new_password == current_password:
-        return _form(auth, UNCHANGED, 400)
+        return _form(db, auth, UNCHANGED, 400)
     problem = password_policy_error(new_password, user.phone)
     if problem is not None:
-        return _form(auth, problem, 400)
+        return _form(db, auth, problem, 400)
 
     user.password_hash = hash_password(new_password)
     user.must_change_password = False

@@ -74,6 +74,11 @@ from app.web.csrf import CSRF_FIELD, CSRF_HEADER, verify_origin, verify_token
 from app.web.deps import AuthContext, client_ip, current_user, get_clock, get_session, get_settings
 from app.web.pages import page
 from app.web.params import UploadId
+from app.web.shell import (
+    ACTIVE_UPLOAD_NEW,
+    ACTIVE_UPLOADS,
+    shell_context,
+)
 
 log = logging.getLogger("app.web.uploads")
 
@@ -106,9 +111,14 @@ async def get_parser(settings: Annotated[Settings, Depends(get_settings)]) -> Pa
     )
 
 
-def _form(auth: AuthContext, *, error: str | None = None, status_code: int = 200) -> Response:
+def _form(
+    db: Session, auth: AuthContext, *, error: str | None = None, status_code: int = 200
+) -> Response:
     return page(
-        "uploads/new.html", status_code=status_code, csrf_token=auth.csrf_token, error=error
+        "uploads/new.html",
+        status_code=status_code,
+        error=error,
+        **shell_context(db, auth, ACTIVE_UPLOAD_NEW),
     )
 
 
@@ -117,8 +127,11 @@ def _is_manager(auth: AuthContext) -> bool:
 
 
 @router.get("/new")
-def upload_form(auth: Annotated[AuthContext, Depends(current_user)]) -> Response:
-    return _form(auth)
+def upload_form(
+    db: Annotated[Session, Depends(get_session)],
+    auth: Annotated[AuthContext, Depends(current_user)],
+) -> Response:
+    return _form(db, auth)
 
 
 @router.get("")
@@ -131,7 +144,12 @@ def upload_list(
     only_mine = None if _is_manager(auth) else auth.user.id
     uploads = recent_uploads(db, agency_id, RECENT_UPLOADS, uploaded_by=only_mine)
     names = user_names(db, agency_id, [u.uploaded_by_user_id for u in uploads])
-    return page("uploads/list.html", uploads=uploads, names=names, csrf_token=auth.csrf_token)
+    return page(
+        "uploads/list.html",
+        uploads=uploads,
+        names=names,
+        **shell_context(db, auth, ACTIVE_UPLOADS),
+    )
 
 
 @router.get("/{upload_id}")
@@ -159,7 +177,7 @@ def upload_result(
         more_warnings=max(0, len(warnings) - MAX_WARNINGS_SHOWN),
         ticket_dates=ticket_dates,
         dates_differ=any(day != upload.report_date for day, _ in ticket_dates),
-        csrf_token=auth.csrf_token,
+        **shell_context(db, auth, ACTIVE_UPLOADS),
     )
 
 
@@ -295,7 +313,7 @@ def _store(
 
     def refuse(reason: str, message: str) -> Response:
         _failed(db, request, clock, auth, name, reason)
-        return _form(auth, error=message, status_code=400)
+        return _form(db, auth, error=message, status_code=400)
 
     if upload is None or (not data and not upload.filename):
         return refuse("no_file", MSG_NO_FILE)

@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% block title %}{{ _("Page introuvable") }}{% endblock %}
 {% block content %}
-<h1>{{ _("Page introuvable") }}</h1>
 <p>{{ _("La page demandée n'existe pas ou a été déplacée.") }}</p>
-<p>{{ _("Référence") }} : <code>{{ ref }}</code></p>
+<p><a class="btn" href="/">{{ _("Retour à l'accueil") }}</a></p>
+<p class="ref-line">{{ _("Référence") }} : <code>{{ ref }}</code></p>
 {% endblock %}

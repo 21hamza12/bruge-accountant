@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% block title %}{{ _("Service occupé") }}{% endblock %}
 {% block content %}
-<h1>{{ _("Service occupé") }}</h1>
 <p>{{ _("Le service est très sollicité. Réessayez dans une minute.") }}</p>
-<p>{{ _("Référence") }} : <code>{{ ref }}</code></p>
+<p><a class="btn" href="/">{{ _("Retour à l'accueil") }}</a></p>
+<p class="ref-line">{{ _("Référence") }} : <code>{{ ref }}</code></p>
 {% endblock %}

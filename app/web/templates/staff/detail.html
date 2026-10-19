@@ -1,60 +1,78 @@
 {% extends "base.html" %}
 {% block title %}{{ target.display_name or target.phone }}{% endblock %}
 {% block content %}
-<h1>{{ target.display_name or target.phone }}</h1>
-<p><a href="/staff">{{ _("Retour à l'équipe") }}</a></p>
-{% if error %}<p class="error" role="alert">{{ error }}</p>{% endif %}
-<p>{{ target.phone }} -
-  {% if target.role == "manager" %}{{ _("Responsable") }}{% else %}{{ _("Employé") }}{% endif %} -
-  {% if target.is_active %}{{ _("Actif") }}{% else %}{{ _("Désactivé") }}{% endif %}</p>
+<p><a class="card-link card-link-back" href="/staff">{{ _("Retour à l'équipe") }}</a></p>
+{% if error %}<p class="error-box" id="form-error" role="alert" tabindex="-1" autofocus>{{ error }}</p>{% endif %}
 
-<h2>{{ _("Codes agent Amadeus") }}</h2>
-<ul>
-{% for link in signs %}
-  <li><code>{{ link.staff_sign }}</code>
-    <form class="inline-form" method="post" action="/staff/{{ target.id }}/signs/{{ link.id }}/unlink">
-      {% include "_csrf.html" %}
-      <button type="submit">{{ _("Retirer") }}</button>
-    </form>
-  </li>
-{% else %}
-  <li>{{ _("Aucun code agent associé.") }}</li>
-{% endfor %}
-</ul>
-<form method="post" action="/staff/{{ target.id }}/signs">
-  {% include "_csrf.html" %}
-  <label for="sign">{{ _("Associer un code agent (par exemple 0004SV)") }}</label>
-  <input id="sign" name="sign" type="text" required maxlength="32" autocapitalize="characters">
-  <button type="submit">{{ _("Associer") }}</button>
-</form>
+<section class="card" aria-labelledby="who-title">
+  <h2 class="card-title" id="who-title">{{ _("Compte") }}</h2>
+  <p><span class="num">{{ target.phone }}</span> -
+    {% if target.role == "manager" %}{{ _("Responsable") }}{% else %}{{ _("Employé") }}{% endif %} -
+    {% if target.is_active %}<span class="pill pill-green">{{ _("Actif") }}</span>{% else %}<span class="pill pill-neutral">{{ _("Désactivé") }}</span>{% endif %}</p>
+</section>
 
-<h2>{{ _("Rôle") }}</h2>
-<form method="post" action="/staff/{{ target.id }}/role">
-  {% include "_csrf.html" %}
-  <select name="role">
-    <option value="staff"{% if target.role == "staff" %} selected{% endif %}>{{ _("Employé") }}</option>
-    <option value="manager"{% if target.role == "manager" %} selected{% endif %}>{{ _("Responsable") }}</option>
-  </select>
-  <button type="submit">{{ _("Changer le rôle") }}</button>
-</form>
+<section class="card" aria-labelledby="signs-title">
+  <h2 class="card-title" id="signs-title">{{ _("Codes agent Amadeus") }}</h2>
+  <ul class="list-plain">
+  {% for link in signs %}
+    <li><code>{{ link.staff_sign }}</code>
+      <form class="inline-form" method="post" action="/staff/{{ target.id }}/signs/{{ link.id }}/unlink">
+        {% include "_csrf.html" %}
+        <button class="btn" type="submit">{{ _("Retirer") }}</button>
+      </form>
+    </li>
+  {% else %}
+    <li class="muted">{{ _("Aucun code agent associé.") }}</li>
+  {% endfor %}
+  </ul>
+  <form class="form" method="post" action="/staff/{{ target.id }}/signs">
+    {% include "_csrf.html" %}
+    <div class="field">
+      <label for="sign">{{ _("Associer un code agent (par exemple 0004SV)") }}</label>
+      <input id="sign" name="sign" type="text" required maxlength="32" autocapitalize="characters"{% if error %} aria-describedby="form-error"{% endif %}>
+    </div>
+    <button class="btn btn-primary" type="submit">{{ _("Associer") }}</button>
+  </form>
+</section>
+
+<section class="card" aria-labelledby="role-title">
+  <h2 class="card-title" id="role-title">{{ _("Rôle") }}</h2>
+  <form class="form" method="post" action="/staff/{{ target.id }}/role">
+    {% include "_csrf.html" %}
+    <div class="field">
+      <label class="visually-hidden" for="role">{{ _("Rôle") }}</label>
+      <select id="role" name="role"{% if error %} aria-describedby="form-error"{% endif %}>
+        <option value="staff"{% if target.role == "staff" %} selected{% endif %}>{{ _("Employé") }}</option>
+        <option value="manager"{% if target.role == "manager" %} selected{% endif %}>{{ _("Responsable") }}</option>
+      </select>
+    </div>
+    <button class="btn" type="submit">{{ _("Changer le rôle") }}</button>
+  </form>
+</section>
 
 {% if can_reissue %}
-<h2>{{ _("Mot de passe temporaire") }}</h2>
-<form method="post" action="/staff/{{ target.id }}/temp-password">
-  {% include "_csrf.html" %}
-  <input type="hidden" name="expected_temp_id" value="{{ expected_temp_id }}">
-  <button type="submit">{{ _("Émettre un mot de passe temporaire") }}</button>
-</form>
+<section class="card" aria-labelledby="temp-title">
+  <h2 class="card-title" id="temp-title">{{ _("Mot de passe temporaire") }}</h2>
+  <form method="post" action="/staff/{{ target.id }}/temp-password">
+    {% include "_csrf.html" %}
+    <input type="hidden" name="expected_temp_id" value="{{ expected_temp_id }}">
+    <button class="btn" type="submit">{{ _("Émettre un mot de passe temporaire") }}</button>
+  </form>
+</section>
 {% elif target.is_active and target.role == "manager" %}
-<h2>{{ _("Mot de passe temporaire") }}</h2>
-<p>{{ _("Le mot de passe d'un responsable est réinitialisé par l'administrateur de la plateforme.") }}</p>
+<section class="card" aria-labelledby="temp-title">
+  <h2 class="card-title" id="temp-title">{{ _("Mot de passe temporaire") }}</h2>
+  <p class="muted">{{ _("Le mot de passe d'un responsable est réinitialisé par l'administrateur de la plateforme.") }}</p>
+</section>
 {% endif %}
 
 {% if target.is_active %}
-<h2>{{ _("Désactiver") }}</h2>
-<form method="post" action="/staff/{{ target.id }}/deactivate">
-  {% include "_csrf.html" %}
-  <button type="submit">{{ _("Désactiver ce compte") }}</button>
-</form>
+<section class="card" aria-labelledby="off-title">
+  <h2 class="card-title" id="off-title">{{ _("Désactiver") }}</h2>
+  <form method="post" action="/staff/{{ target.id }}/deactivate">
+    {% include "_csrf.html" %}
+    <button class="btn btn-danger" type="submit">{{ _("Désactiver ce compte") }}</button>
+  </form>
+</section>
 {% endif %}
 {% endblock %}

@@ -1,8 +1,8 @@
 {% extends "base.html" %}
 {% from "_icons.html" import icon %}
-{% from "_bookings.html" import status_pill, lead, airlines, ticket_count %}
-{% block title %}{{ _("Accueil") }}{% endblock %}
-{% block heading %}{{ _("Bonjour") }}, {{ shell.user.display_name or shell.user.phone }}{% endblock %}
+{% from "_bookings.html" import status_pill, lead, airlines, ticket_count, fraction %}
+{% block title %}{{ _("Tableau de bord") }}{% endblock %}
+{% block heading %}{{ _("Bonjour, %(name)s", name=shell.user.display_name or shell.user.phone) }}{% endblock %}
 {% block content %}
 <div class="home-narrow">
 {% if not shell.my_signs %}
@@ -21,19 +21,20 @@
   {% if not summary.ticket_count %}
   <section class="card empty">
     <h2 class="empty-title">{{ _("Aucun billet pour cette date") }}</h2>
-    <p class="muted">{{ _("Aucune de vos réservations n'est dans le rapport du") }} {{ day|date_fr }}.</p>
+    <p class="muted">{{ _("Aucune de vos réservations n'est dans le rapport du %(date)s.", date=day|date_fr) }}</p>
   </section>
   {% else %}
   <section class="card todo" aria-labelledby="todo-title">
     <div class="card-head">
       <h2 class="card-title" id="todo-title">{% if is_today %}{{ _("À tarifer aujourd'hui") }}{% else %}{{ _("À tarifer") }}{% endif %}</h2>
-      <span class="pill pill-amber">{{ summary.confirmed_count }} / {{ summary.booking_count }}</span>
+      {% if summary.awaiting_count %}<span class="pill pill-amber">{{ _("%(count)s en attente", count=summary.awaiting_count) }}</span>{% else %}<span class="pill pill-green">{{ _("Tout est confirmé") }}</span>{% endif %}
     </div>
     <div class="todo-count">
       <span class="todo-number">{{ summary.awaiting_count }}</span>
       <span class="muted">{{ _("réservations") }} · {{ ticket_count(waiting_tickets) }}</span>
     </div>
     <progress class="progress" max="{{ summary.booking_count }}" value="{{ summary.confirmed_count }}" aria-label="{{ _('Prix confirmés') }}"></progress>
+    <p class="muted num progress-note">{{ _("Prix confirmés") }} : {{ fraction(summary.confirmed_count, summary.booking_count) }}</p>
     {% if summary.awaiting_count %}
     <a class="btn btn-primary btn-lg btn-block" href="/questions?date={{ day.isoformat() }}">{{ _("Commencer") }}</a>
     {% else %}
@@ -61,7 +62,7 @@
     </a>
     {% endfor %}
     {% if hidden_count %}
-    <a class="more-link" href="/questions?date={{ day.isoformat() }}&amp;status=all">{{ _("Afficher les") }} {{ hidden_count }} {{ _("autres réservations") }}</a>
+    <a class="more-link" href="{{ all_url }}">{{ _("Afficher les %(count)s autres réservations", count=hidden_count) }}</a>
     {% endif %}
   </section>
   {% endif %}

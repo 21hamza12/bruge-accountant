@@ -4,9 +4,10 @@
 to ``page()``. It reads, for the signed-in user's own agency only (the id comes from the session):
 
 * the agency (its name and currency);
-* the agency's newest report day and, for that day, how many price questions still wait, per
-  staff sign. A manager counts every sign and sees the agent list; staff count only the signs
-  linked to them. The badge on "Questions de prix" is the sum.
+* the day pages open on (a manager: the agency's newest report day; staff: the newest day with a
+  ticket on their own signs, else the agency's) and, for that day, how many price questions still
+  wait, per staff sign. A manager counts every sign and sees the agent list; staff count only the
+  signs linked to them. The badge on "Questions de prix" is the sum.
 
 Three or four small indexed queries per page. The tickets themselves are not loaded here.
 """
@@ -55,6 +56,12 @@ class Shell:
     my_signs: tuple[str, ...]  # staff only: the signs linked to them
 
     @property
+    def visible_signs(self) -> tuple[str, ...] | None:
+        """The staff signs a query may look at: None (all of them) for a manager, the linked
+        signs for staff (an empty tuple means nothing, never everything)."""
+        return None if self.is_manager else self.my_signs
+
+    @property
     def initial(self) -> str:
         return (self.agency.name.strip() or "B")[0].upper()
 
@@ -63,6 +70,16 @@ class Shell:
         return ((self.user.display_name or "").strip() or self.user.phone.lstrip("+") or "?")[
             0
         ].upper()
+
+
+def _default_day(db: Session, agency_id: int, staff_signs: tuple[str, ...] | None) -> date | None:
+    """The day pages open on. A manager gets the agency's newest report day. Staff get the newest
+    day that has a ticket on their own signs, and only when there is none the agency's newest day
+    (the pages then say that nothing is theirs that day)."""
+    if staff_signs is None:
+        return latest_report_date(db, agency_id)
+    own = latest_report_date(db, agency_id, staff_signs) if staff_signs else None
+    return own or latest_report_date(db, agency_id)
 
 
 def build_shell(db: Session, auth: AuthContext, active: str) -> Shell:
@@ -75,7 +92,7 @@ def build_shell(db: Session, auth: AuthContext, active: str) -> Shell:
     my_signs: tuple[str, ...] = ()
     if not is_manager:
         my_signs = tuple(link.staff_sign for link in accounts.get_signs(db, agency_id, user.id))
-    day = latest_report_date(db, agency_id)
+    day = _default_day(db, agency_id, None if is_manager else my_signs)
     counts: dict[str, int] = {}
     if day is not None:
         counts = awaiting_counts_by_sign(db, agency_id, day, None if is_manager else my_signs)

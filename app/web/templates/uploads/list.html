@@ -7,8 +7,8 @@
     <a class="btn btn-primary" href="/uploads/new">{{ _("Envoyer un rapport") }}</a>
   </div>
   {% if uploads %}
-  <div class="table-wrap">
-    <table class="table">
+  <div class="table-wrap" tabindex="0" role="region" aria-label="{{ _('Rapports envoyés (défilement horizontal)') }}">
+    <table class="table" aria-labelledby="uploads-title">
       <thead>
         <tr><th scope="col">{{ _("Fichier") }}</th><th scope="col">{{ _("Date du rapport") }}</th><th scope="col">{{ _("Envoyé le") }}</th><th scope="col" class="col-end">{{ _("Ajoutés") }}</th><th scope="col" class="col-end">{{ _("Mis à jour") }}</th><th scope="col">{{ _("Envoyé par") }}</th></tr>
       </thead>
@@ -16,8 +16,8 @@
       {% for u in uploads %}
         <tr>
           <td><a href="/uploads/{{ u.id }}">{{ u.filename }}</a></td>
-          <td>{{ u.report_date.isoformat() }}</td>
-          <td>{{ u.uploaded_at.strftime("%Y-%m-%d %H:%M") }}</td>
+          <td><time datetime="{{ u.report_date.isoformat() }}">{{ u.report_date|date_fr }}</time></td>
+          <td><time datetime="{{ u.uploaded_at.isoformat() }}">{{ u.uploaded_at|datetime_fr }}</time></td>
           <td class="col-end">{{ u.inserted_count if u.inserted_count is not none else "-" }}</td>
           <td class="col-end">{{ u.updated_count if u.updated_count is not none else "-" }}</td>
           <td>{{ names.get(u.uploaded_by_user_id or 0, "-") }}</td>

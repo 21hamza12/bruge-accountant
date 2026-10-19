@@ -54,8 +54,9 @@
   --text: #17171c;
   --text-2: #4a4a55;
   --text-3: #6b6b76;
-  --text-4: #757580; /* the mockup's #8a8a95 darkened to keep 4.5:1 on white */
-  --text-5: #b4b4bd;
+  --text-4: #6b6b76; /* same as --text-3: 4.5:1 on white and on every tinted surface but the accent tint */
+  --text-5: #b4b4bd; /* decoration only (dashed borders): never text */
+  --border-input: #8a8a95; /* 3:1 against white and --subtle: the edge of a form control (WCAG 1.4.11) */
   --accent: #5b4ce0;
   --accent-soft: #e4e0fb;
   --accent-ink: #ffffff;
@@ -72,6 +73,18 @@
   --font: "Geist", system-ui, -apple-system, "Segoe UI", sans-serif;
   --mono: "Geist Mono", ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
   --sidebar: 16rem;
+  /* Chevron turns (degrees). The chevron is a corner of two borders, so a turn that points it
+     forward in left-to-right text points it backward in right-to-left text: they are swapped
+     under dir="rtl" below, which is what mirrors every arrow in the interface. */
+  --chevron-forward: -45deg;
+  --chevron-back: 135deg;
+  --chevron-down: 45deg;
+}
+
+[dir="rtl"] {
+  --chevron-forward: 45deg;
+  --chevron-back: -135deg;
+  --chevron-down: -45deg;
 }
 
 *,
@@ -82,6 +95,7 @@
 
 html {
   -webkit-text-size-adjust: 100%;
+  scroll-padding-block-end: 5rem; /* the fixed bottom bar never hides the element in focus */
 }
 
 body {
@@ -315,6 +329,12 @@ svg {
   color: var(--text-4);
 }
 
+.agent-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
 .agent-link {
   display: flex;
   align-items: center;
@@ -439,7 +459,7 @@ svg {
   gap: 0.5rem;
   min-block-size: var(--tap);
   padding-inline: 0.75rem;
-  border: 1px solid var(--border);
+  border: 1px solid var(--border-input);
   border-radius: var(--radius-md);
   background: var(--subtle);
   color: var(--text-4);
@@ -484,13 +504,16 @@ svg {
   background: var(--surface);
   border-block-start: 1px solid var(--border);
   padding-block: 0.375rem calc(0.375rem + env(safe-area-inset-bottom, 0px));
-  padding-inline: 0.5rem;
+  padding-inline: 0.25rem; /* five tabs fit a 320px screen */
 }
 
 .tab {
   display: flex;
   flex: 1;
+  min-inline-size: 0;
   max-inline-size: 6rem;
+  text-align: center;
+  line-height: 1.2;
   flex-direction: column;
   align-items: center;
   justify-content: center;
@@ -504,6 +527,10 @@ svg {
 .tab .icon {
   inline-size: 1.25rem;
   block-size: 1.25rem;
+}
+
+.tab-label {
+  overflow-wrap: anywhere;
 }
 
 .tab[aria-current="page"] {
@@ -586,6 +613,12 @@ svg {
   overflow: hidden;
 }
 
+/* The card clips its children to the rounded corners, so a focus ring drawn outside a full-width
+   row would be cut off: draw it inside. */
+.card-flush :is(summary, .more-link, .my-row):focus-visible {
+  outline-offset: -3px;
+}
+
 .card-head {
   display: flex;
   flex-wrap: wrap;
@@ -611,6 +644,27 @@ svg {
 .card-link:hover {
   color: var(--text);
   text-decoration: underline;
+}
+
+/* A chevron after ("next") or before ("back") the link text; mirrored under dir="rtl". */
+.card-link-next::after,
+.card-link-back::before {
+  content: "";
+  flex: none;
+  inline-size: 0.4375rem;
+  block-size: 0.4375rem;
+  border-inline-end: 1.5px solid currentColor;
+  border-block-end: 1.5px solid currentColor;
+}
+
+.card-link-next::after {
+  margin-inline-start: 0.375rem;
+  transform: rotate(var(--chevron-forward));
+}
+
+.card-link-back::before {
+  margin-inline-end: 0.375rem;
+  transform: rotate(var(--chevron-back));
 }
 
 .btn {
@@ -785,6 +839,13 @@ svg {
   inline-size: auto;
 }
 
+/* The browser shows the date in its own format; this says it in words next to the field. */
+.date-readout {
+  font-size: 0.8125rem;
+  font-weight: 500;
+  color: var(--text-2);
+}
+
 .date-links {
   display: flex;
   flex-wrap: wrap;
@@ -831,12 +892,17 @@ select {
   min-block-size: var(--tap);
   inline-size: 100%;
   padding-inline: 0.75rem;
-  border: 1px solid #dcdce2;
+  border: 1px solid var(--border-input);
   border-radius: var(--radius-md);
   background: var(--surface);
   color: var(--text);
   font: inherit;
   font-size: 0.875rem;
+}
+
+::placeholder {
+  color: var(--text-3);
+  opacity: 1;
 }
 
 input[type="file"] {
@@ -1024,7 +1090,8 @@ select:focus-visible {
   line-height: 1.2;
 }
 
-.kpi-value small {
+.kpi-value small,
+.kpi-value .frac-total {
   font-size: 1.125rem;
   font-weight: 500;
   color: var(--text-4);
@@ -1032,7 +1099,7 @@ select:focus-visible {
 }
 
 .kpi-value-empty {
-  color: var(--text-5);
+  color: var(--text-4);
 }
 
 .kpi-note {
@@ -1071,6 +1138,10 @@ select:focus-visible {
   overflow-x: auto;
 }
 
+.chart-group {
+  min-inline-size: 0;
+}
+
 .chart-bars {
   border-block-end: 1px solid var(--border);
   display: grid;
@@ -1094,7 +1165,7 @@ select:focus-visible {
 }
 
 .bar {
-  fill: var(--accent-soft);
+  fill: #8f84ea; /* 3:1 against white (WCAG 1.4.11); the costliest bar is the full accent */
 }
 
 .bar-top {
@@ -1221,7 +1292,7 @@ select:focus-visible {
   color: var(--text);
 }
 
-.tab-link[aria-current="page"] {
+.tab-link[aria-current="true"] {
   background: var(--hover);
   color: var(--text);
   font-weight: 600;
@@ -1239,6 +1310,8 @@ select:focus-visible {
 }
 
 .group-name {
+  margin: 0;
+  font-size: 0.875rem;
   font-weight: 500;
   overflow-wrap: anywhere;
 }
@@ -1262,7 +1335,9 @@ select:focus-visible {
   list-style: none;
   cursor: pointer;
   display: grid;
-  grid-template-columns: 6rem minmax(0, 1.6fr) minmax(0, 1.2fr) 4.5rem minmax(0, 0.9fr) 6.5rem;
+  grid-template-columns:
+    6rem minmax(0, 1.6fr) minmax(0, 1.2fr) 4.5rem minmax(0, 0.9fr) 6.5rem
+    1rem;
   align-items: center;
   gap: 0.75rem;
   min-block-size: 3.5rem;
@@ -1271,6 +1346,21 @@ select:focus-visible {
 
 .booking summary::-webkit-details-marker {
   display: none;
+}
+
+/* The row's chevron: points forward when closed, down when open, mirrored under dir="rtl". */
+.booking summary::after {
+  content: "";
+  justify-self: center;
+  inline-size: 0.5rem;
+  block-size: 0.5rem;
+  border-inline-end: 2px solid var(--text-3);
+  border-block-end: 2px solid var(--text-3);
+  transform: rotate(var(--chevron-forward));
+}
+
+.booking[open] summary::after {
+  transform: rotate(var(--chevron-down));
 }
 
 .booking summary:hover {
@@ -1294,6 +1384,12 @@ select:focus-visible {
 .b-name .b-more {
   color: var(--text-4);
   font-weight: 400;
+}
+
+.more-note {
+  padding: 0.75rem 1.25rem;
+  font-size: 0.8125rem;
+  border-block-end: 1px solid var(--border);
 }
 
 .b-airlines {
@@ -1367,13 +1463,17 @@ select:focus-visible {
 
 @media (max-width: 47.99rem) {
   .booking summary {
-    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-columns: minmax(0, 1fr) auto 1rem;
     grid-template-areas:
-      "ref status"
-      "name cost"
-      "air tickets";
+      "ref status chev"
+      "name cost chev"
+      "air tickets chev";
     gap: 0.125rem 0.75rem;
     padding-block: 0.625rem;
+  }
+
+  .booking summary::after {
+    grid-area: chev;
   }
 
   .b-ref {
@@ -1512,6 +1612,10 @@ select:focus-visible {
   color: var(--text-4);
 }
 
+.progress-note {
+  font-size: 0.8125rem;
+}
+
 .my-side {
   display: flex;
   flex-direction: column;
@@ -1586,6 +1690,15 @@ select:focus-visible {
 
 .booking:target summary {
   background: var(--accent-soft);
+}
+
+/* On the accent tint the grey text tokens fall under 4.5:1: use the darker text colour. */
+.booking:target summary :is(.b-more, .b-tickets, .b-airlines) {
+  color: var(--text-2);
+}
+
+.error-box:focus-visible {
+  outline-offset: 0;
 }
 
 .list-plain li {

@@ -85,7 +85,7 @@ def test_the_result_page_shows_the_numbers_the_uploader_and_a_link_to_the_questi
     assert page.status_code == 200
     text = page.text
     assert "1OCT.xlsx" in text
-    assert "2026-10-01" in text
+    assert "1 octobre 2026" in text
     assert re.search(r"Ajoutés\s*:\s*<strong>48</strong>", text)
     assert re.search(r"Mis à jour\s*:\s*<strong>0</strong>", text)
     assert "Manager A" in text
@@ -157,7 +157,7 @@ def test_staff_see_their_own_upload_with_counts_and_date_but_no_warnings(env: En
         listing = s.get("/uploads")
     assert page.status_code == 200
     text = page.text
-    assert "2026-10-01" in text
+    assert "1 octobre 2026" in text
     assert re.search(r"Ajoutés\s*:\s*<strong>2</strong>", text)
     assert "Staff A" in text
     assert 'href="/questions?date=2026-10-01"' in text
@@ -231,9 +231,9 @@ def test_the_result_page_shows_the_days_the_tickets_belong_to_and_warns_on_a_mis
         page = m.get(f"/uploads/{second_id}")
         plain = m.get(first)
     text = page.text
-    assert "2026-10-05" in text  # the upload's own date
+    assert "5 octobre 2026" in text  # the upload's own date
     assert 'href="/questions?date=2026-10-01"' in text  # where the tickets really are
-    assert re.search(r"2026-10-01</a> : 48 billets", text)
+    assert re.search(r"1 octobre 2026</a> : 48 billets", text)
     assert "gardent leur jour d'origine" in text
     assert "gardent leur jour d'origine" not in plain.text  # no warning when the days agree
 

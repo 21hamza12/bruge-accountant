@@ -25,13 +25,14 @@
 <div class="toolbar">
   <form class="date-form" method="get" action="/questions">
     <label for="date">{{ _("Date du rapport") }}</label>
-    <input id="date" name="date" type="date" value="{{ day.isoformat() }}" required>
+    <input id="date" name="date" type="date" value="{{ day.isoformat() }}" required aria-describedby="date-readout">
+    <span class="date-readout" id="date-readout">{{ day|date_fr }}</span>
     {% if status != "awaiting" %}<input type="hidden" name="status" value="{{ status }}">{% endif %}
     {% if q %}<input type="hidden" name="q" value="{{ q }}">{% endif %}
     <button class="btn" type="submit">{{ _("Afficher") }}</button>
   </form>
   {% if dates %}
-  <p class="date-links">{% for d in dates %}<a href="/questions?date={{ d.isoformat() }}">{{ d.isoformat() }}</a>{% endfor %}</p>
+  <nav class="date-links" aria-label="{{ _('Jours récents') }}">{% for d in dates %}<a href="/questions?date={{ d.isoformat() }}"{% if d == day %} aria-current="date"{% endif %}>{{ d|date_fr }}</a>{% endfor %}</nav>
   {% endif %}
 </div>
 
@@ -53,7 +54,7 @@
     <h2 class="card-title" id="list-title">{{ _("Réservations") }}{% if q %} <span class="faint">· « {{ q }} »</span>{% endif %}</h2>
     <nav class="tabs" aria-label="{{ _('Filtrer') }}">
       {% for tab in tabs %}
-      <a class="tab-link"{% if tab.current %} aria-current="page"{% endif %} href="{{ tab.url }}">{{ tab_labels[tab.key] }}{% if tab.count is not none %} · {{ tab.count }}{% endif %}</a>
+      <a class="tab-link"{% if tab.current %} aria-current="true"{% endif %} href="{{ tab.url }}">{{ tab_labels[tab.key] }}{% if tab.count is not none %} · {{ tab.count }}{% endif %}</a>
       {% endfor %}
     </nav>
   </div>
@@ -64,17 +65,17 @@
 
   {% for g in groups %}
   {% set total = totals[g.group.staff_sign] %}
-  <section class="sign" id="agent-{{ g.group.staff_sign }}" aria-label="{{ g.group.staff_sign }}">
+  <div class="sign" id="agent-{{ g.group.staff_sign }}" role="group" aria-labelledby="agent-title-{{ loop.index }}">
     <div class="group-bar">
-      <span class="group-name"><code class="sign-code">{{ g.group.staff_sign }}</code>
+      <h3 class="group-name" id="agent-title-{{ loop.index }}"><code class="sign-code">{{ g.group.staff_sign }}</code>
         {% if is_manager %}
           {% if shell.owners.get(g.group.staff_sign) %} · {{ shell.owners[g.group.staff_sign] }}
           {% else %} · <span class="error">{{ _("Non attribué") }}</span> (<a href="/staff">{{ _("lier ce code à un employé") }}</a>)
           {% endif %}
         {% endif %}
-      </span>
+      </h3>
       <span class="group-meta"><span class="confirmed-count">{{ total.confirmed_count }}</span> / <span class="group-count">{{ total.booking_count }}</span> {{ _("confirmées") }}
-        · <span class="total">{{ total.total_cost|money_fr }}</span> {{ agency.currency }}{% if total.missing_cost_count %} ({{ _("partiel") }}, {{ total.missing_cost_count }} {{ _("prix manquant(s)") }}){% endif %}
+        · <span class="total">{{ total.total_cost|money_fr }}</span> {{ agency.currency }}{% if total.missing_cost_count %} ({{ ngettext("partiel, %(num)d prix manquant", "partiel, %(num)d prix manquants", total.missing_cost_count) }}){% endif %}
         · <span class="ticket-count">{{ total.ticket_count }}</span> {{ _("billets") }}</span>
     </div>
 
@@ -101,10 +102,12 @@
     </details>
     {% endfor %}
 
-    {% if g.hidden %}
-    <a class="more-link" href="{{ g.more_url }}">{{ _("Afficher les") }} {{ g.hidden }} {{ _("autres réservations") }}</a>
+    {% if g.more_url %}
+    <a class="more-link" href="{{ g.more_url }}">{{ _("Afficher les %(count)s autres réservations", count=g.hidden) }}</a>
+    {% elif g.capped %}
+    <p class="more-note muted">{{ ngettext("%(num)d réservation de plus n'est pas affichée : la liste est limitée à %(limit)d par agent. Affinez la recherche pour la voir.", "%(num)d réservations de plus ne sont pas affichées : la liste est limitée à %(limit)d par agent. Affinez la recherche pour les voir.", g.hidden, limit=max_limit) }}</p>
     {% endif %}
-  </section>
+  </div>
   {% endfor %}
 </section>
 {% endif %}

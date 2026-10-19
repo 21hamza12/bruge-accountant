@@ -1,6 +1,6 @@
 {% extends "base.html" %}
 {% from "_icons.html" import icon %}
-{% from "_bookings.html" import status_pill, lead, airlines, cost, ticket_count %}
+{% from "_bookings.html" import status_pill, lead, airlines, cost, ticket_count, fraction %}
 {% block title %}{{ _("Tableau de bord") }}{% endblock %}
 {% block content %}
 {% if day is none %}
@@ -12,13 +12,14 @@
 {% else %}
 <div class="toolbar">
   {% if summary.ticket_count %}
-  <span class="status-line">{{ icon("check", small=true) }}{{ _("Rapport du") }} {{ day|date_fr }} {{ _("importé") }} · {{ ticket_count(summary.ticket_count) }}</span>
+  <span class="status-line">{{ icon("check", small=true) }}{{ _("Rapport du %(date)s importé", date=day|date_fr) }} · {{ ticket_count(summary.ticket_count) }}</span>
   {% else %}
-  <span class="muted">{{ _("Aucun billet pour cette date") }} ({{ day|date_fr }})</span>
+  <span class="muted">{{ _("Aucun billet pour cette date (%(date)s)", date=day|date_fr) }}</span>
   {% endif %}
   <form class="date-form" method="get" action="/">
     <label for="date">{{ _("Jour") }}</label>
-    <input id="date" name="date" type="date" value="{{ day.isoformat() }}" required>
+    <input id="date" name="date" type="date" value="{{ day.isoformat() }}" required aria-describedby="date-readout">
+    <span class="date-readout" id="date-readout">{{ day|date_fr }}</span>
     <button class="btn" type="submit">{{ _("Afficher") }}</button>
   </form>
 </div>
@@ -27,7 +28,7 @@
 <section class="kpis" aria-label="{{ _('Chiffres clés') }}">
   <div class="card kpi">
     <div class="kpi-head"><span class="kpi-icon">{{ icon("ticket") }}</span><span>{{ _("Billets émis") }}</span></div>
-    <div class="kpi-body"><span class="kpi-value">{{ summary.ticket_count }}</span><span class="kpi-note">{{ summary.booking_count }} {{ _("réservations") }}</span></div>
+    <div class="kpi-body"><span class="kpi-value">{{ summary.ticket_count }}</span><span class="kpi-note">{{ _("%(count)s réservations", count=summary.booking_count) }}</span></div>
   </div>
   <div class="card kpi">
     <div class="kpi-head"><span class="kpi-icon">{{ icon("cash") }}</span><span>{{ _("Coût total") }}</span></div>
@@ -35,11 +36,11 @@
   </div>
   <div class="card kpi">
     <div class="kpi-head"><span class="kpi-icon">{{ icon("check") }}</span><span>{{ _("Prix confirmés") }}</span></div>
-    <div class="kpi-body"><span class="kpi-value">{{ summary.confirmed_count }}<small> / {{ summary.booking_count }}</small></span><span class="pill pill-amber">{{ summary.awaiting_count }} {{ _("en attente") }}</span></div>
+    <div class="kpi-body"><span class="kpi-value">{{ fraction(summary.confirmed_count, summary.booking_count) }}</span><span class="pill pill-amber">{{ summary.awaiting_count }} {{ _("en attente") }}</span></div>
   </div>
   <div class="card kpi">
     <div class="kpi-head"><span class="kpi-icon">{{ icon("trend") }}</span><span>{{ _("Bénéfice") }}</span></div>
-    <div class="kpi-body"><span class="kpi-value kpi-value-empty">—</span><span class="kpi-note">{{ _("après les prix") }}</span></div>
+    <div class="kpi-body"><span class="kpi-value kpi-value-empty"><span aria-hidden="true">—</span><span class="visually-hidden">{{ _("Non disponible") }}</span></span><span class="kpi-note">{{ _("après les prix") }}</span></div>
   </div>
 </section>
 
@@ -49,19 +50,21 @@
       <h2 class="card-title" id="chart-title">{{ _("Coût par compagnie") }}</h2>
       <p class="big-total">{{ summary.total_cost|money_fr }} {{ agency.currency }} <small>· {{ summary.airlines|length }} {% if summary.airlines|length == 1 %}{{ _("compagnie") }}{% else %}{{ _("compagnies") }}{% endif %}</small></p>
     </div>
-    <div class="chart">
+    <div class="chart" tabindex="0" role="region" aria-label="{{ _('Coût par compagnie (défilement horizontal)') }}">
+      <div class="chart-group" role="group" aria-labelledby="chart-title">
       <div class="chart-bars">
         {% for bar in bars %}
-        <svg class="chart-plot" role="img" aria-label="{{ bar.airline.name }} : {{ bar.airline.total_cost|money_fr }} {{ agency.currency }}">
+        <svg class="chart-plot" role="img" aria-label="{{ _('%(name)s : %(cost)s %(currency)s, %(tickets)s', name=bar.airline.name, cost=bar.airline.total_cost|money_fr, currency=agency.currency, tickets=ticket_count(bar.airline.ticket_count)) }}">
           <text class="bar-value" x="50%" y="{{ bar.top }}%" dy="-6" text-anchor="middle">{{ bar.airline.total_cost|money_fr }}</text>
           <rect class="bar{% if loop.first %} bar-top{% endif %}" x="15%" width="70%" y="{{ bar.top }}%" height="{{ bar.height }}%" rx="6"/>
         </svg>
         {% endfor %}
       </div>
-      <div class="chart-names">
+      <div class="chart-names" aria-hidden="true">
         {% for bar in bars %}
         <span class="chart-name">{{ bar.airline.name }}<span class="chart-count">{{ ticket_count(bar.airline.ticket_count) }}</span></span>
         {% endfor %}
+      </div>
       </div>
     </div>
   </section>
@@ -69,13 +72,13 @@
   <section class="card" aria-labelledby="agents-title">
     <div class="card-head">
       <h2 class="card-title" id="agents-title">{{ _("Avancement par agent") }}</h2>
-      <a class="card-link" href="/questions?date={{ day.isoformat() }}">{{ _("Tout voir") }} →</a>
+      <a class="card-link card-link-next" href="/questions?date={{ day.isoformat() }}">{{ _("Tout voir") }}</a>
     </div>
     {% for agent in summary.agents %}
     <div class="agent-row">
       <div class="agent-row-head">
         <span class="agent-row-name">{% if owners.get(agent.staff_sign) %}{{ owners[agent.staff_sign] }}{% else %}<span class="error">{{ _("Non attribué") }}</span>{% endif %} <span class="agent-code">{{ agent.staff_sign }}</span></span>
-        <span class="muted num">{{ agent.confirmed_count }} / {{ agent.booking_count }}</span>
+        <span class="muted num">{{ fraction(agent.confirmed_count, agent.booking_count) }}</span>
       </div>
       <progress class="progress" max="{{ agent.booking_count }}" value="{{ agent.confirmed_count }}" aria-label="{{ _('Prix confirmés') }} {{ agent.staff_sign }}"></progress>
       <span class="agent-row-meta num">{{ agent.total_cost|money_fr }} {{ agency.currency }} · {{ ticket_count(agent.ticket_count) }}</span>
@@ -93,11 +96,11 @@
 <section class="card" aria-labelledby="waiting-title">
   <div class="card-head">
     <h2 class="card-title" id="waiting-title">{{ _("Questions en attente") }}</h2>
-    <a class="card-link" href="/questions?date={{ day.isoformat() }}">{{ _("Voir les") }} {{ summary.awaiting_count }} →</a>
+    <a class="card-link card-link-next" href="/questions?date={{ day.isoformat() }}">{{ _("Voir les %(count)s en attente", count=summary.awaiting_count) }}</a>
   </div>
   {% if waiting %}
-  <div class="table-wrap">
-    <table class="table">
+  <div class="table-wrap" tabindex="0" role="region" aria-label="{{ _('Questions en attente (défilement horizontal)') }}">
+    <table class="table" aria-labelledby="waiting-title">
       <thead>
         <tr>
           <th scope="col">{{ _("Réservation") }}</th>

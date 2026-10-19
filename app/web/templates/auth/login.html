@@ -1,16 +1,16 @@
 {% extends "base.html" %}
 {% block title %}{{ _("Connexion") }}{% endblock %}
 {% block content %}
-{% if error %}<p class="error-box" role="alert">{{ error }}</p>{% endif %}
+{% if error %}<p class="error-box" id="form-error" role="alert" tabindex="-1" autofocus>{{ error }}</p>{% endif %}
 <form class="form" method="post" action="/login">
   {% include "_csrf.html" %}
   <div class="field">
     <label for="phone">{{ _("Numéro de téléphone") }}</label>
-    <input id="phone" name="phone" type="tel" inputmode="tel" autocomplete="username" required maxlength="64">
+    <input id="phone" name="phone" type="tel" inputmode="tel" autocomplete="username" required maxlength="64"{% if error %} aria-describedby="form-error"{% endif %}>
   </div>
   <div class="field">
     <label for="password">{{ _("Mot de passe") }}</label>
-    <input id="password" name="password" type="password" autocomplete="current-password" required maxlength="1024">
+    <input id="password" name="password" type="password" autocomplete="current-password" required maxlength="1024"{% if error %} aria-describedby="form-error"{% endif %}>
   </div>
   <button class="btn btn-primary btn-lg btn-block" type="submit">{{ _("Se connecter") }}</button>
 </form>

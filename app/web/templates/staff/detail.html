@@ -1,8 +1,8 @@
 {% extends "base.html" %}
 {% block title %}{{ target.display_name or target.phone }}{% endblock %}
 {% block content %}
-<p><a class="card-link" href="/staff">← {{ _("Retour à l'équipe") }}</a></p>
-{% if error %}<p class="error-box" role="alert">{{ error }}</p>{% endif %}
+<p><a class="card-link card-link-back" href="/staff">{{ _("Retour à l'équipe") }}</a></p>
+{% if error %}<p class="error-box" id="form-error" role="alert" tabindex="-1" autofocus>{{ error }}</p>{% endif %}
 
 <section class="card" aria-labelledby="who-title">
   <h2 class="card-title" id="who-title">{{ _("Compte") }}</h2>
@@ -29,7 +29,7 @@
     {% include "_csrf.html" %}
     <div class="field">
       <label for="sign">{{ _("Associer un code agent (par exemple 0004SV)") }}</label>
-      <input id="sign" name="sign" type="text" required maxlength="32" autocapitalize="characters">
+      <input id="sign" name="sign" type="text" required maxlength="32" autocapitalize="characters"{% if error %} aria-describedby="form-error"{% endif %}>
     </div>
     <button class="btn btn-primary" type="submit">{{ _("Associer") }}</button>
   </form>
@@ -41,7 +41,7 @@
     {% include "_csrf.html" %}
     <div class="field">
       <label class="visually-hidden" for="role">{{ _("Rôle") }}</label>
-      <select id="role" name="role">
+      <select id="role" name="role"{% if error %} aria-describedby="form-error"{% endif %}>
         <option value="staff"{% if target.role == "staff" %} selected{% endif %}>{{ _("Employé") }}</option>
         <option value="manager"{% if target.role == "manager" %} selected{% endif %}>{{ _("Responsable") }}</option>
       </select>

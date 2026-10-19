@@ -50,7 +50,7 @@ def test_the_shell_has_a_sidebar_a_top_bar_and_a_bottom_bar(env: Env) -> None:
     html = response.text
     assert response.status_code == 200
     assert '<html lang="fr" dir="ltr">' in html
-    assert '<aside class="sidebar"' in html
+    assert '<div class="sidebar">' in html and "<aside" not in html
     assert '<header class="topbar">' in html
     assert '<nav class="tabbar"' in html
     assert 'href="#main"' in html  # skip link
@@ -62,14 +62,15 @@ def test_the_manager_navigation(env: Env) -> None:
     env.load()
     with env.manager_a() as c:
         html = c.get("/").text
-    side = html.split('<aside class="sidebar"')[1].split("</aside>")[0]
-    for href in ("/", "/questions", "/uploads", "/staff"):
+    side = html.split('<div class="sidebar">')[1].split('<div class="content-col">')[0]
+    for href in ("/", "/questions", "/uploads", "/staff", "/password/change"):
         assert f'href="{href}"' in side, href
     assert 'aria-current="page"' in side
     tabbar = html.split('<nav class="tabbar"')[1].split("</nav>")[0]
-    for href in ("/", "/questions", "/uploads/new", "/staff"):
+    for href in ("/", "/questions", "/uploads/new", "/staff", "/password/change"):
         assert f'href="{href}"' in tabbar, href
-    assert "Équipe" in tabbar and "Profil" not in tabbar
+    assert "Équipe" in tabbar and "Compte" in tabbar and "Profil" not in tabbar
+    assert tabbar.count('class="tab"') == 5  # five fit a 320px screen (see the stylesheet test)
 
 
 def test_the_staff_navigation_has_no_team_pages(env: Env) -> None:
@@ -81,7 +82,8 @@ def test_the_staff_navigation_has_no_team_pages(env: Env) -> None:
     tabbar = html.split('<nav class="tabbar"')[1].split("</nav>")[0]
     for href in ("/", "/questions", "/uploads/new", "/password/change"):
         assert f'href="{href}"' in tabbar, href
-    assert "Profil" in tabbar
+    assert "Compte" in tabbar and "Profil" not in tabbar
+    assert tabbar.count('class="tab"') == 4
 
 
 def test_the_questions_badge_counts_what_the_viewer_can_see(env: Env) -> None:
@@ -89,20 +91,24 @@ def test_the_questions_badge_counts_what_the_viewer_can_see(env: Env) -> None:
     env.link(env.seeded.staff_a, "0009ER")
     with env.manager_a() as m, env.staff_a() as s:
         manager_html, staff_html = m.get("/").text, s.get("/").text
-    assert '<span class="badge">33</span>' in manager_html
-    assert '<span class="badge">8</span>' in staff_html
-    assert '<span class="badge">33</span>' not in staff_html
+    waiting = '<span class="visually-hidden"> en attente</span></span>'
+    assert f'<span class="badge">33{waiting}' in manager_html
+    assert f'<span class="badge">8{waiting}' in staff_html
+    assert '<span class="badge">33' not in staff_html
 
 
 def test_the_manager_sidebar_lists_the_agents_with_their_counts(env: Env) -> None:
     env.load()
     env.link(env.seeded.staff_a, "0009ER")
     with env.manager_a() as c:
-        side = c.get("/").text.split('<aside class="sidebar"')[1].split("</aside>")[0]
+        side = (
+            c.get("/").text.split('<div class="sidebar">')[1].split('<div class="content-col">')[0]
+        )
     assert "Staff A" in side
     assert "0009ER" in side and "0004SV" in side
     assert "Non attribué" in side  # 0004SV has no owner
     assert re.search(r'agent-count">25<', side) and re.search(r'agent-count">8<', side)
+    assert side.count("en attente</span>") == 3  # badge and two agents: never a bare number
 
 
 def test_the_sidebar_logout_is_a_csrf_protected_post(env: Env) -> None:
@@ -152,15 +158,17 @@ def test_the_dashboard_status_line_and_kpis(env: Env) -> None:
     assert response.headers["cache-control"] == "no-store"
     assert kpi(html, "Billets émis") == "Billets émis 48 33 réservations"
     assert kpi(html, "Coût total") == f"Coût total {fr(1118857)} MRU"
-    assert kpi(html, "Prix confirmés") == "Prix confirmés 0 / 33 33 en attente"
-    assert kpi(html, "Bénéfice") == "Bénéfice — après les prix"
+    assert kpi(html, "Prix confirmés") == "Prix confirmés 0 / 33 0 confirmés sur 33 33 en attente"
+    assert kpi(html, "Bénéfice") == "Bénéfice — Non disponible après les prix"
 
 
 def test_the_cost_chart_is_svg_with_attribute_sized_bars(env: Env) -> None:
     env.load()
     with env.manager_a() as c:
         html = c.get("/").text
-    chart = html.split('aria-labelledby="chart-title">')[1].split("</section>")[0]
+    chart = html.split('<section class="card" aria-labelledby="chart-title">')[1].split(
+        "</section>"
+    )[0]
     assert squash(chart).startswith("Coût par compagnie")
     assert f"{fr(1118857)} MRU" in squash(chart) and "5 compagnies" in squash(chart)
     bars = re.findall(r"<rect [^>]*>", chart)
@@ -223,7 +231,9 @@ def test_the_five_costliest_waiting_bookings(env: Env) -> None:
     ).top_waiting(5)
     with env.manager_a() as c:
         html = c.get("/").text
-    card = html.split('aria-labelledby="waiting-title">')[1].split("</section>")[0]
+    card = html.split('<section class="card" aria-labelledby="waiting-title">')[1].split(
+        "</section>"
+    )[0]
     assert "Voir les 33" in squash(card)
     body = card.split("<tbody>")[1].split("</tbody>")[0]
     rows = re.findall(r"<tr>(.*?)</tr>", body, re.S)
@@ -328,7 +338,6 @@ def test_the_staff_home_shows_only_their_own_work(env: Env) -> None:
     rows = re.findall(r'<a class="my-row"[^>]*>', html)
     assert len(rows) == 8
     assert "0004SV" not in html and fr(746423) not in html
-    assert "Tableau de bord" not in html
     assert 'class="card kpi"' not in html and 'class="chart-plot"' not in html
     progress = re.search(r"<progress[^>]*>", html)
     assert progress and 'max="8"' in progress.group(0) and 'value="0"' in progress.group(0)

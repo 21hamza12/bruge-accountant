@@ -14,9 +14,9 @@ from app.web.templating import TEMPLATES_DIR, render
 from tests.page_support import Env
 from tests.web_support import PASSWORD_S, WebDb, add_user, login
 
-CSS = (Path(__file__).resolve().parent.parent / "app" / "web" / "static" / "app.css").read_text(
-    encoding="utf-8"
-)
+WEB_DIR = Path(__file__).resolve().parent.parent / "app" / "web"
+STATIC = WEB_DIR / "static"
+CSS = (STATIC / "app.css").read_text(encoding="utf-8")
 
 EXPECTED_CSP = (
     "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; "
@@ -56,10 +56,58 @@ def test_pages_keep_the_security_headers(env: Env) -> None:
             no_inline_style(response.text)
 
 
-def test_the_stylesheet_and_fonts_are_cached_by_validation_only(client: TestClient) -> None:
-    css = client.get("/static/app.css")
-    assert css.status_code == 200 and css.headers["cache-control"] == "no-cache"
-    assert css.headers["content-security-policy"] == EXPECTED_CSP
+FONT = "/static/fonts/geist-latin-400-normal.woff2"
+IMMUTABLE = "public, max-age=31536000, immutable"
+
+
+def test_the_changeable_assets_are_cached_by_validation_only(client: TestClient) -> None:
+    """A deploy that changes one of these must reach the user at once: ``no-cache`` plus an ETag."""
+    for path in (
+        "/static/app.css",
+        "/static/htmx.min.js",
+        "/static/register-sw.js",
+        "/static/manifest.webmanifest",
+        "/sw.js",
+    ):
+        response = client.get(path)
+        assert response.status_code == 200, path
+        assert response.headers["cache-control"] == "no-cache", path
+        assert response.headers["content-security-policy"] == EXPECTED_CSP, path
+
+
+def test_a_font_is_cached_for_a_year_and_revalidates_with_its_etag(client: TestClient) -> None:
+    """A font never changes in place (a new font gets a new file name, which the hash test in
+    test_pwa_assets pins), so the browser may keep it for a year without asking."""
+    first = client.get(FONT)
+    assert first.status_code == 200
+    assert first.headers["content-type"] == "font/woff2"
+    assert first.headers["cache-control"] == IMMUTABLE
+    assert first.headers["content-security-policy"] == EXPECTED_CSP
+    assert first.headers["x-content-type-options"] == "nosniff"
+    etag = first.headers["etag"]
+    assert etag and first.content[:4] == b"wOF2"
+    again = client.get(FONT, headers={"If-None-Match": etag})
+    assert again.status_code == 304
+    assert again.content == b""
+    assert again.headers["etag"] == etag
+    assert again.headers["cache-control"] == IMMUTABLE
+    other = client.get(FONT, headers={"If-None-Match": '"something-else"'})
+    assert other.status_code == 200
+
+
+def test_every_shipped_woff2_is_immutable_and_only_fonts_are(client: TestClient) -> None:
+    fonts = sorted((STATIC / "fonts").glob("*.woff2"))
+    assert len(fonts) == 5
+    for font in fonts:
+        assert client.get(f"/static/fonts/{font.name}").headers["cache-control"] == IMMUTABLE
+    licence = client.get("/static/fonts/OFL-geist.txt")  # text that may be edited in place
+    assert licence.status_code == 200 and licence.headers["cache-control"] == "no-cache"
+    assert client.get("/static/icon-192.png").headers["cache-control"] == "no-cache"
+
+
+def test_vendored_md_says_fonts_are_immutable_and_how_to_change_one() -> None:
+    text = (WEB_DIR / "VENDORED.md").read_text(encoding="utf-8")
+    assert "immutable" in text and "new file name" in text
 
 
 # --- templates and rendered pages ---------------------------------------------------------------
@@ -139,8 +187,7 @@ def test_upload_pages_use_the_shell_and_the_cards(env: Env) -> None:
         form = c.get("/uploads/new").text
         listing = c.get("/uploads").text
     assert (
-        '<aside class="sidebar"' in form
-        and '<h1 class="page-title">Envoyer un rapport</h1>' in form
+        '<div class="sidebar">' in form and '<h1 class="page-title">Envoyer un rapport</h1>' in form
     )
     assert 'enctype="multipart/form-data"' in form and 'type="file"' in form
     assert 'name="csrf_token"' in form
@@ -156,7 +203,10 @@ def test_staff_pages_use_the_shell(env: Env) -> None:
         detail = c.get(f"/staff/{env.seeded.staff_a}").text
     assert '<h1 class="page-title">Équipe</h1>' in listing
     assert 'class="table-wrap"' in listing and 'class="pill pill-green"' in listing
-    assert 'aria-current="page"' in listing.split('<aside class="sidebar"')[1].split("</aside>")[0]
+    assert (
+        'aria-current="page"'
+        in listing.split('<div class="sidebar">')[1].split('<div class="content-col">')[0]
+    )
     assert "Codes agent Amadeus" in detail and 'class="btn btn-danger"' in detail
     for html in (listing, detail):
         no_inline_style(html)
@@ -188,7 +238,7 @@ def test_the_profile_page_shows_the_account_and_the_password_form(env: Env) -> N
         response = c.get("/password/change")
     html = response.text
     assert response.status_code == 200
-    assert '<aside class="sidebar"' in html
+    assert '<div class="sidebar">' in html
     assert "Staff A" in html and "+22212345603" in html
     assert 'action="/password/change"' in html and 'action="/logout"' in html
     assert 'aria-current="page"' in html.split('<nav class="tabbar"')[1]
@@ -281,7 +331,9 @@ def test_the_stylesheet_has_no_remote_resources_and_no_important() -> None:
 def test_the_home_page_is_reachable_from_every_nav_link(env: Env) -> None:
     env.load()
     with env.manager_a() as c:
-        side = c.get("/").text.split('<aside class="sidebar"')[1].split("</aside>")[0]
+        side = (
+            c.get("/").text.split('<div class="sidebar">')[1].split('<div class="content-col">')[0]
+        )
         hrefs = set(re.findall(r'href="(/[^"#?]*)', side))
         for href in sorted(hrefs):
             assert c.get(href).status_code == 200, href

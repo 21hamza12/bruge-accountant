@@ -174,7 +174,7 @@ def test_1_login_home_and_logout() -> None:
         home = b.http.get("/")
         assert home.status_code == 200
         assert "Tableau de bord" in home.text  # the manager dashboard
-        assert '<aside class="sidebar"' in home.text
+        assert '<div class="sidebar">' in home.text
         out = b.http.post("/logout", data={"csrf_token": b.token("/")})
         assert out.status_code == 303
         assert out.headers["location"] == "/login"

@@ -1,6 +1,8 @@
 """The signed-in home page: a dashboard for managers, a work list for staff.
 
-``GET /?date=YYYY-MM-DD``; without a date, the agency's newest report day. Visibility
+``GET /?date=YYYY-MM-DD``; without a date, the manager gets the agency's newest report day and
+staff get the newest day with a ticket on their own signs (the agency's newest only when they
+have none). Visibility
 (docs/phase2-plan.md, decision 5): a manager sees every ticket of the agency; staff see only the
 tickets of the staff signs linked to them, whatever date they ask for. The agency always comes
 from the session, never from the request.
@@ -16,11 +18,12 @@ from sqlalchemy.orm import Session
 from starlette.responses import Response
 
 from app.clock import Clock
-from app.dashboard import DaySummary, chart_bars, summarize
+from app.dashboard import STATUS_ALL, DaySummary, chart_bars, summarize
 from app.repository import tickets_for_day
 from app.web.deps import AuthContext, current_user, get_clock, get_session
 from app.web.pages import page
 from app.web.params import DayParam, parse_day
+from app.web.routes.questions import MAX_LIMIT, questions_link
 from app.web.shell import ACTIVE_HOME, Shell, shell_context
 
 router = APIRouter()
@@ -54,6 +57,8 @@ def _staff_context(db: Session, shell: Shell, day: date | None, today: date) -> 
         "waiting_tickets": sum(b.question.ticket_count for b in bookings if not b.confirmed),
         "listed": listed,
         "hidden_count": len(bookings) - len(listed),
+        # Everything of theirs, not the questions page's default cut of 50 bookings per agent.
+        "all_url": questions_link(day, STATUS_ALL, None, MAX_LIMIT),
     }
 
 

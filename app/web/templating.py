@@ -7,6 +7,7 @@ from typing import Any
 
 from jinja2 import Environment, FileSystemLoader
 
+from app.formatting import money
 from app.i18n import (
     DEFAULT_LANGUAGE,
     install_null_translations,
@@ -24,6 +25,7 @@ def build_environment() -> Environment:
         extensions=["jinja2.ext.i18n"],
     )
     install_null_translations(env)
+    env.filters["money"] = money
     return env
 
 

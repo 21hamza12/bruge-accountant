@@ -1,0 +1,65 @@
+{% extends "base.html" %}
+{% block title %}{{ _("Questions de prix") }}{% endblock %}
+{% macro amount(total, known, missing) -%}
+  {%- if missing -%}{{ known|money }} {{ agency.currency }} ({{ _("partiel") }}, {{ missing }} {{ _("prix manquant(s)") }}){%- else -%}{{ total|money }} {{ agency.currency }}{%- endif -%}
+{%- endmacro %}
+{% set pax_labels = {"ADT": _("Adulte"), "CHD": _("Enfant"), "INF": _("Bébé")} %}
+{% set flag_labels = {
+  "missing_cost": _("Prix manquant"),
+  "unknown_trnc": _("Type de transaction inconnu"),
+  "missing_booking_ref": _("Sans référence de réservation"),
+  "missing_staff_sign": _("Sans code agent"),
+  "duplicate_in_file": _("Doublon dans le fichier"),
+  "field_too_long": _("Champ tronqué"),
+  "cost_rounded": _("Prix arrondi"),
+} %}
+{% block content %}
+<h1>{{ _("Questions de prix") }}</h1>
+<p><a href="/">{{ _("Accueil") }}</a> · <a href="/uploads/new">{{ _("Envoyer un rapport") }}</a>{% if is_manager %} · <a href="/staff">{{ _("Équipe") }}</a>{% endif %}</p>
+{% if day is none %}
+<p>{{ _("Aucun rapport n'a encore été envoyé.") }} <a href="/uploads/new">{{ _("Envoyer un rapport") }}</a></p>
+{% else %}
+<form method="get" action="/questions">
+  <label for="date">{{ _("Date du rapport") }}</label>
+  <input id="date" name="date" type="date" value="{{ day.isoformat() }}" required>
+  <button type="submit">{{ _("Afficher") }}</button>
+</form>
+{% if dates %}
+<p>{% for d in dates %}<a href="/questions?date={{ d.isoformat() }}">{{ d.isoformat() }}</a>{% if not loop.last %} · {% endif %}{% endfor %}</p>
+{% endif %}
+<h2>{{ day.isoformat() }}</h2>
+{% if not is_manager and not my_signs %}
+<p>{{ _("Aucun code agent ne vous est attribué. Demandez à votre responsable de lier votre code agent à votre compte.") }}</p>
+{% elif not groups %}
+<p>{{ _("Aucune question de prix pour cette date.") }}</p>
+{% endif %}
+{% for g in groups %}
+<section class="sign">
+  <h3><code class="sign-code">{{ g.staff_sign }}</code>
+    {% if is_manager %}
+      {% if owners.get(g.staff_sign) %} - {{ owners[g.staff_sign] }}
+      {% else %} - <span class="error">{{ _("Non attribué") }}</span> (<a href="/staff">{{ _("lier ce code à un employé") }}</a>)
+      {% endif %}
+    {% endif %}
+  </h3>
+  <p>{{ _("Billets") }} : <strong class="ticket-count">{{ g.ticket_count }}</strong>
+     · {{ _("Questions") }} : <strong class="group-count">{{ g.group_count }}</strong>
+     · {{ _("Total") }} : <strong class="total">{{ g.total_cost|money if g.total_cost is not none else g.known_cost_total|money }}</strong> {{ agency.currency }}{% if g.missing_cost_count %} ({{ _("partiel") }}, {{ g.missing_cost_count }} {{ _("prix manquant(s)") }}){% endif %}</p>
+  {% for q in g.questions %}
+  <article class="question">
+    <h4>{% if q.booking_ref %}<code>{{ q.booking_ref }}</code>{% else %}{{ _("(sans référence)") }}{% endif %}</h4>
+    <p>{{ _("Billets") }} : <strong class="ticket-count">{{ q.ticket_count }}</strong>
+       · {{ _("Compagnies") }} : {% for a in q.airlines %}<code>{{ a }}</code>{% if not loop.last %}, {% endif %}{% endfor %}
+       · {{ _("Total") }} : {{ amount(q.total_cost, q.known_cost_total, q.missing_cost_count) }}</p>
+    <ul>
+      {% for p in q.passengers %}
+      <li>{{ p.name }} ({{ pax_labels.get(p.pax_type, p.pax_type) }}) - <code>{{ p.airline }}</code> <code>{{ p.ticket_no }}</code>{% if p.cost is not none %} - {{ p.cost|money }}{% else %} - {{ _("prix manquant") }}{% endif %}</li>
+      {% endfor %}
+    </ul>
+    {% if q.flags %}<p class="error">{% for f in q.flags %}{{ flag_labels.get(f, f) }}{% if not loop.last %}, {% endif %}{% endfor %}</p>{% endif %}
+  </article>
+  {% endfor %}
+</section>
+{% endfor %}
+{% endif %}
+{% endblock %}

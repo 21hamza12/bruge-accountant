@@ -14,6 +14,7 @@ import dataclasses
 import io
 import itertools
 import re
+import unicodedata
 import zipfile
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -46,6 +47,19 @@ FLAG_MISSING_STAFF_SIGN = "missing_staff_sign"
 FLAG_DUPLICATE_IN_FILE = "duplicate_in_file"
 FLAG_FIELD_TOO_LONG = "field_too_long"
 FLAG_COST_ROUNDED = "cost_rounded"
+
+MAX_NAME_CHARS = 200  # passenger names are free text; anything longer is cut and flagged
+KNOWN_FLAGS = frozenset(
+    {
+        FLAG_MISSING_COST,
+        FLAG_UNKNOWN_TRNC,
+        FLAG_MISSING_BOOKING_REF,
+        FLAG_MISSING_STAFF_SIGN,
+        FLAG_DUPLICATE_IN_FILE,
+        FLAG_FIELD_TOO_LONG,
+        FLAG_COST_ROUNDED,
+    }
+)
 
 # Column lengths of ``app.models.Ticket``; longer values are truncated and flagged.
 FIELD_LIMITS = {
@@ -330,15 +344,37 @@ def _is_blank(value: object) -> bool:
     return value is None or (isinstance(value, str) and not value.strip())
 
 
+_LINE_BREAKS = frozenset("\t\n\r\v\f\x1c\x1d\x1e\x85")
+
+
+def clean_text(value: str) -> str:
+    """``value`` without control, format (bidi, zero-width), surrogate, private-use or
+    unassigned characters; line breaks and the line/paragraph separators become spaces.
+
+    Cell text ends up in HTML and in logs: an override such as U+202E must not reorder what a
+    manager reads. Ordinary letters (any script), digits, punctuation and spaces are kept.
+    """
+    if value.isprintable():
+        return value.strip()
+    out: list[str] = []
+    for ch in value:
+        category = unicodedata.category(ch)
+        if ch in _LINE_BREAKS or category in ("Zl", "Zp"):
+            out.append(" ")
+        elif category[0] != "C":
+            out.append(ch)
+    return "".join(out).strip()
+
+
 def _text(value: object, field: str, row_no: int, warnings: _Warnings) -> str:
     if value is None:
         return ""
     if isinstance(value, str):
-        return value.strip()
+        return clean_text(value)
     if isinstance(value, float) and value.is_integer():
         text = str(int(value))
     else:
-        text = str(value).strip()
+        text = clean_text(str(value))
     warnings.add(f"row {row_no}: {field} was a number, converted to text {_short(text)}")
     return text
 
@@ -397,6 +433,11 @@ def _build_ticket(cells: dict[str, Any], row_no: int, warnings: _Warnings) -> Pa
         warnings.add(
             f"row {row_no}: pax type marker in {_short(name)} not recognised, treated as adult"
         )
+
+    if len(name) > MAX_NAME_CHARS:
+        flags.add(FLAG_FIELD_TOO_LONG)
+        warnings.add(f"row {row_no}: PAX NAME longer than {MAX_NAME_CHARS} characters, truncated")
+        name = name[:MAX_NAME_CHARS].rstrip()
 
     cost, rounded = _cost(cells["cost"])
     if cost is None:

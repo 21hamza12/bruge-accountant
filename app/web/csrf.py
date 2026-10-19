@@ -19,8 +19,9 @@ back); for an anonymous client it only goes to the JSON log, so a flood of bare 
 become a flood of database rows. Safe methods (GET, HEAD, OPTIONS) are never checked.
 
 The token is read from the ``X-CSRF-Token`` header first and the body is parsed only when there
-is no header. A route that receives a large body (the PR 4 upload) sends the header, so the check
-never spools the upload to a temporary file.
+is no header. The PR 4 upload route does not use ``csrf_protect``: it calls ``verify_origin`` and
+``verify_token`` itself so it can run them in its own order (login, Origin, header token, rate
+limit) and read the form only afterwards (see ``app.web.routes.uploads``).
 """
 
 from __future__ import annotations
@@ -139,15 +140,30 @@ async def _refuse(
     return HTTPException(status_code=403)
 
 
+async def verify_origin(
+    request: Request, db: Session, settings: Settings, clock: Clock, auth: AuthContext
+) -> None:
+    """The Origin step on its own (403 plus an audit event). The upload route runs it before it
+    reads any of the body."""
+    if not origin_allowed(request, settings):
+        raise await _refuse(request, db, clock, "origin", auth)
+
+
+async def verify_token(
+    request: Request, db: Session, clock: Clock, auth: AuthContext, supplied: str | None
+) -> None:
+    """The token step on its own: ``supplied`` came from the header or the form field."""
+    if not tokens_match(auth.csrf_token, supplied):
+        raise await _refuse(request, db, clock, "token", auth)
+
+
 async def _check_logged_in(
     request: Request, db: Session, settings: Settings, clock: Clock, auth: AuthContext
 ) -> None:
     if request.method in SAFE_METHODS:
         return
-    if not origin_allowed(request, settings):
-        raise await _refuse(request, db, clock, "origin", auth)
-    if not tokens_match(auth.csrf_token, await submitted_token(request)):
-        raise await _refuse(request, db, clock, "token", auth)
+    await verify_origin(request, db, settings, clock, auth)
+    await verify_token(request, db, clock, auth, await submitted_token(request))
 
 
 async def csrf_protect(

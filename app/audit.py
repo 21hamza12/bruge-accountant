@@ -45,6 +45,8 @@ USER_DEACTIVATED = "user_deactivated"
 USER_ROLE_CHANGED = "user_role_changed"
 SIGN_LINKED = "staff_sign_linked"
 SIGN_UNLINKED = "staff_sign_unlinked"
+UPLOAD_SUCCEEDED = "upload_succeeded"
+UPLOAD_FAILED = "upload_failed"
 
 _SECRET_KEY = re.compile(r"password|passwd|token|secret|hash|csrf|cookie|credential", re.IGNORECASE)
 

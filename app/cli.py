@@ -1,7 +1,7 @@
 """Command line interface.
 
 ``python -m app <command>`` with command one of: init-db, add-agency, bootstrap-agency,
-reset-password, grant-app-role, purge-expired, import.
+reset-password, grant-app-role, purge-expired, import, seed-demo.
 
 Exit codes: 0 success, 1 failure (database, file, parse), 2 usage or refusal (bad arguments, a
 name already taken, a role that may not be used), 130 interrupted at the password prompt.
@@ -10,7 +10,6 @@ name already taken, a role that may not be used), 130 interrupted at the passwor
 import argparse
 import dataclasses
 import getpass
-import hashlib
 import json
 import re
 import sqlite3
@@ -34,6 +33,15 @@ from app.auth.ratelimit import purge_expired_windows
 from app.auth.temp_passwords import TEMP_PASSWORD_TTL
 from app.clock import utc_now
 from app.db import default_database_url, make_engine, make_session_factory
+from app.demo import (
+    ALL_PHONES,
+    OVERRIDE_FLAG,
+    DemoCollisionError,
+    demo_target_refusal,
+    seed_demo,
+)
+from app.formatting import money
+from app.ingest import IngestResult, check_bytes, ingest_report, sanitize_filename
 from app.parsing.amadeus import MAX_FILE_BYTES, ParseError, parse_report
 from app.questions import build_questions
 from app.repository import (
@@ -42,12 +50,11 @@ from app.repository import (
     bootstrap_agency,
     create_agency,
     get_agency_by_slug,
-    import_report,
     purge_expired,
     reset_user_password,
     tickets_awaiting_price,
 )
-from app.settings import Settings
+from app.settings import Settings, environment_is_production
 from app.tenancy import bind_tenant
 
 EXIT_OK = 0
@@ -159,6 +166,36 @@ def _build_parser() -> argparse.ArgumentParser:
         help="delete expired sessions and temporary passwords and audit events past retention",
     )
 
+    seed = sub.add_parser(
+        "seed-demo",
+        parents=[db_option],
+        allow_abbrev=False,
+        help="create two demo agencies with managers and staff (never in production)",
+        description=(
+            "Create the demo agencies demo-a and demo-b, each with a manager; demo-a also gets "
+            "two staff linked to the signs 0004SV and 0009ER, and demo-b receives the fixture. "
+            "One password for all four accounts is read from the first line of standard input "
+            "(--password-stdin is required); it is never an argument and never printed. "
+            "Everything is created in one transaction (all or nothing). Refuses when "
+            "ENV=production, when any demo slug or phone is already taken (it names each one), "
+            "and when the database is neither SQLite nor on this machine unless the override "
+            "flag is given."
+        ),
+    )
+    seed.add_argument(
+        OVERRIDE_FLAG,
+        action="store_true",
+        dest="allow_remote",
+        help="allow a database that is neither SQLite nor localhost (never ENV=production)",
+    )
+    seed.add_argument("--fixture", required=True, type=Path, help="an Amadeus report (.xlsx)")
+    seed.add_argument(
+        "--password-stdin",
+        action="store_true",
+        required=True,
+        help="read the shared demo password from the first line of standard input",
+    )
+
     imp = sub.add_parser("import", parents=[db_option], help="import an Amadeus daily report")
     imp.add_argument("file", type=Path, help="Amadeus report (.xlsx)")
     imp.add_argument("--agency", required=True, help="agency slug (must already exist)")
@@ -168,16 +205,9 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _money(value: Decimal) -> str:
-    """Stable text form: whole amounts without decimals ("746423"), otherwise 2 ("1234.50")."""
-    if value == value.to_integral_value():
-        return format(value.quantize(Decimal(1)), "f")
-    return format(value.quantize(Decimal("0.01")), "f")
-
-
 def _json_default(value: object) -> Any:
     if isinstance(value, Decimal):
-        return _money(value)
+        return money(value)
     if isinstance(value, date):
         return value.isoformat()
     raise TypeError(f"cannot serialise {type(value).__name__}")
@@ -395,6 +425,63 @@ def _purge_expired(url: str) -> int:
     return EXIT_OK
 
 
+def _seed_demo(url: str, args: argparse.Namespace) -> int:
+    refusal = demo_target_refusal(url, allow_remote=args.allow_remote)
+    if refusal is not None:
+        return _fail(refusal, EXIT_USAGE)
+    try:
+        password = _read_password(True)
+    except ValueError as exc:
+        return _fail(str(exc), EXIT_USAGE)
+    for phone in ALL_PHONES:
+        problem = password_policy_error(password, phone)
+        if problem is not None:
+            return _fail(problem, EXIT_USAGE)
+    fixture: Path = args.fixture
+    try:
+        with fixture.open("rb") as fh:
+            data = fh.read(MAX_FILE_BYTES + 1)
+        check_bytes(data)
+        parsed = parse_report(data)  # a bad fixture is refused before anything is written
+    except OSError as exc:
+        return _fail(f"cannot read {fixture}: {exc.strerror or exc}", EXIT_FAILURE)
+    except ParseError as exc:
+        return _fail(str(exc), EXIT_FAILURE)
+    engine = make_engine(url)
+    try:
+        seeded = seed_demo(
+            make_session_factory(engine),
+            parsed,
+            data,
+            sanitize_filename(fixture.name),
+            password,
+            _operator(),
+        )
+    except DemoCollisionError as exc:
+        return _fail(
+            f"the demo accounts already exist ({', '.join(exc.fields)} already taken); "
+            "nothing was changed",
+            EXIT_USAGE,
+        )
+    finally:
+        engine.dispose()
+    _emit(
+        {
+            "demo-a": {
+                "agency_id": seeded.agency_a,
+                "manager_id": seeded.manager_a,
+                "staff_ids": [seeded.staff_sv, seeded.staff_er],
+            },
+            "demo-b": {
+                "agency_id": seeded.agency_b,
+                "manager_id": seeded.manager_b,
+                "upload_id": seeded.upload_b,
+            },
+        }
+    )
+    return EXIT_OK
+
+
 def _password_argument_error(argv: Sequence[str]) -> str | None:
     """A password typed on the command line lands in shell history and process listings.
 
@@ -410,6 +497,17 @@ def _password_argument_error(argv: Sequence[str]) -> str | None:
                 "the password is never accepted as an argument; use --password-stdin or the prompt"
             )
     return None
+
+
+def _date_warning(result: IngestResult) -> str | None:
+    """A sentence when some tickets of this import belong to a day other than ``report_date``."""
+    if not result.dates_differ:
+        return None
+    days = ", ".join(f"{day.isoformat()} ({count})" for day, count in result.ticket_dates)
+    return (
+        f"the report date is {result.report_date.isoformat()}, but tickets that already existed "
+        f"keep their original day: the tickets of this import belong to {days}"
+    )
 
 
 def _import(url: str, file: Path, slug: str, override: date | None) -> int:
@@ -428,24 +526,28 @@ def _import(url: str, file: Path, slug: str, override: date | None) -> int:
             except OSError as exc:
                 return _fail(f"cannot read {file}: {exc.strerror or exc}", EXIT_FAILURE)
             bind_tenant(session, agency.id)  # row-level security: everything below is this agency
-            parsed = parse_report(data)
-            if override is not None:
-                parsed = dataclasses.replace(
-                    parsed, header=dataclasses.replace(parsed.header, report_date=override)
-                )
-            result = import_report(
-                session, agency.id, parsed, file.name, hashlib.sha256(data).hexdigest()
+            result = ingest_report(
+                session, agency.id, data, file.name, report_date_override=override
             )
-            report_date = parsed.header.report_date
-            staff = build_questions(tickets_awaiting_price(session, agency.id, report_date))
+            report_date = result.report_date
+            # Tickets that already existed keep the day they were first stored on, so the
+            # questions are those of the days the tickets really belong to (normally just
+            # ``report_date``).
+            days = [day for day, _count in result.ticket_dates] or [report_date]
+            awaiting = [
+                ticket for day in days for ticket in tickets_awaiting_price(session, agency.id, day)
+            ]
+            staff = build_questions(awaiting)
             _emit(
                 {
                     "agency": agency.slug,
                     "report_date": report_date,
+                    "ticket_dates": {day.isoformat(): count for day, count in result.ticket_dates},
+                    "date_warning": _date_warning(result),
                     "upload_id": result.upload_id,
                     "inserted": result.inserted,
                     "updated": result.updated,
-                    "warnings": list(parsed.warnings),
+                    "warnings": list(result.warnings),
                     "staff": [dataclasses.asdict(s) for s in staff],
                 }
             )
@@ -497,7 +599,9 @@ def _default_url_for(command_name: str) -> str:
 def main(argv: Sequence[str] | None = None) -> int:
     _use_utf8_output()
     raw_argv = sys.argv[1:] if argv is None else list(argv)
-    if raw_argv[:1] == ["bootstrap-agency"]:
+    if raw_argv[:1] == ["seed-demo"] and environment_is_production():
+        return _fail("seed-demo never runs in production (ENV=production)", EXIT_USAGE)
+    if raw_argv[:1] in (["bootstrap-agency"], ["seed-demo"]):
         refusal = _password_argument_error(raw_argv)
         if refusal is not None:
             return _fail(refusal, EXIT_USAGE)
@@ -521,6 +625,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             return _grant_app_role(url, args.role)
         if args.command == "purge-expired":
             return _purge_expired(url)
+        if args.command == "seed-demo":
+            return _seed_demo(url, args)
         return _import(url, args.file, args.agency, args.date)
     except SQLAlchemyError as exc:
         return _database_failure(exc)

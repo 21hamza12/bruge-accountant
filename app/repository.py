@@ -16,6 +16,7 @@ from app.models import (
     ROLE_MANAGER,
     Agency,
     AuditEvent,
+    StaffSignLink,
     TemporaryPassword,
     Ticket,
     Upload,
@@ -117,6 +118,64 @@ class BootstrapResult:
     user_id: int
 
 
+def add_agency_with_manager(
+    session: Session,
+    slug: str,
+    name: str,
+    phone: str,
+    display_name: str,
+    password_hash: str,
+    operator: str | None = None,
+) -> BootstrapResult:
+    """Add an agency, its first manager and the ``agency_bootstrapped`` audit event to the
+    CALLER's open transaction (nothing is committed), and leave the session bound to the new
+    agency. ``bootstrap_agency`` wraps this in its own transaction; ``seed-demo`` calls it twice
+    inside one, so it is all or nothing. On error the caller rolls back and restores the binding.
+
+    ``phone`` is E.164 and ``password_hash`` an Argon2 hash; validating and hashing is the
+    caller's job. Works under FORCEd row-level security: both lookups use the narrow policies, the
+    id is taken from the sequence and bound as the tenant before the first INSERT.
+    """
+    if get_agency_by_slug(session, slug) is not None:
+        raise AlreadyExistsError("slug")
+    lookup_scope(session, "app.login_phone", phone)
+    if session.scalars(select(User.id).where(User.phone == phone)).first() is not None:
+        raise AlreadyExistsError("phone")
+    agency_id = _next_agency_id(session)
+    if agency_id is not None:
+        rebind_tenant(session, agency_id)
+    agency = Agency(slug=slug, name=name)
+    if agency_id is not None:
+        agency.id = agency_id
+    session.add(agency)
+    session.flush()
+    rebind_tenant(session, agency.id)
+    user = User(
+        agency_id=agency.id,
+        phone=phone,
+        role=ROLE_MANAGER,
+        display_name=display_name,
+        password_hash=password_hash,
+        must_change_password=False,
+    )
+    session.add(user)
+    session.flush()
+    session.add(
+        AuditEvent(
+            agency_id=agency.id,
+            actor_user_id=None,
+            event_type="agency_bootstrapped",
+            details={
+                "agency_slug": slug,
+                "manager_user_id": user.id,
+                "operator": operator or "unknown",
+            },
+        )
+    )
+    session.flush()
+    return BootstrapResult(agency_id=agency.id, user_id=user.id)
+
+
 def bootstrap_agency(
     session: Session,
     slug: str,
@@ -128,10 +187,7 @@ def bootstrap_agency(
 ) -> BootstrapResult:
     """Create an agency and its first manager in ONE transaction (all or nothing).
 
-    ``phone`` is E.164 and ``password_hash`` an Argon2 hash; validating and hashing is the
-    caller's job. The manager does not have to change the password (the operator chose it).
-    Works under FORCEd row-level security: both lookups use the narrow policies, the id is taken
-    from the sequence and bound as the tenant before the first INSERT.
+    The manager does not have to change the password (the operator chose it).
 
     An ``agency_bootstrapped`` audit event is written in the same transaction: the agency, the
     new manager's id and the ``operator`` (the OS user who ran the command). Nobody is logged in
@@ -139,44 +195,9 @@ def bootstrap_agency(
     """
     previous = bound_tenant(session)
     try:
-        if get_agency_by_slug(session, slug) is not None:
-            raise AlreadyExistsError("slug")
-        lookup_scope(session, "app.login_phone", phone)
-        if session.scalars(select(User.id).where(User.phone == phone)).first() is not None:
-            raise AlreadyExistsError("phone")
-        agency_id = _next_agency_id(session)
-        if agency_id is not None:
-            rebind_tenant(session, agency_id)
-        agency = Agency(slug=slug, name=name)
-        if agency_id is not None:
-            agency.id = agency_id
-        session.add(agency)
-        session.flush()
-        rebind_tenant(session, agency.id)
-        user = User(
-            agency_id=agency.id,
-            phone=phone,
-            role=ROLE_MANAGER,
-            display_name=display_name,
-            password_hash=password_hash,
-            must_change_password=False,
+        result = add_agency_with_manager(
+            session, slug, name, phone, display_name, password_hash, operator
         )
-        session.add(user)
-        session.flush()
-        session.add(
-            AuditEvent(
-                agency_id=agency.id,
-                actor_user_id=None,
-                event_type="agency_bootstrapped",
-                details={
-                    "agency_slug": slug,
-                    "manager_user_id": user.id,
-                    "operator": operator or "unknown",
-                },
-            )
-        )
-        session.flush()
-        result = BootstrapResult(agency_id=agency.id, user_id=user.id)
         session.commit()
     except Exception:
         _abandon(session, previous)
@@ -311,8 +332,13 @@ def import_report(
     filename: str,
     sha256: str,
     uploaded_by_user_id: int | None = None,
+    *,
+    commit: bool = True,
 ) -> ImportResult:
     """Store an upload and upsert its tickets in a single transaction.
+
+    ``commit=False`` leaves the transaction open for a caller that does more in the same
+    transaction (``seed-demo``); a failure still rolls the whole session back.
 
     The session is bound to ``agency_id`` first (row-level security); one that is already bound
     to a different agency is refused (``TenantBindingError``), never re-pointed. The commit at
@@ -356,7 +382,10 @@ def import_report(
         upload_id = upload.id
         upload.inserted_count = len(unique) - existing
         upload.updated_count = existing
-        session.commit()
+        if commit:
+            session.commit()
+        else:
+            session.flush()
     except Exception:
         session.rollback()
         raise
@@ -379,6 +408,96 @@ def tickets_awaiting_price(session: Session, agency_id: int, report_date: date) 
         .order_by(Ticket.staff_sign, Ticket.booking_ref, Ticket.ticket_no)
     )
     return list(session.scalars(stmt))
+
+
+def get_upload(
+    session: Session, agency_id: int, upload_id: int, uploaded_by: int | None = None
+) -> Upload | None:
+    """One upload of this agency; another agency's id is None, like a missing one.
+
+    With ``uploaded_by`` only an upload made by that user is found (what staff may open): a
+    colleague's upload is None too.
+    """
+    bind_tenant(session, agency_id)
+    stmt = select(Upload).where(Upload.agency_id == agency_id, Upload.id == upload_id)
+    if uploaded_by is not None:
+        stmt = stmt.where(Upload.uploaded_by_user_id == uploaded_by)
+    return session.scalars(stmt).one_or_none()
+
+
+def recent_uploads(
+    session: Session, agency_id: int, limit: int = 50, uploaded_by: int | None = None
+) -> list[Upload]:
+    """The agency's newest uploads first (``ORDER BY id DESC``); only one user's with
+    ``uploaded_by``."""
+    bind_tenant(session, agency_id)
+    stmt = select(Upload).where(Upload.agency_id == agency_id)
+    if uploaded_by is not None:
+        stmt = stmt.where(Upload.uploaded_by_user_id == uploaded_by)
+    return list(session.scalars(stmt.order_by(Upload.id.desc()).limit(limit)))
+
+
+def upload_ticket_dates(session: Session, agency_id: int, upload_id: int) -> list[tuple[date, int]]:
+    """The report days of the tickets this upload last wrote, with how many tickets each holds.
+
+    A ticket that already existed keeps the day it was first stored on, so after a re-upload with
+    another date this can differ from the upload's own ``report_date``. (A later upload of the
+    same tickets takes them over: this is "as of now", not a history.)
+    """
+    bind_tenant(session, agency_id)
+    rows = session.execute(
+        select(Ticket.report_date, func.count())
+        .where(Ticket.agency_id == agency_id, Ticket.last_upload_id == upload_id)
+        .group_by(Ticket.report_date)
+        .order_by(Ticket.report_date)
+    )
+    return [(row[0], int(row[1])) for row in rows]
+
+
+def user_names(session: Session, agency_id: int, user_ids: Sequence[int | None]) -> dict[int, str]:
+    """Display names (the phone when none was given) of some users of this agency."""
+    wanted = {i for i in user_ids if i is not None}
+    if not wanted:
+        return {}
+    bind_tenant(session, agency_id)
+    rows = session.execute(
+        select(User.id, User.display_name, User.phone).where(
+            User.agency_id == agency_id, User.id.in_(wanted)
+        )
+    )
+    return {row.id: row.display_name or row.phone for row in rows}
+
+
+def latest_report_date(session: Session, agency_id: int) -> date | None:
+    """The newest report date that has tickets (None when the agency has none)."""
+    bind_tenant(session, agency_id)
+    return session.scalar(select(func.max(Ticket.report_date)).where(Ticket.agency_id == agency_id))
+
+
+def recent_report_dates(session: Session, agency_id: int, limit: int = 14) -> list[date]:
+    """The newest report dates that have tickets, latest first."""
+    bind_tenant(session, agency_id)
+    stmt = (
+        select(Ticket.report_date)
+        .where(Ticket.agency_id == agency_id)
+        .distinct()
+        .order_by(Ticket.report_date.desc())
+        .limit(limit)
+    )
+    return list(session.scalars(stmt))
+
+
+def sign_owners(session: Session, agency_id: int) -> dict[str, str]:
+    """Which person each linked staff sign belongs to (display name, else phone)."""
+    bind_tenant(session, agency_id)
+    rows = session.execute(
+        select(StaffSignLink.staff_sign, User.display_name, User.phone)
+        .join(
+            User, (User.agency_id == StaffSignLink.agency_id) & (User.id == StaffSignLink.user_id)
+        )
+        .where(StaffSignLink.agency_id == agency_id)
+    )
+    return {row.staff_sign: row.display_name or row.phone for row in rows}
 
 
 # --- purging expired rows ----------------------------------------------------------------------

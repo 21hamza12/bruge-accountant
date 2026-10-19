@@ -3,6 +3,8 @@
 {% block content %}
 <h1>{{ _("Bonjour") }}, {{ user.display_name or user.phone }}</h1>
 <p>{{ _("Agence") }} : {{ agency.name }}</p>
+<p><a href="/questions">{{ _("Questions de prix") }}</a></p>
+<p><a href="/uploads/new">{{ _("Envoyer un rapport") }}</a></p>
 {% if user.role == "manager" %}
 <p><a href="/staff">{{ _("Gérer l'équipe") }}</a></p>
 {% endif %}

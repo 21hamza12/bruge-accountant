@@ -1,0 +1,35 @@
+{% extends "base.html" %}
+{% block title %}{{ _("Rapport envoyé") }}{% endblock %}
+{% block content %}
+<h1>{{ _("Rapport envoyé") }}</h1>
+<p><a href="/">{{ _("Accueil") }}</a> · <a href="/uploads/new">{{ _("Envoyer un rapport") }}</a> · <a href="/uploads">{{ _("Rapports récents") }}</a></p>
+<dl>
+  <dt>{{ _("Fichier") }}</dt><dd>{{ upload.filename }}</dd>
+  <dt>{{ _("Date du rapport") }}</dt><dd>{{ upload.report_date.isoformat() }}</dd>
+  <dt>{{ _("Envoyé par") }}</dt><dd>{{ uploader or "-" }}</dd>
+  <dt>{{ _("Envoyé le") }}</dt><dd>{{ upload.uploaded_at.strftime("%Y-%m-%d %H:%M") }} UTC</dd>
+</dl>
+<p>{{ _("Billets lus") }} : <strong>{{ upload.ticket_count }}</strong></p>
+<p>{{ _("Ajoutés") }} : <strong>{{ upload.inserted_count if upload.inserted_count is not none else "-" }}</strong></p>
+<p>{{ _("Mis à jour") }} : <strong>{{ upload.updated_count if upload.updated_count is not none else "-" }}</strong></p>
+{% if dates_differ %}
+<p class="notice" role="alert">{{ _("Attention : des billets de ce rapport existaient déjà. Ils gardent leur jour d'origine, qui n'est pas celui du rapport.") }}</p>
+{% endif %}
+{% if ticket_dates %}
+<h2>{{ _("Jours des billets") }}</h2>
+<ul>
+  {% for day, count in ticket_dates %}<li><a href="/questions?date={{ day.isoformat() }}">{{ day.isoformat() }}</a> : {{ count }} {{ _("billets") }}</li>
+  {% endfor %}
+</ul>
+{% else %}
+<p><a href="/questions?date={{ upload.report_date.isoformat() }}">{{ _("Voir les questions de prix de ce jour") }}</a></p>
+{% endif %}
+{% if show_warnings and warnings %}
+<h2>{{ _("Avertissements") }}</h2>
+<ul>
+  {% for warning in warnings %}<li class="warning">{{ warning }}</li>
+  {% endfor %}
+</ul>
+{% if more_warnings %}<p>{{ more_warnings }} {{ _("autres avertissements") }}</p>{% endif %}
+{% endif %}
+{% endblock %}

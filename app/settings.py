@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from typing import Annotated, Any, Literal
 
 from pydantic import Field, SecretStr, ValidationInfo, field_validator, model_validator
@@ -33,6 +34,44 @@ def _parse_list(value: Any, name: str) -> Any:
 CsvList = Annotated[list[str], NoDecode]
 
 
+def environment_is_production() -> bool:
+    """True when ``ENV=production``, read without validating the rest of the configuration.
+
+    For commands that must refuse to run in production before anything else (a production
+    configuration that is incomplete would otherwise fail ``Settings()`` first).
+    """
+    return os.environ.get("ENV", "").strip().lower() == "production"
+
+
+# What a parse child gets from the environment: what the interpreter needs to start, nothing else.
+_CHILD_ENV_WINDOWS = ("SYSTEMROOT", "SYSTEMDRIVE", "PATH")
+_CHILD_ENV_POSIX = ("PATH", "LANG", "LC_ALL")
+
+
+def child_environment() -> dict[str, str]:
+    """The environment of the parse sandbox's child process (``app.parsing.sandbox``).
+
+    An allowlist, built from scratch: ``PATH`` and ``SYSTEMROOT``/``SYSTEMDRIVE`` on Windows,
+    ``PATH``/``LANG``/``LC_ALL`` elsewhere, plus ``PYTHON*`` isolation variables. Everything else
+    (``DATABASE_URL``, the owner database URL, ``SENTRY_DSN``, any ``TEST_*``, API keys) is
+    simply not there. It lives here because this module is the only one that reads the
+    environment (a code guard checks that).
+    """
+    env: dict[str, str] = {
+        "PYTHONNOUSERSITE": "1",
+        "PYTHONDONTWRITEBYTECODE": "1",
+        "PYTHONUTF8": "1",
+    }
+    windows = os.name == "nt"
+    for key in _CHILD_ENV_WINDOWS if windows else _CHILD_ENV_POSIX:
+        value = os.environ.get(key)
+        if value is not None:
+            env[key] = value
+    if not windows:
+        env.setdefault("LANG", "C.UTF-8")
+    return env
+
+
 class Settings(BaseSettings):
     # hide_input_in_errors: a validation error must never echo a URL with a password in it.
     model_config = SettingsConfigDict(
@@ -55,6 +94,17 @@ class Settings(BaseSettings):
     db_max_overflow: int = Field(default=5, ge=0, le=50)
     # Largest request body accepted, headers aside: 10 MB upload plus 64 KB of form overhead.
     max_request_bytes: int = Field(default=10 * 1024 * 1024 + 64 * 1024, ge=1024)
+    # The parse sandbox (app/parsing/sandbox.py): seconds before the child is killed, and its
+    # address-space cap in MB (Linux only). RLIMIT_AS counts virtual memory, so it sits well above
+    # the resident size measured in docs/phase2-plan.md.
+    # At least 5 s: interpreter start-up plus openpyxl import already take about a second.
+    parse_timeout_s: int = Field(default=30, ge=5, le=300)
+    parse_memory_mb: int = Field(default=768, ge=128, le=8192)
+    # Parses that may run at once in this process, and how long one that finds every slot taken
+    # waits before the 503. Each child needs about 31-49 MB resident (docs/phase2-plan.md), so on
+    # a 512 MB instance 2 children fit beside the web process; raise it only with more memory.
+    parse_concurrency: int = Field(default=2, ge=1, le=8)
+    parse_queue_wait_s: float = Field(default=5.0, ge=0, le=60)
     # Number of trusted reverse proxies in front of the app (Render: see the runbook). 0 means
     # X-Forwarded-* is ignored entirely, which is the safe default; render.yaml sets 1.
     trusted_proxy_hops: int = Field(default=0, ge=0, le=10)

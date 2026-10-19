@@ -535,22 +535,42 @@ def user_names(session: Session, agency_id: int, user_ids: Sequence[int | None])
     return {row.id: row.display_name or row.phone for row in rows}
 
 
-def latest_report_date(session: Session, agency_id: int) -> date | None:
-    """The newest report date that has tickets (None when the agency has none)."""
+def latest_report_date(
+    session: Session, agency_id: int, staff_signs: Collection[str] | None = None
+) -> date | None:
+    """The newest report date that has tickets (None when there are none).
+
+    ``staff_signs`` looks only at the tickets of those signs (what a staff member may see); an
+    empty collection is "no tickets", never "all".
+    """
     bind_tenant(session, agency_id)
-    return session.scalar(select(func.max(Ticket.report_date)).where(Ticket.agency_id == agency_id))
+    if staff_signs is not None and not staff_signs:
+        return None
+    stmt = select(func.max(Ticket.report_date)).where(Ticket.agency_id == agency_id)
+    if staff_signs is not None:
+        stmt = stmt.where(Ticket.staff_sign.in_(list(staff_signs)))
+    return session.scalar(stmt)
 
 
-def recent_report_dates(session: Session, agency_id: int, limit: int = 14) -> list[date]:
-    """The newest report dates that have tickets, latest first."""
+def recent_report_dates(
+    session: Session,
+    agency_id: int,
+    limit: int = 14,
+    staff_signs: Collection[str] | None = None,
+) -> list[date]:
+    """The newest report dates that have tickets, latest first.
+
+    ``staff_signs`` keeps only the days that hold a ticket of those signs, so a staff member is
+    never shown a day (or learns that a day exists) on which they have nothing; an empty
+    collection is an empty list.
+    """
     bind_tenant(session, agency_id)
-    stmt = (
-        select(Ticket.report_date)
-        .where(Ticket.agency_id == agency_id)
-        .distinct()
-        .order_by(Ticket.report_date.desc())
-        .limit(limit)
-    )
+    if staff_signs is not None and not staff_signs:
+        return []
+    stmt = select(Ticket.report_date).where(Ticket.agency_id == agency_id)
+    if staff_signs is not None:
+        stmt = stmt.where(Ticket.staff_sign.in_(list(staff_signs)))
+    stmt = stmt.distinct().order_by(Ticket.report_date.desc()).limit(limit)
     return list(session.scalars(stmt))
 
 

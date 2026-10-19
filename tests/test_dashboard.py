@@ -6,7 +6,7 @@ bookings, 1 118 857 in total; the real file has the same airline codes and total
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import date
 from decimal import Decimal
 
@@ -36,6 +36,8 @@ from app.repository import (
     awaiting_counts_by_sign,
     create_agency,
     import_report,
+    latest_report_date,
+    recent_report_dates,
     tickets_for_day,
 )
 from app.tenancy import TenantBindingError, bind_tenant, rebind_tenant
@@ -293,29 +295,36 @@ def test_awaiting_counts_by_sign(session: Session, loaded: int) -> None:
     assert awaiting_counts_by_sign(session, loaded, date(2026, 9, 1)) == {}
 
 
+def _add_ticket(session: Session, agency_id: int, upload_id: int, day: date, **fields: str) -> None:
+    """One awaiting ticket written straight to the table (a hand-made day or booking)."""
+    values: dict[str, str] = {
+        "ticket_no": "7770000000",
+        "staff_sign": "0004SV",
+        "booking_ref": "",
+        **fields,
+    }
+    session.add(
+        Ticket(
+            agency_id=agency_id,
+            first_upload_id=upload_id,
+            last_upload_id=upload_id,
+            report_date=day,
+            seq_no="1",
+            airline="147",
+            cost=Decimal(1),
+            passenger_name="X/Y",
+            pax_type="ADT",
+            transaction_type="TKTT",
+            flags=[],
+            **values,
+        )
+    )
+
+
 def test_awaiting_counts_agree_with_the_grouped_questions(session: Session, loaded: int) -> None:
     upload_id = session.scalars(select(Upload.id)).one()
-    session.add_all(
-        [
-            Ticket(  # two tickets without a booking reference are two questions
-                agency_id=loaded,
-                first_upload_id=upload_id,
-                last_upload_id=upload_id,
-                report_date=DAY,
-                ticket_no=f"777000000{i}",
-                seq_no="1",
-                airline="147",
-                cost=Decimal(1),
-                passenger_name="X/Y",
-                pax_type="ADT",
-                staff_sign="0004SV",
-                transaction_type="TKTT",
-                booking_ref="",
-                flags=[],
-            )
-            for i in range(2)
-        ]
-    )
+    for i in range(2):  # two tickets without a booking reference are two questions
+        _add_ticket(session, loaded, upload_id, DAY, ticket_no=f"777000000{i}")
     session.commit()
     counts = awaiting_counts_by_sign(session, loaded, DAY)
     summary = summarize(tickets_for_day(session, loaded, DAY))
@@ -323,13 +332,106 @@ def test_awaiting_counts_agree_with_the_grouped_questions(session: Session, load
     assert counts["0004SV"] == 27
 
 
-def test_the_two_queries_never_see_another_agency(session: Session, loaded: int) -> None:
+def test_awaiting_counts_agree_with_the_python_path_when_some_tickets_are_settled(
+    session: Session, loaded: int
+) -> None:
+    """A mixed awaiting/settled day: the SQL count must equal the Python "not confirmed" count.
+
+    The ``price_status`` CHECK constraint only allows ``awaiting_price`` until Phase 3, so a
+    settled ticket cannot be stored. The database therefore holds the awaiting tickets (the only
+    rows the SQL count is meant to see), and the settled ones exist only on the Python side, as
+    plain values next to the rows read back from the table. That is the whole truth the SQL must
+    reproduce: a booking with at least one awaiting ticket counts once, a booking whose tickets
+    are all settled does not count, and a settled ticket without a reference is no question.
+    """
+    upload_id = session.scalars(select(Upload.id)).one()
+    rows = [
+        # MIXED1: one awaiting ticket in the database, one settled next to it (still a question)
+        ("7770000001", "0004SV", "MIXED1"),
+        # a lone awaiting ticket without a reference
+        ("7770000003", "0004SV", ""),
+        # a sign that has only mixed work
+        ("7770000005", "0777ZZ", "MIXED2"),
+    ]
+    for ticket_no, sign, ref in rows:
+        _add_ticket(
+            session, loaded, upload_id, DAY, ticket_no=ticket_no, staff_sign=sign, booking_ref=ref
+        )
+    session.commit()
+    settled = [
+        T("7770000002", booking_ref="MIXED1", price_status="confirmed"),
+        T("7770000004", booking_ref="DONE01", price_status="confirmed"),  # fully settled booking
+        T("7770000006", booking_ref="DONE01", price_status="confirmed"),
+        T("7770000007", booking_ref="", price_status="confirmed"),  # settled, no reference
+        T("7770000008", staff_sign="0555QQ", booking_ref="DONE02", price_status="confirmed"),
+        T("7770000009", staff_sign="0777ZZ", booking_ref="MIXED2", price_status="confirmed"),
+    ]
+    stored = tickets_for_day(session, loaded, DAY)
+    summary = summarize([*stored, *settled])
+    expected = {
+        a.staff_sign: a.booking_count - a.confirmed_count
+        for a in summary.agents
+        if a.booking_count > a.confirmed_count
+    }
+    counts = awaiting_counts_by_sign(session, loaded, DAY)
+    assert counts == expected
+    assert counts["0004SV"] == 25 + 2  # the 25 fixture bookings, MIXED1, the lone no-reference one
+    assert counts["0777ZZ"] == 1
+    assert "0555QQ" not in counts  # a sign whose work is all settled has no entry
+    assert {b.question.booking_ref for b in summary.bookings if b.confirmed} == {
+        "DONE01",
+        "DONE02",
+        "",
+    }
+
+
+def test_the_two_queries_never_see_another_agency(
+    session: Session, loaded: int, parsed_fixture: ParsedReport
+) -> None:
     other = create_agency(session, "b", "B")
+    # The other agency has tickets on the same sign and the same day, but only two bookings.
+    refs_taken = sorted({t.booking_ref for t in parsed_fixture.tickets if t.staff_sign == "0004SV"})
+    small = replace(
+        parsed_fixture,
+        tickets=tuple(t for t in parsed_fixture.tickets if t.booking_ref in refs_taken[:2]),
+    )
+    import_report(session, other.id, small, "b.xlsx", SHA)
+    expected_other = summarize(tickets_for_day(session, other.id, DAY))
+    assert 0 < expected_other.booking_count <= 3
+    mine = {"0004SV": 25, "0009ER": 8}
+
     rebind_tenant(session, other.id)
-    assert tickets_for_day(session, other.id, DAY) == []
-    assert awaiting_counts_by_sign(session, other.id, DAY) == {}
+    other_counts = awaiting_counts_by_sign(session, other.id, DAY)
+    assert other_counts == {a.staff_sign: a.booking_count for a in expected_other.agents}
+    assert other_counts != mine
+    assert len(tickets_for_day(session, other.id, DAY)) == expected_other.ticket_count
+    # asking for the first agency's id from the second agency's session is refused, not answered
+    with pytest.raises(TenantBindingError):
+        awaiting_counts_by_sign(session, loaded, DAY)
+
     rebind_tenant(session, loaded)
-    assert session.scalar(select(func.count()).select_from(Ticket)) == 48
+    assert awaiting_counts_by_sign(session, loaded, DAY) == mine  # not 25 + the other's tickets
+    assert len(tickets_for_day(session, loaded, DAY)) == 48
+    assert (
+        session.scalar(select(func.count()).select_from(Ticket)) == 48 + expected_other.ticket_count
+    )
+
+
+def test_the_report_dates_can_be_limited_to_some_signs(session: Session, loaded: int) -> None:
+    upload_id = session.scalars(select(Upload.id)).one()
+    later = date(2026, 10, 5)
+    _add_ticket(session, loaded, upload_id, later, staff_sign="0777ZZ", booking_ref="LATE01")
+    session.commit()
+    assert latest_report_date(session, loaded) == later
+    assert latest_report_date(session, loaded, ["0009ER"]) == DAY
+    assert latest_report_date(session, loaded, ["0009ER", "0777ZZ"]) == later
+    assert latest_report_date(session, loaded, ["NOPE00"]) is None
+    assert latest_report_date(session, loaded, []) is None  # empty means nothing, never "all"
+    assert recent_report_dates(session, loaded) == [later, DAY]
+    assert recent_report_dates(session, loaded, staff_signs=["0009ER"]) == [DAY]
+    assert recent_report_dates(session, loaded, staff_signs=["0777ZZ"]) == [later]
+    assert recent_report_dates(session, loaded, staff_signs=[]) == []
+    assert recent_report_dates(session, loaded, limit=1) == [later]
 
 
 def test_the_queries_respect_row_level_security(

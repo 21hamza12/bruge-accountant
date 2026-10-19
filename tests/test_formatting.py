@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import UTC, date, datetime, timedelta, timezone
 from decimal import Decimal
 
 import pytest
 
-from app.formatting import date_fr, money, money_fr
+from app.formatting import date_fr, datetime_fr, money, money_fr
 from app.web.templating import render_string
 
 NNBSP = " "
@@ -33,6 +33,24 @@ def test_money_keeps_its_stable_plain_form() -> None:
 )
 def test_money_fr_groups_with_a_narrow_no_break_space(value: Decimal, expected: str) -> None:
     assert money_fr(value) == expected
+
+
+@pytest.mark.parametrize("value", ["-0", "-0.00", "-0.001", "-0.004", "0.00", "-0E-10"])
+def test_money_fr_never_prints_a_negative_zero(value: str) -> None:
+    text = money_fr(Decimal(value))
+    assert text in {"0", "0,00"}
+    assert not text.startswith("-")
+
+
+def test_money_fr_keeps_the_sign_of_a_real_negative_amount() -> None:
+    assert money_fr(Decimal("-0.01")) == "-0,01"
+    assert money_fr(Decimal("-0.006")) == "-0,01"  # rounds to a visible cent: the sign stays
+
+
+@pytest.mark.parametrize("value", ["NaN", "sNaN", "Infinity", "-Infinity"])
+def test_money_fr_renders_a_dash_for_a_value_that_is_not_a_finite_number(value: str) -> None:
+    """Money on a page must never raise or print "NaN": a corrupt value is shown as "—"."""
+    assert money_fr(Decimal(value)) == "—"
 
 
 def test_money_fr_never_uses_a_plain_space_or_a_dot() -> None:
@@ -86,3 +104,22 @@ def test_date_fr_filter_is_available_in_templates() -> None:
         render_string("{{ d|date_fr(weekday=True) }}", d=date(2026, 10, 1))
         == "jeudi 1 octobre 2026"
     )
+
+
+def test_datetime_fr_is_the_date_then_the_time_in_24_hours() -> None:
+    assert datetime_fr(datetime(2026, 10, 1, 9, 5, tzinfo=UTC)) == "1 octobre 2026, 09:05"
+    assert datetime_fr(datetime(2026, 12, 31, 23, 59, 59, tzinfo=UTC)) == "31 décembre 2026, 23:59"
+    assert datetime_fr(datetime(2026, 1, 15, 0, 0, tzinfo=UTC)) == "15 janvier 2026, 00:00"
+
+
+def test_datetime_fr_shows_the_clock_of_the_value_in_utc() -> None:
+    plus_two = timezone(timedelta(hours=2))
+    assert datetime_fr(datetime(2026, 10, 1, 1, 30, tzinfo=plus_two)) == "30 septembre 2026, 23:30"
+    assert (
+        datetime_fr(datetime(2026, 10, 1, 9, 5)) == "1 octobre 2026, 09:05"
+    )  # naive: taken as UTC
+
+
+def test_datetime_fr_filter_is_available_in_templates() -> None:
+    value = datetime(2026, 10, 1, 14, 30, tzinfo=UTC)
+    assert render_string("{{ d|datetime_fr }}", d=value) == "1 octobre 2026, 14:30"

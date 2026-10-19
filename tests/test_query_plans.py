@@ -35,6 +35,7 @@ from app.repository import (
     awaiting_counts_by_sign,
     get_upload,
     latest_report_date,
+    recent_report_dates,
     recent_uploads,
     tickets_awaiting_price,
     tickets_for_day,
@@ -265,6 +266,27 @@ def hot_queries(w: World) -> list[Hot]:
             frozenset({"ix_tickets_agency_report_date_staff"}),
         ),
         Hot(
+            "latest report date (some signs)",
+            Scope(agency_id=a),
+            lambda s: latest_report_date(s, a, ["0009ER", "0004SV"]),
+            "max(tickets.report_date)",
+            frozenset({"ix_tickets_agency_report_date_staff"}),
+        ),
+        Hot(
+            "recent report dates",
+            Scope(agency_id=a),
+            lambda s: recent_report_dates(s, a),
+            "DISTINCT tickets.report_date",
+            frozenset({"ix_tickets_agency_report_date_staff"}),
+        ),
+        Hot(
+            "recent report dates (some signs)",
+            Scope(agency_id=a),
+            lambda s: recent_report_dates(s, a, staff_signs=["0009ER", "0004SV"]),
+            "DISTINCT tickets.report_date",
+            frozenset({"ix_tickets_agency_report_date_staff"}),
+        ),
+        Hot(
             "recent uploads (big agency)",
             Scope(agency_id=b),
             lambda s: recent_uploads(s, b, 50),
@@ -413,6 +435,9 @@ CASE_NAMES = [
     "tickets for a day (some signs)",
     "awaiting counts by sign",
     "latest report date",
+    "latest report date (some signs)",
+    "recent report dates",
+    "recent report dates (some signs)",
     "recent uploads (big agency)",
     "recent uploads (small agency)",
     "links by agency",
@@ -436,4 +461,4 @@ def test_the_hot_query_uses_its_index(world: World, name: str) -> None:
 
 
 def test_every_hot_query_is_covered() -> None:
-    assert len(CASE_NAMES) == len(set(CASE_NAMES)) == 13
+    assert len(CASE_NAMES) == len(set(CASE_NAMES)) == 16

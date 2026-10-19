@@ -30,6 +30,9 @@ PAX_ADULT, PAX_CHILD, PAX_INFANT = "ADT", "CHD", "INF"
 
 
 class DayTicket(TicketLike, Protocol):
+    """A ticket of one report day: everything ``TicketLike`` has plus its price status. Both the
+    ORM ``Ticket`` row and a parsed ticket given a status satisfy it."""
+
     @property
     def price_status(self) -> str: ...
 
@@ -105,6 +108,9 @@ def build_bookings(tickets: Iterable[DayTicket]) -> list[Booking]:
 
 
 def group_by_agent(bookings: Sequence[Booking]) -> tuple[AgentGroup, ...]:
+    """One ``AgentGroup`` per staff sign (sorted by sign) with that sign's totals and its
+    bookings in the order given. Totals count only the bookings passed in, so grouping a
+    filtered list gives the totals of what is left."""
     by_sign: dict[str, list[Booking]] = defaultdict(list)
     for booking in bookings:
         by_sign[booking.staff_sign].append(booking)
@@ -133,6 +139,9 @@ def _airlines(tickets: Sequence[DayTicket]) -> tuple[AirlineTotal, ...]:
 
 
 def summarize(tickets: Iterable[DayTicket]) -> DaySummary:
+    """Every number of one report day from its tickets: counts, costs (known costs only, with
+    the number of missing ones), per-airline and per-agent totals, passenger types and the
+    bookings. Pure and independent of the order of ``tickets``; no tickets gives zeroes."""
     items = list(tickets)
     bookings = build_bookings(items)
     pax_types = [t.pax_type for t in items]

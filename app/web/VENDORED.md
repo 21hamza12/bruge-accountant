@@ -32,3 +32,9 @@ which would leak every visitor's address to a third party.
 * `.gitattributes` marks `*.woff2` as `-text`; `tests/test_pwa_assets.py` recomputes every hash.
 * To upgrade: fetch the new files, recompute with
   `openssl dgst -sha384 -binary <file> | openssl base64 -A`, then update this table and the test.
+* Caching: the server sends `Cache-Control: public, max-age=31536000, immutable` for
+  `/static/fonts/*.woff2` and `no-cache` (revalidate with the ETag) for everything else under
+  `/static`. That is only safe because **a font never changes in place**: to change a font, add the
+  new file under a **new file name** (for example `geist-latin-400-normal-5.4.0.woff2`), point
+  `app.css` at it and update the table and the hash test. Never overwrite a `.woff2` that has been
+  deployed, or browsers will keep the old bytes for a year.

@@ -1,2 +1,3 @@
 app/web/static/htmx.min.js -text
 app/web/static/*.png binary
+app/web/static/fonts/*.woff2 -text

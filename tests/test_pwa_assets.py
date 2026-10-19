@@ -193,3 +193,58 @@ def test_service_worker_behaviour() -> None:
     for key in ("post", "crossOrigin", "xhr"):
         assert out[key] == {"intercepted": False}, key
     assert out["afterOffline"] == out["afterStaticOnline"]
+
+
+FONTS = STATIC / "fonts"
+FONT_HASHES = {
+    "geist-latin-400-normal.woff2": "uc3s6uG0khEMWge66YWpY/GdBOC8vDbY9Bnbg7etmcAKzqkkY+fU5cbTikq8Ya9L",
+    "geist-latin-500-normal.woff2": "k54QIv/oj/i2qZdUpQtOlH+Hv70UNlmc3QWAIZ/nZJMF8ixcOD40x3KIhR8BAGW7",
+    "geist-latin-600-normal.woff2": "0mWZZhIKltUkp64k21QxvRgryNxpracQr5bqMq713FKtarRPM4OrwUjY46z5ZQLO",
+    "geist-mono-latin-400-normal.woff2": (
+        "+hSrm3seYioO4dd6rTJCXGeoFZs47FGgfpJZC7uTQ+5EO1ehodpbwHLXWpsY8BDy"
+    ),
+    "geist-mono-latin-500-normal.woff2": (
+        "7lA063272U7jZ/sh9Qr+6srnAxSX7a284uveSh7Qhip3AOgjlUPWCSuZiV1sSLkj"
+    ),
+}
+
+
+@pytest.mark.parametrize(("name", "expected"), sorted(FONT_HASHES.items()))
+def test_vendored_fonts_match_recorded_hashes(name: str, expected: str) -> None:
+    data = (FONTS / name).read_bytes()
+    assert data[:4] == b"wOF2"
+    assert base64.b64encode(hashlib.sha384(data).digest()).decode() == expected
+
+
+def test_there_are_no_unrecorded_font_files() -> None:
+    assert {p.name for p in FONTS.glob("*.woff2")} == set(FONT_HASHES)
+
+
+def test_vendored_md_records_every_font_source_and_hash() -> None:
+    text = (WEB_DIR / "VENDORED.md").read_text(encoding="utf-8")
+    for name, expected in FONT_HASHES.items():
+        package = "geist-mono" if name.startswith("geist-mono") else "geist"
+        assert expected in text, name
+        assert f"https://cdn.jsdelivr.net/npm/@fontsource/{package}@5.3.0/files/{name}" in text
+
+
+@pytest.mark.parametrize("name", ["OFL-geist.txt", "OFL-geist-mono.txt"])
+def test_the_ofl_licence_text_ships_with_the_fonts(name: str) -> None:
+    text = (FONTS / name).read_text(encoding="utf-8")
+    assert "SIL OPEN FONT LICENSE Version 1.1" in text
+    assert "Geist Project Authors" in text
+
+
+def test_the_stylesheet_declares_every_font_and_nothing_external() -> None:
+    css = (STATIC / "app.css").read_text(encoding="utf-8")
+    for name in FONT_HASHES:
+        assert f'url("/static/fonts/{name}")' in css
+    assert "http://" not in css and "https://" not in css
+    assert "@import" not in css
+
+
+def test_fonts_are_served_with_the_right_type_and_security_headers(client: TestClient) -> None:
+    resp = client.get("/static/fonts/geist-latin-400-normal.woff2")
+    assert resp.status_code == 200
+    assert resp.headers["content-type"].startswith("font/woff2")
+    assert "font-src 'self'" in resp.headers["content-security-policy"]

@@ -286,3 +286,11 @@ def test_the_home_page_is_reachable_from_every_nav_link(env: Env) -> None:
         for href in sorted(hrefs):
             assert c.get(href).status_code == 200, href
     assert {"/", "/questions", "/uploads", "/staff", "/password/change"} <= hrefs
+
+
+def test_the_manifest_and_the_meta_tag_share_the_accent_colour(client: TestClient) -> None:
+    manifest = client.get("/static/manifest.webmanifest").json()
+    meta = re.search(r'<meta name="theme-color" content="([^"]+)">', render("offline.html"))
+    assert meta
+    assert manifest["theme_color"] == meta.group(1) == "#5b4ce0"
+    assert manifest["background_color"] == "#f6f6f8"

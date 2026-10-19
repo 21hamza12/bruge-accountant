@@ -41,7 +41,6 @@ MAX_QUERY = 100
 NO_STORE = {"Cache-Control": "no-store"}
 
 Status = Literal["awaiting", "confirmed", "all"]
-__all__ = ["parse_day", "router"]
 
 
 def _query(day: object, status: str, q: str | None, limit: int | None = None) -> str:

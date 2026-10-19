@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session
 
 from app.cli import main
 from app.demo import (
+    ALL_PHONES,
     DEMO_A,
     DEMO_B,
     PHONE_MANAGER_A,
@@ -224,14 +225,25 @@ def make_other_agency(url: str, *, phone: str | None = None, slug: str = "other"
 
 
 def agency_slugs(url: str) -> list[str]:
-    from app.models import Agency
-
+    """Which of the demo slugs and "other" exist. Looked up by exact slug, the way the CLI does,
+    because row-level security shows nothing to a session without a tenant."""
     with owner_session(url) as s:
         slugs: list[str] = []
         for slug in (DEMO_A, DEMO_B, "other"):
-            if s.scalar(select(func.count()).select_from(Agency).where(Agency.slug == slug)):
+            lookup_scope(s, "app.agency_slug", slug)
+            if s.scalars(select(Agency).where(Agency.slug == slug)).one_or_none() is not None:
                 slugs.append(slug)
         return slugs
+
+
+def demo_phones_in_use(url: str) -> list[str]:
+    with owner_session(url) as s:
+        found: list[str] = []
+        for phone in ALL_PHONES:
+            lookup_scope(s, "app.login_phone", phone)
+            if s.scalars(select(User.id).where(User.phone == phone)).first() is not None:
+                found.append(phone)
+        return found
 
 
 @pytest.mark.parametrize(
@@ -289,11 +301,7 @@ def test_a_failure_halfway_leaves_nothing_behind(
     assert seed(migrated) == 1
     assert "database error" in capsys.readouterr().err
     assert agency_slugs(migrated) == []
-    with owner_session(migrated) as s:
-        from app.models import AuditEvent
-
-        assert s.scalar(select(func.count()).select_from(User)) == 0
-        assert s.scalar(select(func.count()).select_from(AuditEvent)) == 0
+    assert demo_phones_in_use(migrated) == []
     # and the next, healthy run succeeds from a clean slate
     monkeypatch.undo()
     stdin(monkeypatch)

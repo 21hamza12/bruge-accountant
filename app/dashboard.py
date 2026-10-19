@@ -176,3 +176,28 @@ def filter_bookings(
 ) -> list[Booking]:
     wanted = {STATUS_AWAITING: (False,), STATUS_CONFIRMED: (True,)}.get(status, (False, True))
     return [b for b in bookings if b.confirmed in wanted and matches_search(b, query)]
+
+
+@dataclass(frozen=True)
+class ChartBar:
+    """One bar of the cost chart. ``height`` and ``top`` are percentages of the plot area, written
+    to the SVG as attributes (the CSP forbids style attributes)."""
+
+    airline: AirlineTotal
+    height: float
+    top: float
+
+
+CHART_MAX_HEIGHT = 82.0  # the tallest bar; the rest of the plot holds its value label
+CHART_MIN_HEIGHT = 2.0  # a bar for a small, non-empty airline stays visible
+
+
+def chart_bars(airlines: Sequence[AirlineTotal]) -> tuple[ChartBar, ...]:
+    """Bar sizes proportional to each airline's cost, the costliest at ``CHART_MAX_HEIGHT``."""
+    biggest = max((a.total_cost for a in airlines), default=Decimal(0))
+    bars: list[ChartBar] = []
+    for airline in airlines:
+        share = float(airline.total_cost / biggest) if biggest > 0 else 0.0
+        height = round(max(CHART_MIN_HEIGHT, share * CHART_MAX_HEIGHT), 2)
+        bars.append(ChartBar(airline, height, round(100 - height, 2)))
+    return tuple(bars)

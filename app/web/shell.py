@@ -1,0 +1,109 @@
+"""What the application shell (sidebar, top bar, bottom bar) needs on every signed-in page.
+
+``build_shell`` is the one place that decides it, so a page only passes ``**shell_context(...)``
+to ``page()``. It reads, for the signed-in user's own agency only (the id comes from the session):
+
+* the agency (its name and currency);
+* the agency's newest report day and, for that day, how many price questions still wait, per
+  staff sign. A manager counts every sign and sees the agent list; staff count only the signs
+  linked to them. The badge on "Questions de prix" is the sum.
+
+Three or four small indexed queries per page. The tickets themselves are not loaded here.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Mapping
+from dataclasses import dataclass
+from datetime import date
+from typing import Any
+
+from fastapi import HTTPException
+from sqlalchemy import select
+from sqlalchemy.orm import Session
+
+from app import accounts
+from app.models import ROLE_MANAGER, Agency, User
+from app.repository import awaiting_counts_by_sign, latest_report_date, sign_owners
+from app.web.deps import AuthContext
+
+ACTIVE_HOME = "home"
+ACTIVE_QUESTIONS = "questions"
+ACTIVE_UPLOADS = "uploads"
+ACTIVE_UPLOAD_NEW = "upload_new"
+ACTIVE_STAFF = "staff"
+ACTIVE_PROFILE = "profile"
+
+
+@dataclass(frozen=True)
+class AgentNav:
+    staff_sign: str
+    owner: str | None  # None: the sign is not linked to anyone
+    waiting: int
+
+
+@dataclass(frozen=True)
+class Shell:
+    agency: Agency
+    user: User
+    is_manager: bool
+    active: str
+    latest_day: date | None
+    badge: int
+    agents: tuple[AgentNav, ...]  # managers only
+    owners: Mapping[str, str]  # managers only: sign to person
+    my_signs: tuple[str, ...]  # staff only: the signs linked to them
+
+    @property
+    def initial(self) -> str:
+        return (self.agency.name.strip() or "B")[0].upper()
+
+    @property
+    def user_initial(self) -> str:
+        return ((self.user.display_name or "").strip() or self.user.phone.lstrip("+") or "?")[
+            0
+        ].upper()
+
+
+def build_shell(db: Session, auth: AuthContext, active: str) -> Shell:
+    user = auth.user
+    agency_id = user.agency_id
+    agency = db.scalars(select(Agency).where(Agency.id == agency_id)).one_or_none()
+    if agency is None:  # cannot happen (foreign key); fail closed rather than render half a page
+        raise HTTPException(status_code=404)
+    is_manager = user.role == ROLE_MANAGER
+    my_signs: tuple[str, ...] = ()
+    if not is_manager:
+        my_signs = tuple(link.staff_sign for link in accounts.get_signs(db, agency_id, user.id))
+    day = latest_report_date(db, agency_id)
+    counts: dict[str, int] = {}
+    if day is not None:
+        counts = awaiting_counts_by_sign(db, agency_id, day, None if is_manager else my_signs)
+    owners: Mapping[str, str] = sign_owners(db, agency_id) if is_manager else {}
+    agents = (
+        tuple(AgentNav(sign, owners.get(sign), n) for sign, n in sorted(counts.items()))
+        if is_manager
+        else ()
+    )
+    return Shell(
+        agency=agency,
+        user=user,
+        is_manager=is_manager,
+        active=active,
+        latest_day=day,
+        badge=sum(counts.values()),
+        agents=agents,
+        owners=owners,
+        my_signs=my_signs,
+    )
+
+
+def shell_context(db: Session, auth: AuthContext, active: str) -> dict[str, Any]:
+    """The template context every signed-in page shares."""
+    shell = build_shell(db, auth, active)
+    return {
+        "shell": shell,
+        "agency": shell.agency,
+        "is_manager": shell.is_manager,
+        "csrf_token": auth.csrf_token,
+    }

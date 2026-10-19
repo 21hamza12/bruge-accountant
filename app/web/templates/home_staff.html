@@ -1,0 +1,70 @@
+{% extends "base.html" %}
+{% from "_icons.html" import icon %}
+{% from "_bookings.html" import status_pill, lead, airlines, ticket_count %}
+{% block title %}{{ _("Accueil") }}{% endblock %}
+{% block heading %}{{ _("Bonjour") }}, {{ shell.user.display_name or shell.user.phone }}{% endblock %}
+{% block content %}
+<div class="home-narrow">
+{% if not shell.my_signs %}
+  <section class="card empty">
+    <h2 class="empty-title">{{ _("Aucun code agent") }}</h2>
+    <p class="muted">{{ _("Aucun code agent ne vous est attribué. Demandez à votre responsable de lier votre code agent à votre compte.") }}</p>
+  </section>
+{% elif day is none %}
+  <section class="card empty">
+    <h2 class="empty-title">{{ _("Aucun rapport n'a encore été envoyé.") }}</h2>
+    <p class="muted">{{ _("Dès qu'un rapport sera envoyé, vos réservations à tarifer apparaîtront ici.") }}</p>
+    <a class="btn btn-primary btn-lg" href="/uploads/new">{{ icon("upload", small=true) }}{{ _("Envoyer un rapport") }}</a>
+  </section>
+{% else %}
+  <p class="greeting-sub">{{ day|date_fr(weekday=True) }} · {% for sign in shell.my_signs %}<span class="mono">{{ sign }}</span>{% if not loop.last %}, {% endif %}{% endfor %}</p>
+  {% if not summary.ticket_count %}
+  <section class="card empty">
+    <h2 class="empty-title">{{ _("Aucun billet pour cette date") }}</h2>
+    <p class="muted">{{ _("Aucune de vos réservations n'est dans le rapport du") }} {{ day|date_fr }}.</p>
+  </section>
+  {% else %}
+  <section class="card todo" aria-labelledby="todo-title">
+    <div class="card-head">
+      <h2 class="card-title" id="todo-title">{% if is_today %}{{ _("À tarifer aujourd'hui") }}{% else %}{{ _("À tarifer") }}{% endif %}</h2>
+      <span class="pill pill-amber">{{ summary.confirmed_count }} / {{ summary.booking_count }}</span>
+    </div>
+    <div class="todo-count">
+      <span class="todo-number">{{ summary.awaiting_count }}</span>
+      <span class="muted">{{ _("réservations") }} · {{ ticket_count(waiting_tickets) }}</span>
+    </div>
+    <progress class="progress" max="{{ summary.booking_count }}" value="{{ summary.confirmed_count }}" aria-label="{{ _('Prix confirmés') }}"></progress>
+    {% if summary.awaiting_count %}
+    <a class="btn btn-primary btn-lg btn-block" href="/questions?date={{ day.isoformat() }}">{{ _("Commencer") }}</a>
+    {% else %}
+    <p class="status-line">{{ icon("check", small=true) }}{{ _("Tous les prix sont confirmés.") }}</p>
+    {% endif %}
+  </section>
+
+  <div class="mini-tiles">
+    <div class="card mini-tile"><span class="mini-label">{{ _("Coût de mes billets") }}</span><span class="mini-value">{{ summary.total_cost|money_fr }}</span></div>
+    <div class="card mini-tile"><span class="mini-label">{{ _("Prix confirmés") }}</span><span class="mini-value">{{ summary.confirmed_count }}</span></div>
+  </div>
+
+  <section class="card card-flush" aria-labelledby="mine-title">
+    <h2 class="my-list-title" id="mine-title">{{ _("Mes réservations") }}</h2>
+    {% for b in listed %}
+    <a class="my-row" href="/questions?date={{ day.isoformat() }}&amp;status=all#b-{{ b.staff_sign }}-{{ b.question.booking_ref or b.question.passengers[0].ticket_no }}">
+      <span class="my-main">
+        <span class="my-name">{{ lead(b.question) }}</span>
+        <span class="my-sub"><span class="mono">{{ b.question.booking_ref or "—" }}</span> · {{ airlines(b.question) }}</span>
+      </span>
+      <span class="my-side">
+        <span class="my-cost">{{ b.question.known_cost_total|money_fr }}</span>
+        {{ status_pill(b, small=true) }}
+      </span>
+    </a>
+    {% endfor %}
+    {% if hidden_count %}
+    <a class="more-link" href="/questions?date={{ day.isoformat() }}&amp;status=all">{{ _("Afficher les") }} {{ hidden_count }} {{ _("autres réservations") }}</a>
+    {% endif %}
+  </section>
+  {% endif %}
+{% endif %}
+</div>
+{% endblock %}

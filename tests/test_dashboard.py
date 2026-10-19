@@ -15,11 +15,15 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.dashboard import (
+    CHART_MAX_HEIGHT,
+    CHART_MIN_HEIGHT,
     STATUS_ALL,
     STATUS_AWAITING,
     STATUS_CONFIRMED,
+    AirlineTotal,
     Booking,
     build_bookings,
+    chart_bars,
     filter_bookings,
     group_by_agent,
     matches_search,
@@ -351,3 +355,30 @@ def test_the_queries_respect_row_level_security(
             assert awaiting_counts_by_sign(s, b, DAY) == {}
     finally:
         app.dispose()
+
+
+# --- the chart ----------------------------------------------------------------------------------
+
+
+def test_chart_bars_are_proportional_to_the_cost(parsed_fixture: ParsedReport) -> None:
+    bars = chart_bars(summarize(fixture_tickets(parsed_fixture)).airlines)
+    assert [b.airline.code for b in bars] == ["495", "147", "235", "199", "157"]
+    assert bars[0].height == CHART_MAX_HEIGHT
+    assert bars[0].top == round(100 - CHART_MAX_HEIGHT, 2)
+    ratio = bars[1].height / bars[0].height
+    assert abs(ratio - 266361 / 336190) < 0.01
+    assert all(b.height + b.top == pytest.approx(100) for b in bars)
+    assert [b.height for b in bars] == sorted((b.height for b in bars), reverse=True)
+
+
+def test_chart_bars_of_nothing_or_of_zero_costs() -> None:
+    assert chart_bars([]) == ()
+    zero = AirlineTotal("147", "Royal Air Maroc", 1, Decimal(0))
+    (bar,) = chart_bars([zero])
+    assert bar.height == CHART_MIN_HEIGHT
+
+
+def test_a_tiny_airline_keeps_a_visible_bar() -> None:
+    big = AirlineTotal("147", "Royal Air Maroc", 9, Decimal(1_000_000))
+    tiny = AirlineTotal("199", "Tunisair", 1, Decimal(1))
+    assert chart_bars([big, tiny])[1].height == CHART_MIN_HEIGHT

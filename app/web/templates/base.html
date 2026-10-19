@@ -1,9 +1,10 @@
+{% from "_icons.html" import icon %}
 <!doctype html>
 <html lang="{{ lang }}" dir="{{ dir }}">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="theme-color" content="#0f4c81">
+  <meta name="theme-color" content="#5b4ce0">
   <meta name="htmx-config" content='{"allowEval":false,"includeIndicatorStyles":false,"historyCacheSize":0}'>
   <title>{% block title %}{{ _("Bruge Accountant") }}{% endblock %}</title>
   <link rel="manifest" href="/static/manifest.webmanifest">
@@ -13,8 +14,113 @@
   <script src="/static/register-sw.js" defer></script>
 </head>
 <body{% if csrf_token %} data-csrf-token="{{ csrf_token }}" data-hx-headers='{{ {"X-CSRF-Token": csrf_token}|tojson }}'{% endif %}>
-  <main>
-    {% block content %}{% endblock %}
+{% if shell %}
+  <a class="skip-link" href="#main">{{ _("Aller au contenu") }}</a>
+  <div class="shell">
+    <aside class="sidebar" aria-label="{{ _('Menu') }}">
+      <div class="brand">
+        <span class="brand-mark" aria-hidden="true">{{ shell.initial }}</span>
+        <span class="brand-text">
+          <span class="brand-name">{{ shell.agency.name }}</span>
+          <span class="brand-sub">{{ shell.agency.currency }}</span>
+        </span>
+      </div>
+
+      <nav class="nav" aria-label="{{ _('Navigation principale') }}">
+        <a class="nav-link" href="/"{% if shell.active == "home" %} aria-current="page"{% endif %}>
+          <span class="nav-label">{{ icon("dashboard") }}{% if shell.is_manager %}{{ _("Tableau de bord") }}{% else %}{{ _("Accueil") }}{% endif %}</span>
+        </a>
+        <a class="nav-link" href="/questions"{% if shell.active == "questions" %} aria-current="page"{% endif %}>
+          <span class="nav-label">{{ icon("questions") }}{{ _("Questions de prix") }}</span>
+          {% if shell.badge %}<span class="badge">{{ shell.badge }}</span>{% endif %}
+        </a>
+        <a class="nav-link" href="/uploads"{% if shell.active == "uploads" %} aria-current="page"{% endif %}>
+          <span class="nav-label">{{ icon("upload") }}{{ _("Rapports Amadeus") }}</span>
+        </a>
+        {% if shell.is_manager %}
+        <a class="nav-link" href="/staff"{% if shell.active == "staff" %} aria-current="page"{% endif %}>
+          <span class="nav-label">{{ icon("team") }}{{ _("Équipe") }}</span>
+        </a>
+        {% endif %}
+      </nav>
+
+      {% if shell.is_manager and shell.agents %}
+      <div class="side-section">
+        <span class="side-title">{{ _("Agents") }}</span>
+        {% for agent in shell.agents %}
+        <a class="agent-link" href="/questions{% if shell.latest_day %}?date={{ shell.latest_day.isoformat() }}{% endif %}#agent-{{ agent.staff_sign }}">
+          <span class="agent-name">{% if agent.owner %}{{ agent.owner }}{% else %}{{ _("Non attribué") }}{% endif %} <span class="agent-code">{{ agent.staff_sign }}</span></span>
+          <span class="agent-count">{{ agent.waiting }}</span>
+        </a>
+        {% endfor %}
+      </div>
+      {% endif %}
+
+      <div class="side-foot">
+        <a class="nav-link" href="/password/change"{% if shell.active == "profile" %} aria-current="page"{% endif %}>
+          <span class="nav-label">{{ icon("key") }}{{ _("Mot de passe") }}</span>
+        </a>
+        <div class="user-block">
+          <span class="avatar" aria-hidden="true">{{ shell.user_initial }}</span>
+          <span class="user-text">
+            <span class="user-name">{{ shell.user.display_name or shell.user.phone }}</span>
+            <span class="user-role">{% if shell.is_manager %}{{ _("Responsable") }}{% else %}{{ _("Employé") }}{% endif %}</span>
+          </span>
+          <form class="inline-form" method="post" action="/logout">
+            {% include "_csrf.html" %}
+            <button class="btn btn-quiet btn-icon" type="submit" aria-label="{{ _('Se déconnecter') }}" title="{{ _('Se déconnecter') }}">{{ icon("logout") }}</button>
+          </form>
+        </div>
+      </div>
+    </aside>
+
+    <div class="content-col">
+      <header class="topbar">
+        <div class="topbar-title">
+          <span class="brand-mark" aria-hidden="true">{{ shell.initial }}</span>
+          <h1 class="page-title">{% block heading %}{{ self.title() }}{% endblock %}</h1>
+        </div>
+        <div class="topbar-tools">
+          <form class="search" role="search" method="get" action="/questions">
+            {{ icon("search", small=true) }}
+            <label class="visually-hidden" for="q">{{ _("Rechercher") }}</label>
+            <input id="q" name="q" type="search" maxlength="100" value="{{ q or '' }}" placeholder="{{ _('Rechercher un billet, une réservation…') }}" autocomplete="off">
+            {% block search_hidden %}{% endblock %}
+          </form>
+          <a class="btn btn-primary upload-cta" href="/uploads/new">{{ icon("upload", small=true) }}{{ _("Envoyer un rapport") }}</a>
+        </div>
+      </header>
+      <main class="main" id="main">
+{% else %}
+  <main class="bare" id="main">
+    <div class="card bare-card{% block bare_width %}{% endblock %}">
+      <div class="bare-brand">
+        <span class="brand-mark" aria-hidden="true">B</span>
+        <span class="brand-name">{{ _("Bruge Accountant") }}</span>
+      </div>
+      <h1 class="bare-title">{{ self.heading() }}</h1>
+      <div class="bare-body">
+{% endif %}
+{% block content %}{% endblock %}
+{% if shell %}
+      </main>
+    </div>
+  </div>
+
+  <nav class="tabbar" aria-label="{{ _('Navigation') }}">
+    <a class="tab" href="/"{% if shell.active == "home" %} aria-current="page"{% endif %}>{{ icon("dashboard") }}{{ _("Accueil") }}</a>
+    <a class="tab" href="/questions"{% if shell.active == "questions" %} aria-current="page"{% endif %}><span class="tab-badge">{{ icon("questions") }}{% if shell.badge %}<span class="badge">{{ shell.badge }}</span>{% endif %}</span>{{ _("Questions") }}</a>
+    <a class="tab" href="/uploads/new"{% if shell.active in ("upload_new", "uploads") %} aria-current="page"{% endif %}>{{ icon("upload") }}{{ _("Envoyer") }}</a>
+    {% if shell.is_manager %}
+    <a class="tab" href="/staff"{% if shell.active == "staff" %} aria-current="page"{% endif %}>{{ icon("team") }}{{ _("Équipe") }}</a>
+    {% else %}
+    <a class="tab" href="/password/change"{% if shell.active == "profile" %} aria-current="page"{% endif %}>{{ icon("user") }}{{ _("Profil") }}</a>
+    {% endif %}
+  </nav>
+{% else %}
+      </div>
+    </div>
   </main>
+{% endif %}
 </body>
 </html>

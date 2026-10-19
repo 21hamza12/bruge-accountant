@@ -1,0 +1,20 @@
+{#- Small pieces shared by the dashboard, the staff home and the questions page. -#}
+{% macro status_pill(booking, small=false) -%}
+{% if booking.confirmed %}<span class="pill pill-green{% if small %} pill-sm{% endif %}">{{ _("Confirmé") }}</span>{% else %}<span class="pill pill-amber{% if small %} pill-sm{% endif %}">{{ _("En attente") }}</span>{% endif %}
+{%- endmacro %}
+
+{% macro lead(question) -%}
+{{ question.passengers[0].name }}{% if question.ticket_count > 1 %} <span class="b-more">+{{ question.ticket_count - 1 }}</span>{% endif %}
+{%- endmacro %}
+
+{% macro airlines(question) -%}
+{% for code in question.airlines %}{{ code|airline }}{% if not loop.last %}, {% endif %}{% endfor %}
+{%- endmacro %}
+
+{% macro cost(question) -%}
+{{ question.known_cost_total|money_fr }}{% if question.missing_cost_count %} <span class="faint">({{ _("partiel") }})</span>{% endif %}
+{%- endmacro %}
+
+{% macro ticket_count(n) -%}
+{{ n }} {% if n == 1 %}{{ _("billet") }}{% else %}{{ _("billets") }}{% endif %}
+{%- endmacro %}

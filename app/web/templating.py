@@ -7,7 +7,8 @@ from typing import Any
 
 from jinja2 import Environment, FileSystemLoader
 
-from app.formatting import money
+from app.airlines import airline_name
+from app.formatting import date_fr, money, money_fr
 from app.i18n import (
     DEFAULT_LANGUAGE,
     install_null_translations,
@@ -26,6 +27,9 @@ def build_environment() -> Environment:
     )
     install_null_translations(env)
     env.filters["money"] = money
+    env.filters["money_fr"] = money_fr
+    env.filters["date_fr"] = date_fr
+    env.filters["airline"] = airline_name
     return env
 
 

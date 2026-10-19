@@ -197,9 +197,15 @@ def test_service_worker_behaviour() -> None:
 
 FONTS = STATIC / "fonts"
 FONT_HASHES = {
-    "geist-latin-400-normal.woff2": "uc3s6uG0khEMWge66YWpY/GdBOC8vDbY9Bnbg7etmcAKzqkkY+fU5cbTikq8Ya9L",
-    "geist-latin-500-normal.woff2": "k54QIv/oj/i2qZdUpQtOlH+Hv70UNlmc3QWAIZ/nZJMF8ixcOD40x3KIhR8BAGW7",
-    "geist-latin-600-normal.woff2": "0mWZZhIKltUkp64k21QxvRgryNxpracQr5bqMq713FKtarRPM4OrwUjY46z5ZQLO",
+    "geist-latin-400-normal.woff2": (
+        "uc3s6uG0khEMWge66YWpY/GdBOC8vDbY9Bnbg7etmcAKzqkkY+fU5cbTikq8Ya9L"
+    ),
+    "geist-latin-500-normal.woff2": (
+        "k54QIv/oj/i2qZdUpQtOlH+Hv70UNlmc3QWAIZ/nZJMF8ixcOD40x3KIhR8BAGW7"
+    ),
+    "geist-latin-600-normal.woff2": (
+        "0mWZZhIKltUkp64k21QxvRgryNxpracQr5bqMq713FKtarRPM4OrwUjY46z5ZQLO"
+    ),
     "geist-mono-latin-400-normal.woff2": (
         "+hSrm3seYioO4dd6rTJCXGeoFZs47FGgfpJZC7uTQ+5EO1ehodpbwHLXWpsY8BDy"
     ),

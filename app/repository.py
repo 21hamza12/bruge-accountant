@@ -1,12 +1,24 @@
 """Database access. Every query is scoped by ``agency_id``."""
 
 import logging
-from collections.abc import Iterator, Sequence
+from collections.abc import Collection, Iterator, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
 from typing import Any, cast
 
-from sqlalchemy import Boolean, CursorResult, String, column, delete, func, or_, select, table
+from sqlalchemy import (
+    Boolean,
+    CursorResult,
+    String,
+    case,
+    column,
+    delete,
+    distinct,
+    func,
+    or_,
+    select,
+    table,
+)
 from sqlalchemy.dialects import postgresql, sqlite
 from sqlalchemy.orm import Session
 
@@ -408,6 +420,61 @@ def tickets_awaiting_price(session: Session, agency_id: int, report_date: date) 
         .order_by(Ticket.staff_sign, Ticket.booking_ref, Ticket.ticket_no)
     )
     return list(session.scalars(stmt))
+
+
+def tickets_for_day(
+    session: Session,
+    agency_id: int,
+    report_date: date,
+    staff_signs: Collection[str] | None = None,
+) -> list[Ticket]:
+    """Every ticket of one report day, whatever its price status, in sign/booking/ticket order.
+
+    ``staff_signs`` limits the result to those signs (what a staff member may see); an empty
+    collection is an empty result, never "all". Served by ``ix_tickets_agency_report_date_staff``.
+    """
+    bind_tenant(session, agency_id)
+    if staff_signs is not None and not staff_signs:
+        return []
+    stmt = select(Ticket).where(Ticket.agency_id == agency_id, Ticket.report_date == report_date)
+    if staff_signs is not None:
+        stmt = stmt.where(Ticket.staff_sign.in_(list(staff_signs)))
+    stmt = stmt.order_by(Ticket.staff_sign, Ticket.booking_ref, Ticket.ticket_no)
+    return list(session.scalars(stmt))
+
+
+def awaiting_counts_by_sign(
+    session: Session,
+    agency_id: int,
+    report_date: date,
+    staff_signs: Collection[str] | None = None,
+) -> dict[str, int]:
+    """How many price questions (bookings) still wait, per staff sign, on one report day.
+
+    Counted in SQL the way ``app.questions`` groups: one question per (sign, booking reference),
+    and every ticket without a reference is a question of its own. It feeds the badge and the
+    agent list on every page, so it must not load the tickets.
+    """
+    bind_tenant(session, agency_id)
+    if staff_signs is not None and not staff_signs:
+        return {}
+    has_ref = Ticket.booking_ref != ""
+    stmt = (
+        select(
+            Ticket.staff_sign,
+            func.count(distinct(case((has_ref, Ticket.booking_ref), else_=None))),
+            func.sum(case((has_ref, 0), else_=1)),
+        )
+        .where(
+            Ticket.agency_id == agency_id,
+            Ticket.report_date == report_date,
+            Ticket.price_status == PRICE_STATUS_AWAITING,
+        )
+        .group_by(Ticket.staff_sign)
+    )
+    if staff_signs is not None:
+        stmt = stmt.where(Ticket.staff_sign.in_(list(staff_signs)))
+    return {row[0]: int(row[1] or 0) + int(row[2] or 0) for row in session.execute(stmt)}
 
 
 def get_upload(

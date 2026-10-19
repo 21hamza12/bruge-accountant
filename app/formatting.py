@@ -50,6 +50,6 @@ def money_fr(value: Decimal) -> str:
 
 
 def date_fr(value: date, *, weekday: bool = False) -> str:
-    """"1 octobre 2026", or "jeudi 1 octobre 2026" with ``weekday``. No locale needed."""
+    """ "1 octobre 2026", or "jeudi 1 octobre 2026" with ``weekday``. No locale needed."""
     text = f"{value.day} {_MONTHS[value.month - 1]} {value.year}"
     return f"{_WEEKDAYS[value.weekday()]} {text}" if weekday else text

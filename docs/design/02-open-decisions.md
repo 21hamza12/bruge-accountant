@@ -22,3 +22,4 @@ Nothing here is built until approved.
 | 15 | AI model | **Haiku for routine reading, Sonnet for free questions and weekly advice**, decided after the golden-set test | Cost about $5–15/month per agency | Cost model |
 | 16 | Airline code 495 | Ask the agency | – | Reports |
 | 17 | Real staff names in the app | Use real names from the staff list (`intake/notes/`) | – | Accounts |
+| 18 | Who approves a difference between the app report and the Amadeus report? | **The issuing staff member confirms** which value is right; **the accountant or manager validates** before a cost, ticket number or ticket type is corrected. A passenger-name spelling fix needs the staff member only | Cost and ticket changes move money and must match what the airline bills | Comparison |

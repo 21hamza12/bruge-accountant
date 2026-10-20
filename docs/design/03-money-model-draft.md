@@ -3,35 +3,67 @@
 Status: draft written before the data arrived. Every point marked **[verify]** depends on the
 agency's real files or the accountant's answers and may change.
 
-## 1. The flow of one sale
+## 1. Two reports for the same day
+
+The app builds **its own daily report** from what staff send during the day, then compares it
+with the **Amadeus daily report** line by line. Differences are flagged; an approved difference
+becomes a correction on the app's copy of the Amadeus report.
 
 ```
-Staff issues ticket in Amadeus
-   │
-   ├─► sends screenshot or pasted text to the app chat (same day)
-   │      app reads: ticket no, PNR, passenger, RM price, client/partner, payment method
-   │      staff confirms the read-back → SALE ENTRY (confirmed)
-   │      the image is discarded right after reading (never stored)
-   │
-   └─► end of day: Amadeus daily report uploaded
-          app matches report lines ↔ sale entries (D+1, accountant)
-          ├─ matched             → OK
-          ├─ in report, no sale  → "missing price" question to the staff member
-          └─ sale, not in report → flagged for the accountant
+During the day
+  Staff issues ticket in Amadeus
+     └─► sends screenshot or pasted text to the app chat
+            app reads every report field: ticket no, airline, cost (TOTAL DOC), passenger,
+            pax type, staff sign, type (TKTT/RFND/CANX…), PNR
+            + what Amadeus does not have: RM selling price, client/partner, payment method
+            staff confirms the read-back → one line of the APP REPORT
+            the image is discarded right after reading (never stored)
+
+End of day (D+1 for the accountant)
+  Amadeus daily report uploaded → AMADEUS REPORT (original kept exactly as received)
+  app compares the two, matching lines by ticket number:
+     ├─ identical                       → OK
+     ├─ same ticket, a field differs    → DIFFERENCE (e.g. cost 45 200 vs 45 020)
+     ├─ in Amadeus only                 → MISSING IN APP REPORT (staff did not send it)
+     └─ in app report only              → MISSING IN AMADEUS (wrong number, void, next day?)
 ```
+
+### What happens to a difference
+
+1. The app shows it to the staff member who issued the ticket, side by side:
+   "Amadeus says X, you sent Y. Which is right?"
+2. The staff member answers, and approves the change (proposed: the accountant or manager then
+   validates any change to a cost or a ticket number; see decision 18).
+3. Once approved, the correction is applied to the **corrected Amadeus report**. Both the
+   original value and the approved value are kept, with who approved, when and why.
+
+### The three layers
+
+| Layer | What it is | Changed? |
+|---|---|---|
+| **Original Amadeus report** | The file exactly as uploaded | Never. It is the reference |
+| **App report** | Built from staff screenshots and text during the day | Only by the staff member who sent it, before the comparison |
+| **Corrected Amadeus report** | The Amadeus report plus every approved correction, plus the prices | Only through an approved correction; full history |
+
+All daily sheets, totals, invoices and exports use the **corrected Amadeus report**. Every
+corrected cell is marked, and the original value is one click away.
+
+**Limit:** the app never writes back into Amadeus itself (that would need Amadeus/1A access and
+is not offered to the agency). If the real ticket in Amadeus is wrong, staff still fix it in
+Amadeus; the app records the correction on its side.
 
 ## 2. Screenshots are not kept: consequences
 
 Decision 3 in [02-open-decisions.md](02-open-decisions.md): screenshots are read, then discarded.
 
-- **The proof of a price is the staff member's confirmation**, not the picture. Each sale stores
-  the confirmed fields, who confirmed, when, and the exact RM text that was read (a short line
-  of text, not the image), so a later dispute can be checked against what was read.
-- **The Amadeus daily report is the safety net** for everything except the price: ticket number,
-  cost, passenger, airline and staff sign are always re-checked against it at D+1. A reading
-  mistake on those fields is caught automatically.
-- **Only the selling price, the client/partner and the payment method rely on the read-back.**
-  That is why the read-back must be clear and the staff member must confirm before saving.
+- **The proof of each line is the staff member's confirmation**, not the picture. Each line stores
+  the confirmed fields, who confirmed, when, and the exact text that was read (a few lines of
+  text, not the image), so a later dispute can be checked against what was read.
+- **The app reads the full ticket**, not just the price, because it builds a complete report of
+  its own. Reading more fields means more chances to misread; the comparison with Amadeus is
+  what catches those, and the golden set measures how often it happens.
+- **Selling price, client/partner and payment method** exist only in the app report (Amadeus
+  does not have them), so for those the read-back and confirmation are the only check.
 - **No re-reading later.** If a better reading method comes along, old screenshots cannot be
   re-read. Corrections go through an edit (with history), not by re-processing.
 - **Duplicates** are blocked by a fingerprint (SHA-256) of the image, plus the ticket number.
@@ -85,7 +117,8 @@ formula injection, as already planned.
 
 ## 7. Reconciliation (three levels)
 
-1. **Sales ↔ Amadeus report** (daily, D+1): every ticket has exactly one confirmed sale.
+1. **App report ↔ Amadeus report** (daily, D+1): every line matches, or its difference is
+   approved as a correction (section 1).
 2. **Sales ↔ money received** (daily): cash count, mobile-money and bank lines matched to sales
    paid that day. Unmatched money and unpaid "paid" sales are flagged.
 3. **Amadeus cost ↔ airline/BSP billing** (each billing period): what the airlines charge

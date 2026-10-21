@@ -14,6 +14,7 @@ does say ``public`` on purpose is ``HARDENING``: that is the schema PostgreSQL 1
 
 from __future__ import annotations
 
+import logging
 import re
 from collections.abc import Iterable
 from typing import Any
@@ -41,6 +42,8 @@ GRANTS = {
     "user_sessions": "SELECT, INSERT, UPDATE, DELETE",
     "rate_limit_buckets": "SELECT, INSERT, UPDATE, DELETE",
     "audit_events": "SELECT, INSERT, DELETE",
+    # Append-only snapshot of every upload (migration 0006): never updated, never deleted.
+    "amadeus_lines": "SELECT, INSERT",
 }
 # The tables migration 0003 grants on, frozen. 0003 passes this to ``apply_grants`` instead of
 # relying on GRANTS, which later phases extend: a fresh ``alembic upgrade head`` runs 0003 before
@@ -69,6 +72,7 @@ _PG_ROLES = table(
     column("rolsuper", Boolean),
     column("rolbypassrls", Boolean),
 )
+_log = logging.getLogger("alembic.runtime.migration")
 _PREPARER = postgresql.dialect().identifier_preparer  # type: ignore[no-untyped-call]
 
 
@@ -199,6 +203,31 @@ def assert_grantable(connection: Connection, role: str) -> None:
     problem = role_privilege_problem(connection, role)
     if problem is not None:
         raise PrivilegedRoleError(f"{ROLE_ENV_VAR}: {problem}")
+
+
+def configured_role(connection: Connection, raw: str, *, must_exist: bool) -> str | None:
+    """The validated role named by ``raw`` (the ``APP_DB_ROLE`` value, which the migration reads:
+    only app/settings.py reads the environment inside ``app``), or None for single-role mode
+    (blank or, on a downgrade, a role that no longer exists). With ``must_exist`` (an upgrade)
+    the role must exist and must not skip row-level security; otherwise this raises."""
+    raw = raw.strip()
+    if not raw:
+        return None
+    role = validate_role_name(raw)
+    exists = connection.execute(select(_PG_ROLES.c.rolname).where(_PG_ROLES.c.rolname == role))
+    if exists.scalar() is None:
+        if must_exist:
+            raise RuntimeError(
+                f"{ROLE_ENV_VAR} names the role {role!r}, which does not exist. Create it first "
+                f"(CREATE ROLE {role} LOGIN ...), or unset {ROLE_ENV_VAR} for single-role mode."
+            )
+        _log.warning("%s=%s does not exist; no privileges to revoke from it.", ROLE_ENV_VAR, role)
+        return None
+    if must_exist:
+        problem = role_privilege_problem(connection, role)
+        if problem is not None:
+            raise RuntimeError(f"{ROLE_ENV_VAR}: {problem}")
+    return role
 
 
 def apply_grants(connection: Connection, role: str, tables: Iterable[str] | None = None) -> None:

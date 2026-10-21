@@ -158,6 +158,14 @@ Leave `APP_DB_ROLE` unset. `DATABASE_URL` stays the owner URL. The migration log
 ("APP_DB_ROLE is not set: single-role mode"); that is expected. Isolation relies on FORCE RLS alone
 (residual risk above). Revisit if Render or another host offers a second role.
 
+**Production must use the separate app role.** The original Amadeus report (`amadeus_lines`,
+migration 0006) is append-only, but that is fully enforced only in app-role mode: the app role has
+no UPDATE, DELETE or TRUNCATE privilege on it. In single-role mode the owner role can still
+TRUNCATE the table, DROP POLICY or DISABLE ROW LEVEL SECURITY, so the "never modified" guarantee
+does not hold there. Also note that once lines exist, an upload or an agency cannot be deleted
+(`ON DELETE RESTRICT` plus append-only); a privileged, audited retention or erasure path is a
+decision for a later phase.
+
 ### Creating the first agency and manager
 
 `add-agency` and `bootstrap-agency` insert into `agencies`, which the app role may not do, so run

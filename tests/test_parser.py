@@ -108,16 +108,22 @@ def _delete(ws: Worksheet) -> None:
     ws.delete_cols(9, 6)
 
 
-@pytest.mark.parametrize("mutate", [_clear, _junk, _delete], ids=["cleared", "junk", "deleted"])
+@pytest.mark.parametrize(
+    ("mutate", "unknown"),
+    [(_clear, ()), (_junk, ("unknown columns ignored: GARBAGE, 12.5",)), (_delete, ())],
+    ids=["cleared", "junk", "deleted"],
+)
 def test_hand_typed_columns_have_no_effect(
     tmp_path: Path,
     report: ParsedReport,
     mutate: Callable[[Worksheet], None],
+    unknown: tuple[str, ...],
 ) -> None:
     other = parse_report(_variant(tmp_path, "v.xlsx", mutate))
     assert other.header == report.header
     assert other.tickets == report.tickets
-    assert other.warnings == report.warnings
+    # Stray text in the header row is named in exactly one "unknown columns" warning (or none).
+    assert other.warnings == (*report.warnings, *unknown)
 
 
 # --- input types and limits ---------------------------------------------------------

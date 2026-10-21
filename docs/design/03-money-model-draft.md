@@ -5,6 +5,8 @@ agency's real files or the accountant's answers and may change.
 
 ## 1. Two reports for the same day
 
+Detailed rules: [05-daily-comparison.md](05-daily-comparison.md).
+
 The app builds **its own daily report** from what staff send during the day, then compares it
 with the **Amadeus daily report** line by line. Differences are flagged; an approved difference
 becomes a correction on the app's copy of the Amadeus report.

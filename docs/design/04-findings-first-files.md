@@ -93,7 +93,7 @@ invoice `IN2610-7972`, client code `CU2609-…`, payment `PAY2610-…`, which lo
   report lists under airline **147**. To ask: typo, setting, or a different code?
 
 **Consequence:** the software is custom and cannot be read or linked (section 5), so the app
-cannot take invoices or payments from it. See decision 20.
+cannot take invoices or payments from it. Decided: the app takes over invoices and statements (decision 20).
 
 ## 5. Answers from the owner (21 Oct)
 
@@ -122,5 +122,3 @@ What this means for each ticket:
 3. Why do some 495 tickets cost 0?
 4. Are ADM and refund lines always typed by hand into the partner sheet? Where do they come from?
 5. Code 495: which airline?
-6. Since the billing software cannot be linked: should the app take over invoices and client
-   statements (decision 20)?

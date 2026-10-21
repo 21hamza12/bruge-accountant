@@ -13,8 +13,8 @@ partner who paid late, a mistake that was corrected.
 | 3 | `amadeus-reports/` | End-of-day Amadeus daily reports (`.xlsx`) | 5–10 days, including the days of the screenshots above, and **at least one day with RFND, CANX/VOID and an EMD/extra** | Matching rules between screenshots and the report |
 | 4 | `excel-sheets/` | The accountant's current Excel workbook(s), as they really are (all tabs) | the current month + one closed month | This is the sheet the app must reproduce; we copy its columns and totals |
 | 5 | `invoices/` | Invoices sent to partners and to clients (PDF, Word or photo) | 5–10, including one paid late and one partly paid | Invoice layout, numbering, legal mentions, due dates |
-| 6 | `bank-and-mobile-money/` | Bank statements and mobile-money exports (Bankily, Masrvi, Sedad…) | the same period as #4 | Three-way check: what was sold vs what was received |
-| 7 | `airline-bsp/` | BSP billing statements (or whatever the airlines/consolidator send to be paid) | 2 periods | Check what the agency owes the airlines vs the Amadeus costs |
+| 6 | ~~`bank-and-mobile-money/`~~ | ~~Bank statements and mobile-money exports~~ | – | **Not available.** Payments are recorded in the app instead of matched to statements |
+| 7 | ~~`airline-bsp/`~~ | ~~BSP / airline billing statements~~ | – | **Not available.** No automatic check of airline billing in the first version |
 | 8 | `notes/` | Answers to the interview guide ([01-accountant-interview.md](01-accountant-interview.md)), typed or as voice notes | 1 | The routine, the exceptions, the words people use |
 | 9 | `notes/` | List of partners (BARAKE, BOUCHRA…) and regular credit clients, with their usual payment terms | 1 | Who gets invoices and reminders |
 | 10 | `notes/` | Staff list: Amadeus sign (0004SV…), real name, phone, role | 1 | Accounts and who may edit what |

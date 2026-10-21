@@ -10,6 +10,7 @@ AI advice). Real agency files go in `intake/` (git-ignored, local only).
 | [01-accountant-interview.md](01-accountant-interview.md) | Questions for the accountant | Ready to use |
 | [02-open-decisions.md](02-open-decisions.md) | Open decisions with proposed defaults | Waiting for the owner |
 | [03-money-model-draft.md](03-money-model-draft.md) | Draft money flow, records, reconciliation | Draft, to check against the data |
+| [04-findings-first-files.md](04-findings-first-files.md) | What the first real files show, and questions for the agency | New |
 
 Still to come once the data arrives: matching rules, extraction strategy and golden set, invoice
 compliance, KPI and AI-advice definitions, cost model, validation plan, updated phased plan.

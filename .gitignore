@@ -16,3 +16,6 @@ build/
 
 # Real agency reports contain passenger and client personal data: keep them local only.
 tests/fixtures/real/
+
+# Design-phase intake: real tickets, invoices, statements. Never committed.
+intake/

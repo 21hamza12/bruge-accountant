@@ -1,4 +1,4 @@
-"""Step 20: current_user, require_manager and the must-change-password gate."""
+"""Step 20: current_user, require_staff_admin and the must-change-password gate."""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ from fastapi.responses import PlainTextResponse
 from fastapi.testclient import TestClient
 
 from app.web.csrf import csrf_protect
-from app.web.deps import AuthContext, current_user, require_login, require_manager
+from app.web.deps import AuthContext, current_user, require_login, require_staff_admin
 from tests.web_support import (
     PASSWORD_A,
     PASSWORD_S,
@@ -42,7 +42,7 @@ class Env:
             return PlainTextResponse(f"user {auth.user.id}")
 
         def manager_page(
-            auth: Annotated[AuthContext, Depends(require_manager)],
+            auth: Annotated[AuthContext, Depends(require_staff_admin)],
         ) -> PlainTextResponse:
             return PlainTextResponse(f"manager {auth.user.id}")
 

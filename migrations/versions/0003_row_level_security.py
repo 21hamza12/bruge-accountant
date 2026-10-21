@@ -54,8 +54,9 @@ Policies (permissive ones are OR-ed together):
 * ``rate_limit_buckets`` has no agency, so it has no RLS.
 
 Grants, only when APP_DB_ROLE names an existing role (otherwise single-role mode: nothing is
-granted and a warning is logged): see app.db_roles.GRANTS. No DELETE on tickets or uploads; the
-role cannot create tables. The role must not be a superuser or have BYPASSRLS (it would skip
+granted and a warning is logged): see app.db_roles.GRANTS, limited to the frozen
+MIGRATION_0003_TABLES (later tables are granted by the migrations that create them; the
+downgrade revokes on the same list). No DELETE on tickets or uploads; the role cannot create tables. The role must not be a superuser or have BYPASSRLS (it would skip
 every policy): the migration refuses such a role before touching anything.
 
 Downgrade reverses all of it, except that CREATE on schema public is not given back to PUBLIC.
@@ -69,7 +70,7 @@ import sqlalchemy as sa
 from alembic import op
 
 from app import db_roles
-from app.db_roles import ROLE_ENV_VAR, validate_role_name
+from app.db_roles import MIGRATION_0003_TABLES, ROLE_ENV_VAR, validate_role_name
 
 revision: str = "0003"
 down_revision: str | None = "0002"
@@ -172,7 +173,7 @@ def upgrade() -> None:
             ROLE_ENV_VAR,
         )
         return
-    db_roles.apply_grants(bind, role)
+    db_roles.apply_grants(bind, role, tables=MIGRATION_0003_TABLES)
 
 
 def downgrade() -> None:
@@ -186,7 +187,7 @@ def downgrade() -> None:
                 ROLE_ENV_VAR,
             )
         else:
-            db_roles.revoke_grants(bind, role)
+            db_roles.revoke_grants(bind, role, tables=MIGRATION_0003_TABLES)
         _run(
             [
                 "DROP POLICY retention_purge ON audit_events",

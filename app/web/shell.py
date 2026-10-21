@@ -23,8 +23,8 @@ from fastapi import HTTPException
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app import accounts
-from app.models import ROLE_MANAGER, Agency, User
+from app import accounts, permissions
+from app.models import Agency, User
 from app.repository import awaiting_counts_by_sign, latest_report_date, sign_owners
 from app.web.deps import AuthContext
 
@@ -47,7 +47,8 @@ class AgentNav:
 class Shell:
     agency: Agency
     user: User
-    is_manager: bool
+    sees_all: bool  # every sign of the agency (manager, accountant)
+    can_manage_staff: bool
     active: str
     latest_day: date | None
     badge: int
@@ -59,7 +60,7 @@ class Shell:
     def visible_signs(self) -> tuple[str, ...] | None:
         """The staff signs a query may look at: None (all of them) for a manager, the linked
         signs for staff (an empty tuple means nothing, never everything)."""
-        return None if self.is_manager else self.my_signs
+        return None if self.sees_all else self.my_signs
 
     @property
     def initial(self) -> str:
@@ -88,24 +89,25 @@ def build_shell(db: Session, auth: AuthContext, active: str) -> Shell:
     agency = db.scalars(select(Agency).where(Agency.id == agency_id)).one_or_none()
     if agency is None:  # cannot happen (foreign key); fail closed rather than render half a page
         raise HTTPException(status_code=404)
-    is_manager = user.role == ROLE_MANAGER
+    sees_all = permissions.sees_all_signs(user)
     my_signs: tuple[str, ...] = ()
-    if not is_manager:
+    if not sees_all:
         my_signs = tuple(link.staff_sign for link in accounts.get_signs(db, agency_id, user.id))
-    day = _default_day(db, agency_id, None if is_manager else my_signs)
+    day = _default_day(db, agency_id, None if sees_all else my_signs)
     counts: dict[str, int] = {}
     if day is not None:
-        counts = awaiting_counts_by_sign(db, agency_id, day, None if is_manager else my_signs)
-    owners: Mapping[str, str] = sign_owners(db, agency_id) if is_manager else {}
+        counts = awaiting_counts_by_sign(db, agency_id, day, None if sees_all else my_signs)
+    owners: Mapping[str, str] = sign_owners(db, agency_id) if sees_all else {}
     agents = (
         tuple(AgentNav(sign, owners.get(sign), n) for sign, n in sorted(counts.items()))
-        if is_manager
+        if sees_all
         else ()
     )
     return Shell(
         agency=agency,
         user=user,
-        is_manager=is_manager,
+        sees_all=sees_all,
+        can_manage_staff=permissions.can_manage_staff(user),
         active=active,
         latest_day=day,
         badge=sum(counts.values()),
@@ -121,6 +123,6 @@ def shell_context(db: Session, auth: AuthContext, active: str) -> dict[str, Any]
     return {
         "shell": shell,
         "agency": shell.agency,
-        "is_manager": shell.is_manager,
+        "sees_all": shell.sees_all,
         "csrf_token": auth.csrf_token,
     }

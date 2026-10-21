@@ -15,6 +15,7 @@ does say ``public`` on purpose is ``HARDENING``: that is the schema PostgreSQL 1
 from __future__ import annotations
 
 import re
+from collections.abc import Iterable
 from typing import Any
 
 from sqlalchemy import DDL, Boolean, Connection, Engine, String, column, func, select, table
@@ -41,6 +42,22 @@ GRANTS = {
     "rate_limit_buckets": "SELECT, INSERT, UPDATE, DELETE",
     "audit_events": "SELECT, INSERT, DELETE",
 }
+# The tables migration 0003 grants on, frozen. 0003 passes this to ``apply_grants`` instead of
+# relying on GRANTS, which later phases extend: a fresh ``alembic upgrade head`` runs 0003 before
+# those tables exist, and a GRANT on a missing table fails. Never edit this list; a later
+# migration grants on its own tables (``apply_grants(bind, role, tables=(...))``).
+MIGRATION_0003_TABLES: tuple[str, ...] = (
+    "agencies",
+    "alembic_version",
+    "uploads",
+    "tickets",
+    "users",
+    "temporary_passwords",
+    "staff_sign_links",
+    "user_sessions",
+    "rate_limit_buckets",
+    "audit_events",
+)
 # Tables deliberately given no privileges at all (with the reason, when there are any).
 GRANT_EXEMPT: frozenset[str] = frozenset()
 
@@ -132,22 +149,32 @@ def check_connecting_role(engine: Engine) -> str | None:
 # --- grants ---------------------------------------------------------------------------------
 
 
-def grant_statements(role: str, schema: str) -> list[str]:
-    """GRANT statements for ``role`` on the tables in ``schema`` (all identifiers quoted)."""
+def grant_statements(role: str, schema: str, tables: Iterable[str] | None = None) -> list[str]:
+    """GRANT statements for ``role`` on the tables in ``schema`` (all identifiers quoted).
+
+    ``tables`` limits the statements to those tables (each must be in GRANTS, which says what the
+    role may do on it); the default is every table in GRANTS."""
     who, where = quote_role(role), _quote(schema)
+    names = list(GRANTS) if tables is None else list(tables)
+    unknown = [name for name in names if name not in GRANTS]
+    if unknown:
+        raise ValueError(f"no grants are defined for: {', '.join(sorted(unknown))}")
     statements = [f"GRANT USAGE ON SCHEMA {where} TO {who}"]
-    statements += [
-        f"GRANT {privileges} ON {where}.{_quote(name)} TO {who}"
-        for name, privileges in GRANTS.items()
-    ]
+    statements += [f"GRANT {GRANTS[name]} ON {where}.{_quote(name)} TO {who}" for name in names]
     statements.append(f"GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA {where} TO {who}")
     return statements
 
 
-def revoke_statements(role: str, schema: str) -> list[str]:
+def revoke_statements(role: str, schema: str, tables: Iterable[str] | None = None) -> list[str]:
+    """REVOKE statements for ``role``: every table of the schema, or only ``tables``. Sequences
+    and the schema are always included (their grants are not tracked per table)."""
     who, where = quote_role(role), _quote(schema)
+    if tables is None:
+        on_tables = [f"REVOKE ALL ON ALL TABLES IN SCHEMA {where} FROM {who}"]
+    else:
+        on_tables = [f"REVOKE ALL ON {where}.{_quote(name)} FROM {who}" for name in tables]
     return [
-        f"REVOKE ALL ON ALL TABLES IN SCHEMA {where} FROM {who}",
+        *on_tables,
         f"REVOKE ALL ON ALL SEQUENCES IN SCHEMA {where} FROM {who}",
         f"REVOKE USAGE ON SCHEMA {where} FROM {who}",
     ]
@@ -174,16 +201,18 @@ def assert_grantable(connection: Connection, role: str) -> None:
         raise PrivilegedRoleError(f"{ROLE_ENV_VAR}: {problem}")
 
 
-def apply_grants(connection: Connection, role: str) -> None:
-    """Give ``role`` exactly the privileges of GRANTS. Idempotent: safe to run again, for a role
-    created after migration 0003 or to repair one that lost its grants."""
+def apply_grants(connection: Connection, role: str, tables: Iterable[str] | None = None) -> None:
+    """Give ``role`` the privileges of GRANTS, on every table or only on ``tables``. Idempotent:
+    safe to run again, for a role created after migration 0003 or to repair one that lost its
+    grants. A migration passes its own tables, because GRANTS also names tables that a later
+    migration creates."""
     assert_grantable(connection, role)
     schema = _current_schema(connection)
-    for statement in (HARDENING, *grant_statements(role, schema)):
+    for statement in (HARDENING, *grant_statements(role, schema, tables)):
         connection.execute(DDL(statement))  # type: ignore[no-untyped-call]
 
 
-def revoke_grants(connection: Connection, role: str) -> None:
+def revoke_grants(connection: Connection, role: str, tables: Iterable[str] | None = None) -> None:
     schema = _current_schema(connection)
-    for statement in revoke_statements(role, schema):
+    for statement in revoke_statements(role, schema, tables):
         connection.execute(DDL(statement))  # type: ignore[no-untyped-call]

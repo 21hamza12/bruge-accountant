@@ -153,7 +153,7 @@ def questions_page(
             "tabs": (),
         }
     )
-    if chosen is None or (not shell.is_manager and not shell.my_signs):
+    if chosen is None or (not shell.sees_all and not shell.my_signs):
         return page("questions.html", headers=NO_STORE, **context)
 
     tickets = tickets_for_day(db, shell.agency.id, chosen, visible_signs)

@@ -36,7 +36,7 @@
   {% endif %}
 </div>
 
-{% if not is_manager and not shell.my_signs %}
+{% if not sees_all and not shell.my_signs %}
 <section class="card empty">
   <h2 class="empty-title">{{ _("Aucun code agent") }}</h2>
   <p class="muted">{{ _("Aucun code agent ne vous est attribué. Demandez à votre responsable de lier votre code agent à votre compte.") }}</p>
@@ -68,7 +68,7 @@
   <div class="sign" id="agent-{{ g.group.staff_sign }}" role="group" aria-labelledby="agent-title-{{ loop.index }}">
     <div class="group-bar">
       <h3 class="group-name" id="agent-title-{{ loop.index }}"><code class="sign-code">{{ g.group.staff_sign }}</code>
-        {% if is_manager %}
+        {% if sees_all %}
           {% if shell.owners.get(g.group.staff_sign) %} · {{ shell.owners[g.group.staff_sign] }}
           {% else %} · <span class="error">{{ _("Non attribué") }}</span> (<a href="/staff">{{ _("lier ce code à un employé") }}</a>)
           {% endif %}

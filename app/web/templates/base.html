@@ -1,4 +1,5 @@
 {% from "_icons.html" import icon %}
+{% from "_roles.html" import role_name %}
 <!doctype html>
 <html lang="{{ lang }}" dir="{{ dir }}">
 <head>
@@ -37,14 +38,14 @@
         <a class="nav-link" href="/uploads"{% if shell.active == "uploads" %} aria-current="page"{% endif %}>
           <span class="nav-label">{{ icon("upload") }}{{ _("Rapports") }}</span>
         </a>
-        {% if shell.is_manager %}
+        {% if shell.can_manage_staff %}
         <a class="nav-link" href="/staff"{% if shell.active == "staff" %} aria-current="page"{% endif %}>
           <span class="nav-label">{{ icon("team") }}{{ _("Équipe") }}</span>
         </a>
         {% endif %}
       </nav>
 
-      {% if shell.is_manager and shell.agents %}
+      {% if shell.sees_all and shell.agents %}
       <nav class="side-section" aria-label="{{ _('Agents') }}">
         <span class="side-title" aria-hidden="true">{{ _("Agents") }}</span>
         <ul class="agent-list">
@@ -68,7 +69,7 @@
           <span class="avatar" aria-hidden="true">{{ shell.user_initial }}</span>
           <span class="user-text">
             <span class="user-name">{{ shell.user.display_name or shell.user.phone }}</span>
-            <span class="user-role">{% if shell.is_manager %}{{ _("Responsable") }}{% else %}{{ _("Employé") }}{% endif %}</span>
+            <span class="user-role">{{ role_name(shell.user.role) }}</span>
           </span>
           <form class="inline-form" method="post" action="/logout">
             {% include "_csrf.html" %}
@@ -115,7 +116,7 @@
     <a class="tab" href="/"{% if shell.active == "home" %} aria-current="page"{% endif %}>{{ icon("dashboard") }}<span class="tab-label">{{ _("Tableau de bord") }}</span></a>
     <a class="tab" href="/questions"{% if shell.active == "questions" %} aria-current="page"{% endif %}><span class="tab-badge">{{ icon("questions") }}{% if shell.badge %}<span class="badge">{{ shell.badge }}<span class="visually-hidden"> {{ _("en attente") }}</span></span>{% endif %}</span><span class="tab-label">{{ _("Questions") }}</span></a>
     <a class="tab" href="/uploads/new"{% if shell.active in ("upload_new", "uploads") %} aria-current="page"{% endif %}>{{ icon("upload") }}<span class="tab-label">{{ _("Envoyer un rapport") }}</span></a>
-    {% if shell.is_manager %}
+    {% if shell.can_manage_staff %}
     <a class="tab" href="/staff"{% if shell.active == "staff" %} aria-current="page"{% endif %}>{{ icon("team") }}<span class="tab-label">{{ _("Équipe") }}</span></a>
     {% endif %}
     <a class="tab" href="/password/change"{% if shell.active == "profile" %} aria-current="page"{% endif %}>{{ icon("user") }}<span class="tab-label">{{ _("Compte") }}</span></a>

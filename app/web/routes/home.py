@@ -73,7 +73,7 @@ def home(
     context = shell_context(db, auth, ACTIVE_HOME)
     shell: Shell = context["shell"]
     chosen = requested or shell.latest_day
-    if shell.is_manager:
+    if shell.sees_all:  # accountants intentionally get the manager dashboard
         extra = _manager_context(db, shell, chosen)
         template = "home_manager.html"
     else:

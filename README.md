@@ -96,7 +96,10 @@ Open `http://127.0.0.1:8000/login` and sign in with that phone and password.
   `TRUSTED_PROXY_HOPS` so the app sees `https`.
 - As a manager, open **Gérer l'équipe** (`/staff`) to add a user: the temporary password is shown
   once, valid 30 minutes and usable once, and the new user must choose their own at first login.
-  A manager can issue a new one for **staff** from the user's page; never for another manager.
+  A manager can issue a new one for **staff** or an **accountant** from the user's page; never for
+  another manager. Roles: manager (Responsable), accountant (Comptable: sees every sign like a
+  manager, no staff management) and staff (Employé). Every role decision lives in
+  `app/permissions.py`.
   A locked-out manager is reset by the owner: `python -m app reset-password --phone <phone>`
   (docs/runbook.md).
 - Five failed sign-ins for one phone (or a hundred from one address) in 15 minutes show the

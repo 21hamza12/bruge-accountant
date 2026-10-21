@@ -145,6 +145,7 @@ class Ticket(Base):
 
 
 ROLE_MANAGER = "manager"
+ROLE_ACCOUNTANT = "accountant"
 ROLE_STAFF = "staff"
 
 
@@ -156,7 +157,7 @@ class User(Base):
         # Target of the composite foreign keys of every table that points at a user.
         UniqueConstraint("agency_id", "id", name="uq_users_agency_id_id"),
         UniqueConstraint("phone", name="uq_users_phone"),
-        CheckConstraint("role IN ('manager', 'staff')", name="role"),
+        CheckConstraint("role IN ('manager', 'accountant', 'staff')", name="role"),
         # E.164: "+", then 8 to 15 digits, the first not 0. One expression for both engines: a
         # regex (Postgres ``~``) or GLOB (SQLite) would need two spellings. ``rtrim`` with a
         # character set exists in both, and is empty only when every character is a digit.

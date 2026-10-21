@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from typing import Annotated, cast
 
@@ -10,11 +10,11 @@ from fastapi import Depends, HTTPException, Request
 from sqlalchemy.orm import Session
 from starlette.responses import RedirectResponse
 
-from app import audit
+from app import audit, permissions
 from app.auth import sessions
 from app.auth.sessions import SessionPolicy
 from app.clock import Clock
-from app.models import ROLE_MANAGER, User, UserSession
+from app.models import User, UserSession
 from app.settings import Settings
 from app.web.cookies import session_cookie_name
 from app.web.errors import ResponseException, error_response, new_reference
@@ -123,22 +123,36 @@ def current_user(
     return auth
 
 
-def require_manager(
-    request: Request,
-    db: Annotated[Session, Depends(get_session)],
-    clock: Annotated[Clock, Depends(get_clock)],
-    auth: Annotated[AuthContext, Depends(current_user)],
-) -> AuthContext:
-    """A manager; staff get the 403 page and a ``permission_denied`` audit event."""
-    if auth.user.role != ROLE_MANAGER:
-        audit.record_and_commit(
-            db,
-            audit.PERMISSION_DENIED,
-            agency_id=auth.user.agency_id,
-            actor_user_id=auth.user.id,
-            ip=client_ip(request),
-            details={"path": request.url.path, "method": request.method},
-            now=clock(),
-        )
-        raise HTTPException(status_code=403)
-    return auth
+def require_permission(
+    check: Callable[[User], bool],
+) -> Callable[[Request, Session, Clock, AuthContext], AuthContext]:
+    """A dependency that lets a user through when ``check(user)`` (a function of
+    ``app.permissions``) is true; anybody else gets the 403 page and a ``permission_denied``
+    audit event. A role that no permission mentions is refused by every check."""
+
+    def dependency(
+        request: Request,
+        db: Annotated[Session, Depends(get_session)],
+        clock: Annotated[Clock, Depends(get_clock)],
+        auth: Annotated[AuthContext, Depends(current_user)],
+    ) -> AuthContext:
+        if not check(auth.user):
+            audit.record_and_commit(
+                db,
+                audit.PERMISSION_DENIED,
+                agency_id=auth.user.agency_id,
+                actor_user_id=auth.user.id,
+                ip=client_ip(request),
+                details={"path": request.url.path, "method": request.method},
+                now=clock(),
+            )
+            raise HTTPException(status_code=403)
+        return auth
+
+    dependency.__name__ = f"require_{getattr(check, '__name__', 'permission')}"
+    dependency.__qualname__ = dependency.__name__
+    return dependency
+
+
+# The staff pages: whoever may manage staff (managers only).
+require_staff_admin = require_permission(permissions.can_manage_staff)

@@ -1,15 +1,17 @@
 """Manager pages for the agency's staff: list, create, link signs, role, deactivate, re-issue.
 
-Every route needs a logged-in manager (``require_manager``: staff get a 403 page and a
+Every route needs a user who may manage staff (``require_staff_admin``, managers only: staff and
+accountants get a 403 page and a
 ``permission_denied`` audit event) and a CSRF token on POST. An id that belongs to another agency
 is a 404, exactly like an id that does not exist.
 
 A temporary password is shown only in the response of the POST that issued it, never in a redirect,
 URL or later page, with ``Cache-Control: no-store``.
 
-A manager may issue a temporary password for STAFF only, never for another manager or for
-themselves (the 403 page and a ``permission_denied`` audit event). A locked-out manager is reset
-by the platform owner with the ``reset-password`` CLI command (docs/runbook.md).
+A manager may issue a temporary password for staff or an accountant, never for another manager or
+for themselves (the 403 page and a ``permission_denied`` audit event naming the target's role).
+A locked-out manager is reset by the platform owner with the ``reset-password`` CLI command
+(docs/runbook.md).
 
 A reload of the POST response ("resend the form") must not issue a second password silently. The
 re-issue form carries ``expected_temp_id``, the id of the user's newest temporary password when
@@ -27,16 +29,19 @@ from fastapi import APIRouter, Depends, Form, HTTPException, Request
 from sqlalchemy.orm import Session
 from starlette.responses import RedirectResponse, Response
 
-from app import accounts, audit
+from app import accounts, audit, permissions
 from app.accounts import AccountError
 from app.auth import temp_passwords
 from app.clock import Clock
 from app.models import ROLE_STAFF, User
 from app.web.csrf import csrf_protect
-from app.web.deps import AuthContext, client_ip, get_clock, get_session, require_manager
+from app.web.deps import AuthContext, client_ip, get_clock, get_session, require_staff_admin
 from app.web.pages import page
 from app.web.params import SignId, UserId
 from app.web.shell import ACTIVE_STAFF, shell_context
+
+# The order of the role drop-down: least privileged first.
+ROLE_CHOICES = tuple(reversed(accounts.ROLES))
 
 router = APIRouter(prefix="/staff", dependencies=[Depends(csrf_protect)])
 
@@ -62,6 +67,7 @@ def _list_page(
         **shell_context(db, auth, ACTIVE_STAFF),
         rows=accounts.list_staff(db, auth.user.agency_id),
         me=auth.user,
+        roles=ROLE_CHOICES,
         error=error,
         form=form or {"role": ROLE_STAFF},
     )
@@ -80,10 +86,12 @@ def _detail_page(
         status_code=status_code,
         **shell_context(db, auth, ACTIVE_STAFF),
         target=user,
-        can_reissue=user.role == ROLE_STAFF and user.is_active,
+        can_reissue=permissions.can_reissue_password_for(auth.user, user) and user.is_active,
+        owner_reset=permissions.has_owner_managed_password(user) and user.is_active,
         expected_temp_id=temp_passwords.latest_id(db, user),
         signs=accounts.get_signs(db, auth.user.agency_id, user.id),
         me=auth.user,
+        roles=ROLE_CHOICES,
         error=error,
     )
 
@@ -108,7 +116,7 @@ def _created_page(db: Session, user: User, plaintext: str, auth: AuthContext) ->
 @router.get("")
 def staff_list(
     db: Annotated[Session, Depends(get_session)],
-    auth: Annotated[AuthContext, Depends(require_manager)],
+    auth: Annotated[AuthContext, Depends(require_staff_admin)],
 ) -> Response:
     return _list_page(db, auth)
 
@@ -118,7 +126,7 @@ def staff_create(
     request: Request,
     db: Annotated[Session, Depends(get_session)],
     clock: Annotated[Clock, Depends(get_clock)],
-    auth: Annotated[AuthContext, Depends(require_manager)],
+    auth: Annotated[AuthContext, Depends(require_staff_admin)],
     display_name: Annotated[str, Form(max_length=512)] = "",
     phone: Annotated[str, Form(max_length=256)] = "",
     role: Annotated[str, Form(max_length=32)] = "",
@@ -150,7 +158,7 @@ def staff_create(
 def staff_detail(
     user_id: UserId,
     db: Annotated[Session, Depends(get_session)],
-    auth: Annotated[AuthContext, Depends(require_manager)],
+    auth: Annotated[AuthContext, Depends(require_staff_admin)],
 ) -> Response:
     return _detail_page(db, auth, _target(db, auth, user_id))
 
@@ -165,7 +173,7 @@ def staff_link_sign(
     user_id: UserId,
     db: Annotated[Session, Depends(get_session)],
     clock: Annotated[Clock, Depends(get_clock)],
-    auth: Annotated[AuthContext, Depends(require_manager)],
+    auth: Annotated[AuthContext, Depends(require_staff_admin)],
     sign: Annotated[str, Form(max_length=256)] = "",
 ) -> Response:
     user = _target(db, auth, user_id)
@@ -185,7 +193,7 @@ def staff_unlink_sign(
     sign_id: SignId,
     db: Annotated[Session, Depends(get_session)],
     clock: Annotated[Clock, Depends(get_clock)],
-    auth: Annotated[AuthContext, Depends(require_manager)],
+    auth: Annotated[AuthContext, Depends(require_staff_admin)],
 ) -> Response:
     user = _target(db, auth, user_id)
     if not accounts.unlink_sign(db, auth.user, user, sign_id, clock(), client_ip(request)):
@@ -200,7 +208,7 @@ def staff_change_role(
     user_id: UserId,
     db: Annotated[Session, Depends(get_session)],
     clock: Annotated[Clock, Depends(get_clock)],
-    auth: Annotated[AuthContext, Depends(require_manager)],
+    auth: Annotated[AuthContext, Depends(require_staff_admin)],
     role: Annotated[str, Form(max_length=32)] = "",
 ) -> Response:
     user = _target(db, auth, user_id)
@@ -219,7 +227,7 @@ def staff_deactivate(
     user_id: UserId,
     db: Annotated[Session, Depends(get_session)],
     clock: Annotated[Clock, Depends(get_clock)],
-    auth: Annotated[AuthContext, Depends(require_manager)],
+    auth: Annotated[AuthContext, Depends(require_staff_admin)],
 ) -> Response:
     user = _target(db, auth, user_id)
     try:
@@ -237,12 +245,12 @@ def staff_reissue_temp_password(
     user_id: UserId,
     db: Annotated[Session, Depends(get_session)],
     clock: Annotated[Clock, Depends(get_clock)],
-    auth: Annotated[AuthContext, Depends(require_manager)],
+    auth: Annotated[AuthContext, Depends(require_staff_admin)],
     expected_temp_id: Annotated[str, Form(max_length=20)] = "",
 ) -> Response:
     now = clock()
     user = _target(db, auth, user_id, lock=True)  # FOR UPDATE: one reissue at a time per user
-    if user.role != ROLE_STAFF:
+    if not permissions.can_reissue_password_for(auth.user, user):
         # Managers (including the caller) are reset by the platform owner, not by a manager.
         audit.record_and_commit(
             db,
@@ -250,7 +258,12 @@ def staff_reissue_temp_password(
             agency_id=auth.user.agency_id,
             actor_user_id=auth.user.id,
             ip=client_ip(request),
-            details={"path": request.url.path, "method": request.method, "reason": "manager_reset"},
+            details={
+                "path": request.url.path,
+                "method": request.method,
+                "reason": "manager_reset",
+                "target_role": user.role,
+            },
             now=now,
         )
         raise HTTPException(status_code=403)
@@ -259,7 +272,12 @@ def staff_reissue_temp_password(
     if expected_temp_id != str(temp_passwords.latest_id(db, user)):
         return _detail_page(db, auth, user, error=ALREADY_ISSUED, status_code=400)
     plaintext = temp_passwords.issue_temporary_password(
-        db, user, now, actor_user_id=auth.user.id, ip=client_ip(request)
+        db,
+        user,
+        now,
+        actor_user_id=auth.user.id,
+        ip=client_ip(request),
+        audit_details={"target_role": user.role},
     )
     db.commit()
     return _created_page(db, user, plaintext, auth)

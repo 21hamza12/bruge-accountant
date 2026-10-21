@@ -33,9 +33,9 @@ from app import audit
 from app.auth import sessions, temp_passwords
 from app.auth.passwords import verify_dummy
 from app.auth.phone import InvalidPhoneError, mask_phone, normalize_phone
-from app.models import ROLE_MANAGER, ROLE_STAFF, StaffSignLink, User
+from app.models import ROLE_ACCOUNTANT, ROLE_MANAGER, ROLE_STAFF, StaffSignLink, User
 
-ROLES = (ROLE_MANAGER, ROLE_STAFF)
+ROLES = (ROLE_MANAGER, ROLE_ACCOUNTANT, ROLE_STAFF)
 MAX_NAME_LENGTH = 100
 SIGN_PATTERN = re.compile(r"[A-Z0-9]{2,32}")
 
@@ -252,12 +252,14 @@ def unlink_sign(
 
 def _would_leave_no_manager(db: Session, user: User) -> bool:
     """True if ``user`` is the only active manager of the agency (managers locked first)."""
-    if user.role != ROLE_MANAGER or not user.is_active:
+    if user.role != ROLE_MANAGER or not user.is_active:  # role-check-ok
         return False
     managers = db.scalars(
         select(User)
         .where(
-            User.agency_id == user.agency_id, User.role == ROLE_MANAGER, User.is_active.is_(True)
+            User.agency_id == user.agency_id,
+            User.role == ROLE_MANAGER,  # role-check-ok
+            User.is_active.is_(True),
         )
         .order_by(User.id)
         .with_for_update()
@@ -290,7 +292,7 @@ def change_role(
         raise AccountError(BAD_ROLE)
     if role == user.role:
         return
-    if role != ROLE_MANAGER and _would_leave_no_manager(db, user):
+    if role != ROLE_MANAGER and _would_leave_no_manager(db, user):  # role-check-ok
         raise AccountError(LAST_MANAGER)
     previous = user.role
     user.role = role

@@ -199,6 +199,30 @@ def test_the_manager_sees_every_upload_and_every_warning(env: Env) -> None:
     assert "Avertissements" in page.text
 
 
+def test_an_accountant_sees_every_upload_and_every_warning_like_a_manager(env: Env) -> None:
+    accountant_phone = "+22212345612"
+    add_user(
+        env.db.owner_url,
+        env.seeded.agency_a,
+        accountant_phone,
+        role="accountant",
+        password=PASSWORD_S,
+    )
+    add_user(env.db.owner_url, env.seeded.agency_a, PHONE_STAFF_2, password=PASSWORD_S)
+    with env.as_user(PHONE_STAFF_2, PASSWORD_S) as other:
+        theirs = env.upload(other, _leaky_workbook()).headers["location"]
+    with env.as_user(PHONE_STAFF_A, PASSWORD_S) as s:
+        also = env.upload(s).headers["location"]
+    with env.as_user(accountant_phone, PASSWORD_S) as acc:
+        listing = acc.get("/uploads").text
+        page = acc.get(theirs)
+    assert theirs in listing
+    assert also in listing
+    assert page.status_code == 200
+    assert OTHER_PASSENGER in page.text
+    assert "Avertissements" in page.text
+
+
 def test_imported_uploads_without_an_uploader_are_the_managers_only(env: Env) -> None:
     with owner_session(env.db.owner_url) as s:
         upload_id = ingest_report(

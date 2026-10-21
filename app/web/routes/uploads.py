@@ -54,7 +54,7 @@ from starlette.concurrency import run_in_threadpool
 from starlette.datastructures import UploadFile
 from starlette.responses import RedirectResponse, Response
 
-from app import audit
+from app import audit, permissions
 from app.auth import ratelimit
 from app.clock import Clock
 from app.ingest import (
@@ -65,7 +65,6 @@ from app.ingest import (
     ingest_report,
     sanitize_filename,
 )
-from app.models import ROLE_MANAGER
 from app.parsing.amadeus import MAX_FILE_BYTES, ParsedReport, ParseError
 from app.parsing.sandbox import SandboxBusy, parse_in_sandbox
 from app.repository import get_upload, recent_uploads, upload_ticket_dates, user_names
@@ -122,10 +121,6 @@ def _form(
     )
 
 
-def _is_manager(auth: AuthContext) -> bool:
-    return auth.user.role == ROLE_MANAGER
-
-
 @router.get("/new")
 def upload_form(
     db: Annotated[Session, Depends(get_session)],
@@ -141,7 +136,7 @@ def upload_list(
 ) -> Response:
     """Managers: every upload of the agency. Staff: only their own."""
     agency_id = auth.user.agency_id
-    only_mine = None if _is_manager(auth) else auth.user.id
+    only_mine = None if permissions.sees_all_signs(auth.user) else auth.user.id
     uploads = recent_uploads(db, agency_id, RECENT_UPLOADS, uploaded_by=only_mine)
     names = user_names(db, agency_id, [u.uploaded_by_user_id for u in uploads])
     return page(
@@ -159,7 +154,7 @@ def upload_result(
     auth: Annotated[AuthContext, Depends(current_user)],
 ) -> Response:
     agency_id = auth.user.agency_id
-    manager = _is_manager(auth)
+    manager = permissions.sees_all_signs(auth.user)
     upload = get_upload(db, agency_id, upload_id, uploaded_by=None if manager else auth.user.id)
     if upload is None:  # missing, another agency's and (for staff) a colleague's look the same
         raise HTTPException(status_code=404)

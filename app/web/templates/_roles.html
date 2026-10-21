@@ -1,0 +1,11 @@
+{#- Role names for the screen. The stored values stay English; a role this table does not know shows as staff. -#}
+{% macro role_name(role) -%}
+{{ {"manager": _("Responsable"), "accountant": _("Comptable"), "staff": _("Employé")}.get(role, _("Employé")) }}
+{%- endmacro %}
+
+{#- role_options(selected, roles): "roles" comes from Python (accounts.ROLES), never hardcoded here. -#}
+{% macro role_options(selected, roles) -%}
+{% for value in roles %}
+<option value="{{ value }}"{% if value == selected %} selected{% endif %}>{{ role_name(value) }}</option>
+{% endfor %}
+{%- endmacro %}

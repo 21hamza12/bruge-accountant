@@ -92,19 +92,35 @@ invoice `IN2610-7972`, client code `CU2609-…`, payment `PAY2610-…`, which lo
 - **Airline code mismatch:** the invoices print **474** before ticket numbers that the Amadeus
   report lists under airline **147**. To ask: typo, setting, or a different code?
 
-**Consequence:** the agency already has invoicing and payment records for clients. The big
-decision is whether the app **reads from that system** (invoices and payments in, no double
-entry) or **replaces it** (decision 20). Reading from it would also give the app real payment
-records, which partly makes up for the missing bank and mobile-money statements.
+**Consequence:** the software is custom and cannot be read or linked (section 5), so the app
+cannot take invoices or payments from it. See decision 20.
 
-## 5. Questions for the agency
+## 5. Answers from the owner (21 Oct)
 
-1. Which software makes the client invoices? Is it Dolibarr? Can it export, or does it have an
-   API we may use?
-2. Are the partners (BADI, BARAKE, BOUCHRA…) also in that software, or only in Excel?
-3. What do `P.B`, `AG`, `CLT` and `AP` mean, and who fills them?
-4. How is `Frais BRG` decided? Why 300 since July, and when is it 0, 100, 200 or 600?
-5. Airline 474 on the invoices vs 147 in Amadeus: which is right?
-6. Why do some 495 tickets cost 0?
-7. Are ADM and refund lines always typed by hand into the partner sheet? Where do they come from?
-8. Code 495: which airline?
+| Question | Answer |
+|---|---|
+| The billing software | **Custom software bought from a developer.** No export, no API: the app cannot read from it or link to it |
+| `P.B` | **Bruge price**: the selling price |
+| `AG` | **The agency that booked**: `BRUGE` for a direct sale, or the partner agency's name |
+| `CLT` | **The client** the ticket was booked for |
+| `AP` | **The client's phone number** |
+| `Frais BRG` | **Fixed fee for partners.** For direct clients there is no fixed rule: **the agent decides** how much to add |
+
+What this means for each ticket:
+- **Partner sale** (`AG` = a partner): price = Amadeus cost + the partner's fixed fee. Staff only
+  need to say which partner; the app computes `P.B`.
+- **Direct sale** (`AG` = `BRUGE`): staff give the price they chose, the client's name and phone.
+- The BADI file still shows fees of 0, 100, 200 and 600 on some tickets, and a change from 500
+  to 300 in July. So "fixed" means **one current fee per partner, changeable over time, with
+  occasional exceptions**. The app keeps a fee history per partner and lets staff override it
+  for one ticket, with a reason.
+
+## 6. Questions still open
+
+1. When is a partner fee 0, 100, 200 or 600 instead of the usual one?
+2. Airline 474 on the invoices vs 147 in Amadeus: which is right?
+3. Why do some 495 tickets cost 0?
+4. Are ADM and refund lines always typed by hand into the partner sheet? Where do they come from?
+5. Code 495: which airline?
+6. Since the billing software cannot be linked: should the app take over invoices and client
+   statements (decision 20)?

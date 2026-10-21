@@ -15,7 +15,12 @@ During the day
      └─► sends screenshot or pasted text to the app chat
             app reads every report field: ticket no, airline, cost (TOTAL DOC), passenger,
             pax type, staff sign, type (TKTT/RFND/CANX…), PNR
-            + what Amadeus does not have: RM selling price, client/partner, payment method
+            + the accountant's four columns, which Amadeus does not have:
+              AG  agency that booked: BRUGE or the partner's name
+              P.B Bruge price: for a partner = cost + the partner's fee (computed);
+                  for BRUGE = the price the agent chose (from the RM line)
+              CLT client name, AP client phone (direct sales)
+            + payment method
             staff confirms the read-back → one line of the APP REPORT
             the image is discarded right after reading (never stored)
 
@@ -69,6 +74,12 @@ Decision 3 in [02-open-decisions.md](02-open-decisions.md): screenshots are read
 - **Duplicates** are blocked by a fingerprint (SHA-256) of the image, plus the ticket number.
 - **When the AI reads a screenshot**, the image is sent once to the AI provider for that
   reading only, under no-training API terms, and not stored on our side.
+
+### Partner fees
+
+Each partner has one current fee (e.g. 300 MRU for BADI since 16 July), kept with its history.
+For a partner ticket the app fills `P.B` = cost + fee; staff may override it for one ticket with
+a reason (the BADI file shows occasional 0, 100, 200 or 600).
 
 ## 3. What is stored
 

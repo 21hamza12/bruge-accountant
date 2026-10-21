@@ -115,14 +115,17 @@ Then totals per staff, per airline and per payment method, and a **mismatch sect
 accountant's own sheet once we have it **[verify]**. Exported cells are protected against
 formula injection, as already planned.
 
-## 7. Reconciliation (three levels)
+## 7. Reconciliation
 
 1. **App report ↔ Amadeus report** (daily, D+1): every line matches, or its difference is
    approved as a correction (section 1).
-2. **Sales ↔ money received** (daily): cash count, mobile-money and bank lines matched to sales
-   paid that day. Unmatched money and unpaid "paid" sales are flagged.
-3. **Amadeus cost ↔ airline/BSP billing** (each billing period): what the airlines charge
-   equals the costs in the reports.
+2. **Sales ↔ money recorded** (daily): every sale marked paid has a payment recorded in the app
+   (method, amount, reference, who received it), and every credit sale stays open until paid.
+   The cash count at closing is compared with the cash payments of the day.
+3. **Not in the first version:** matching against mobile-money statements, bank statements and
+   airline/BSP billing. The agency cannot provide those files, so the app cannot prove that a
+   recorded payment really arrived; it relies on the payments staff and the accountant record.
+   A statement import can be added later if the files become available.
 
 Each level ends in a list of differences for a person to clear. The app never "fixes" a
 difference on its own.

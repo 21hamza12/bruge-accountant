@@ -168,7 +168,8 @@ def _ticket(raw: object) -> ParsedTicket:
         passenger_name=_str(raw["passenger_name"], MAX_NAME_CHARS),
         pax_type=pax_type,  # type: ignore[arg-type]  # checked against _PAX_TYPES above
         staff_sign=_str(raw["staff_sign"], FIELD_LIMITS["staff_sign"]),
-        transaction_type=_str(raw["transaction_type"], FIELD_LIMITS["transaction_type"]),
+        # Upper case, as the parser writes it: the cancelled-line filters compare exactly.
+        transaction_type=_str(raw["transaction_type"], FIELD_LIMITS["transaction_type"]).upper(),
         booking_ref=_str(raw["booking_ref"], FIELD_LIMITS["booking_ref"]),
         flags=flags,
         source_row=_int_in(raw["source_row"], 1, MAX_SOURCE_ROW),

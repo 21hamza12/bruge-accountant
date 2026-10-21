@@ -270,12 +270,14 @@ def test_empty_report_has_no_tickets() -> None:
     assert result.tickets == ()
 
 
-@pytest.mark.parametrize("trnc", ["RFND", "CANX", "EMDA", "EMDS", "tktt ", ""])
+@pytest.mark.parametrize("trnc", ["RFND", "CANX", "canx", "EMDA", "EMDS", "tktt ", ""])
 def test_unknown_trnc_is_flagged_not_dropped(trnc: str) -> None:
     result = parse_report(build_workbook([ticket_row(trnc=trnc or None)]))
     assert len(result.tickets) == 1
-    flagged = "unknown_trnc" in result.tickets[0].flags
-    assert flagged is (trnc.strip().upper() != "TKTT")
+    normalised = trnc.strip().upper()
+    flags = result.tickets[0].flags
+    assert ("unknown_trnc" in flags) is (normalised not in {"TKTT", "CANX"})
+    assert ("cancelled" in flags) is (normalised == "CANX")  # known, kept, never counted
 
 
 def test_trnc_is_normalised_and_known_has_no_flag() -> None:

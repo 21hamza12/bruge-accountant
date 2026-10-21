@@ -35,7 +35,7 @@ from app.models import (
     User,
     UserSession,
 )
-from app.parsing.amadeus import ParsedReport, ParsedTicket
+from app.parsing.amadeus import TRNC_CANCELLED, ParsedReport, ParsedTicket
 from app.tenancy import (
     TenantBindingError,
     bind_tenant,
@@ -409,6 +409,7 @@ def import_report(
 
 
 def tickets_awaiting_price(session: Session, agency_id: int, report_date: date) -> list[Ticket]:
+    """The tickets of one report day that still need a price; cancelled lines never do."""
     bind_tenant(session, agency_id)
     stmt = (
         select(Ticket)
@@ -416,6 +417,7 @@ def tickets_awaiting_price(session: Session, agency_id: int, report_date: date) 
             Ticket.agency_id == agency_id,
             Ticket.report_date == report_date,
             Ticket.price_status == PRICE_STATUS_AWAITING,
+            Ticket.transaction_type != TRNC_CANCELLED,
         )
         .order_by(Ticket.staff_sign, Ticket.booking_ref, Ticket.ticket_no)
     )
@@ -429,6 +431,9 @@ def tickets_for_day(
     staff_signs: Collection[str] | None = None,
 ) -> list[Ticket]:
     """Every ticket of one report day, whatever its price status, in sign/booking/ticket order.
+
+    Cancelled lines are included (the dashboard lists them apart); ``app.dashboard.summarize``
+    and ``app.questions.build_questions`` leave them out of every number.
 
     ``staff_signs`` limits the result to those signs (what a staff member may see); an empty
     collection is an empty result, never "all". Served by ``ix_tickets_agency_report_date_staff``.
@@ -452,8 +457,9 @@ def awaiting_counts_by_sign(
     """How many price questions (bookings) still wait, per staff sign, on one report day.
 
     Counted in SQL the way ``app.questions`` groups: one question per (sign, booking reference),
-    and every ticket without a reference is a question of its own. It feeds the badge and the
-    agent list on every page, so it must not load the tickets.
+    and every ticket without a reference is a question of its own, and cancelled lines are no
+    question at all. It feeds the badge and the agent list on every page, so it must not load
+    the tickets.
     """
     bind_tenant(session, agency_id)
     if staff_signs is not None and not staff_signs:
@@ -469,6 +475,7 @@ def awaiting_counts_by_sign(
             Ticket.agency_id == agency_id,
             Ticket.report_date == report_date,
             Ticket.price_status == PRICE_STATUS_AWAITING,
+            Ticket.transaction_type != TRNC_CANCELLED,
         )
         .group_by(Ticket.staff_sign)
     )

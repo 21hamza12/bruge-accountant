@@ -28,7 +28,7 @@
 <section class="kpis" aria-label="{{ _('Chiffres clés') }}">
   <div class="card kpi">
     <div class="kpi-head"><span class="kpi-icon">{{ icon("ticket") }}</span><span>{{ _("Billets émis") }}</span></div>
-    <div class="kpi-body"><span class="kpi-value">{{ summary.ticket_count }}</span><span class="kpi-note">{{ _("%(count)s réservations", count=summary.booking_count) }}</span></div>
+    <div class="kpi-body"><span class="kpi-value">{{ summary.ticket_count }}</span><span class="kpi-note">{{ _("%(count)s réservations", count=summary.booking_count) }}{% if summary.cancelled_count %} · {{ ngettext("%(num)d annulé", "%(num)d annulés", summary.cancelled_count) }}{% endif %}</span></div>
   </div>
   <div class="card kpi">
     <div class="kpi-head"><span class="kpi-icon">{{ icon("cash") }}</span><span>{{ _("Coût total") }}</span></div>
@@ -128,6 +128,44 @@
   {% else %}
   <p class="muted">{{ _("Aucune question de prix en attente pour cette date.") }}</p>
   {% endif %}
+</section>
+{% endif %}
+
+{% if summary.cancelled %}
+<section class="card" aria-labelledby="cancelled-title">
+  <div class="card-head">
+    <h2 class="card-title" id="cancelled-title">{{ _("Billets annulés") }}</h2>
+    <span class="muted num">{{ ngettext("%(num)d annulé", "%(num)d annulés", summary.cancelled_count) }} · {{ summary.cancelled_cost|money_fr }} {{ agency.currency }}</span>
+  </div>
+  <p class="muted">{{ _("Lignes CANX du rapport : enregistrées, mais exclues des totaux, des comptes et des questions de prix.") }}</p>
+  <div class="table-wrap" tabindex="0" role="region" aria-label="{{ _('Billets annulés (défilement horizontal)') }}">
+    <table class="table" aria-labelledby="cancelled-title">
+      <thead>
+        <tr>
+          <th scope="col">{{ _("Billet") }}</th>
+          <th scope="col">{{ _("Réservation") }}</th>
+          <th scope="col">{{ _("Passager") }}</th>
+          <th scope="col">{{ _("Compagnie") }}</th>
+          <th scope="col">{{ _("Agent") }}</th>
+          <th scope="col" class="col-end">{{ _("Coût") }}</th>
+          <th scope="col">{{ _("Réémis") }}</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for c in summary.cancelled %}
+        <tr>
+          <td class="num">{{ c.ticket_no }}</td>
+          <td class="b-ref">{% if c.booking_ref %}{{ c.booking_ref }}{% else %}{{ _("(sans référence)") }}{% endif %}</td>
+          <td>{{ c.passenger_name }}</td>
+          <td class="muted">{{ c.airline|airline }}</td>
+          <td class="agent-code">{{ c.staff_sign }}</td>
+          <td class="col-end">{% if c.cost is none %}<span class="faint">{{ _("Prix manquant") }}</span>{% else %}{{ c.cost|money_fr }}{% endif %}</td>
+          <td>{% if c.reissued_as %}<span class="num">{{ c.reissued_as }}</span>{% else %}<span class="faint">—</span>{% endif %}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
 </section>
 {% endif %}
 {% endif %}

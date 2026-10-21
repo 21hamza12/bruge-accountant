@@ -47,6 +47,12 @@ FLAG_MISSING_STAFF_SIGN = "missing_staff_sign"
 FLAG_DUPLICATE_IN_FILE = "duplicate_in_file"
 FLAG_FIELD_TOO_LONG = "field_too_long"
 FLAG_COST_ROUNDED = "cost_rounded"
+FLAG_CANCELLED = "cancelled"
+
+TRNC_ISSUED = "TKTT"
+# A cancelled document: stored like any line, but never a sale (the accountant deletes these
+# lines before working on a day), so it is left out of every count, total and price question.
+TRNC_CANCELLED = "CANX"
 
 MAX_NAME_CHARS = 200  # passenger names are free text; anything longer is cut and flagged
 KNOWN_FLAGS = frozenset(
@@ -58,6 +64,7 @@ KNOWN_FLAGS = frozenset(
         FLAG_DUPLICATE_IN_FILE,
         FLAG_FIELD_TOO_LONG,
         FLAG_COST_ROUNDED,
+        FLAG_CANCELLED,
     }
 )
 
@@ -455,7 +462,9 @@ def _build_ticket(cells: dict[str, Any], row_no: int, warnings: _Warnings) -> Pa
     staff_sign = field("staff_sign", "AS")
     trnc = field("transaction_type", "TRNC").upper()
     booking_ref = field("booking_ref", "RLOC")
-    if trnc != "TKTT":
+    if trnc == TRNC_CANCELLED:
+        flags.add(FLAG_CANCELLED)
+    elif trnc != TRNC_ISSUED:
         flags.add(FLAG_UNKNOWN_TRNC)
     if not booking_ref:
         flags.add(FLAG_MISSING_BOOKING_REF)

@@ -260,3 +260,15 @@ def test_a_malformed_child_message_is_a_parse_error_not_a_crash(payload: bytes) 
 def test_a_ticket_with_an_unknown_passenger_type_is_refused(parsed_fixture: ParsedReport) -> None:
     with pytest.raises(ParseError):
         decode(with_ticket(parsed_fixture, pax_type="VIP"))
+
+
+def test_the_transaction_type_comes_back_upper_case(parsed_fixture: ParsedReport) -> None:
+    """The cancelled-line filters compare TRNC exactly, so the wire normalises it too."""
+    assert decode(with_ticket(parsed_fixture, transaction_type="canx")).tickets[
+        0
+    ].transaction_type == ("CANX")
+
+
+def test_the_cancelled_flag_crosses_the_wire(parsed_fixture: ParsedReport) -> None:
+    ticket = decode(with_ticket(parsed_fixture, flags=["cancelled"])).tickets[0]
+    assert ticket.flags == ("cancelled",)

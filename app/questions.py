@@ -2,6 +2,8 @@
 
 A ticket without a booking reference is never merged with another one: it becomes a
 question of its own (shown with ``booking_ref == ""``), flagged ``missing_booking_ref``.
+
+A cancelled line (TRNC ``CANX``) is never asked about: it was not sold, so it has no price.
 """
 
 from collections import defaultdict
@@ -10,7 +12,7 @@ from dataclasses import dataclass
 from decimal import Decimal
 from typing import Protocol
 
-from app.parsing.amadeus import FLAG_MISSING_BOOKING_REF, FLAG_MISSING_COST
+from app.parsing.amadeus import FLAG_MISSING_BOOKING_REF, FLAG_MISSING_COST, TRNC_CANCELLED
 
 
 class TicketLike(Protocol):
@@ -32,6 +34,16 @@ class TicketLike(Protocol):
     def cost(self) -> Decimal | None: ...
     @property
     def flags(self) -> Sequence[str]: ...
+    @property
+    def transaction_type(self) -> str: ...
+
+
+def is_cancelled(ticket: TicketLike) -> bool:
+    """A cancelled document (TRNC ``CANX``): stored, but never counted, totalled or priced.
+
+    Relies on ``transaction_type`` being stored upper case (the parser and the wire both
+    normalise it), as do the SQL filters of ``app.repository``."""
+    return ticket.transaction_type == TRNC_CANCELLED
 
 
 @dataclass(frozen=True)
@@ -92,10 +104,13 @@ def _question(booking_ref: str, tickets: list[TicketLike]) -> PriceQuestion:
 
 
 def build_questions(tickets: Iterable[TicketLike]) -> list[StaffQuestions]:
-    """Pure and deterministic: output does not depend on the order of ``tickets``."""
+    """Pure and deterministic: output does not depend on the order of ``tickets``. Cancelled
+    lines are left out, so a booking (or a staff sign) with nothing else has no question."""
     # Third key part keeps tickets without a booking reference apart from each other.
     groups: dict[tuple[str, str, str], list[TicketLike]] = defaultdict(list)
     for ticket in tickets:
+        if is_cancelled(ticket):
+            continue
         own_group = "" if ticket.booking_ref else ticket.ticket_no
         groups[(ticket.staff_sign, ticket.booking_ref, own_group)].append(ticket)
 

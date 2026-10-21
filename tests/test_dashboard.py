@@ -59,6 +59,7 @@ class T:
     cost: Decimal | None = Decimal("100")
     flags: tuple[str, ...] = field(default_factory=tuple)
     price_status: str = PRICE_STATUS_AWAITING
+    transaction_type: str = "TKTT"
 
 
 def fixture_tickets(parsed: ParsedReport) -> list[T]:

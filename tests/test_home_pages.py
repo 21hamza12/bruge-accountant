@@ -258,6 +258,7 @@ def _as_awaiting(p: Any) -> Any:
         pax_type=p.pax_type,
         cost=p.cost,
         flags=p.flags,
+        transaction_type=p.transaction_type,
         price_status="awaiting_price",
     )
 

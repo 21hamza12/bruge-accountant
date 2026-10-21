@@ -33,6 +33,13 @@ End of day (D+1 for the accountant)
      └─ in app report only              → MISSING IN AMADEUS (wrong number, void, next day?)
 ```
 
+### Cancellations (CANX)
+
+Agents usually send a message when they cancel a ticket. If they do, the cancellation matches the
+Amadeus report. If they do not, the app takes it from the Amadeus report, **accepts it
+automatically** and lists it under "cancelled today"; no approval is needed. Either way, cancelled
+lines are left out of the TJQ APRES, as the accountant does today.
+
 ### What happens to a difference
 
 1. The app shows it to the staff member who issued the ticket, side by side:

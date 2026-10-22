@@ -39,6 +39,11 @@ def can_close_day(user: User) -> bool:
     return user.role in _MANAGER_OR_ACCOUNTANT
 
 
+def can_export_day(user: User) -> bool:
+    """Download the TJQ APRES of a day (stored or draft): manager and accountant."""
+    return user.role in _MANAGER_OR_ACCOUNTANT
+
+
 def can_reopen_day(user: User) -> bool:
     return user.role in _MANAGER_ONLY
 

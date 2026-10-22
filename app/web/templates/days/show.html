@@ -10,6 +10,8 @@
   </span>
   <a class="btn" href="/sales?date={{ day.isoformat() }}">{{ _("Ventes du jour") }}</a>
   {% if can_close %}<a class="btn btn-primary" href="/days/{{ day.isoformat() }}/close">{{ _("Clôturer la journée") }}</a>{% endif %}
+  {% if can_preview %}<a class="btn" href="/days/{{ day.isoformat() }}/apres-preview.xlsx">{{ _("Télécharger le brouillon du TJQ APRES") }}</a>{% endif %}
+  {% if exports %}<a class="btn" href="/days/{{ day.isoformat() }}/apres.xlsx">{{ _("Télécharger le TJQ APRES") }}</a>{% endif %}
   {% if can_reopen %}<a class="btn" href="/days/{{ day.isoformat() }}/reopen">{{ _("Rouvrir la journée") }}</a>{% endif %}
 </div>
 
@@ -120,6 +122,21 @@
   <p class="muted" id="upload-missing">{{ _("Rapport Amadeus : non reçu.") }}</p>
   {% endif %}
 </section>
+
+{% if exports or no_export_note %}
+<section class="card" aria-labelledby="export-title">
+  <h2 class="card-title" id="export-title">{{ _("TJQ APRES enregistré") }}</h2>
+  {% if exports %}
+  <ul class="history" id="export-versions">
+    {% for version, created_at in exports %}
+    <li><a href="/days/{{ day.isoformat() }}/apres.xlsx?v={{ version }}">{{ _("Version %(n)s", n=version) }}</a> · {{ created_at | datetime_fr }}</li>
+    {% endfor %}
+  </ul>
+  {% else %}
+  <p class="muted" id="export-missing">{{ _("Aucun export enregistré : il n'y avait pas de rapport Amadeus à la clôture.") }}</p>
+  {% endif %}
+</section>
+{% endif %}
 
 {% if sees_all and events %}
 <section class="card" aria-labelledby="events-title">

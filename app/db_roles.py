@@ -56,6 +56,8 @@ GRANTS = {
     "sales": "SELECT, INSERT, UPDATE",
     "sale_tickets": "SELECT, INSERT, DELETE",
     "sale_versions": "SELECT, INSERT",
+    # Phase B10 (migration 0012): the stored TJQ APRES of each close, append-only.
+    "day_exports": "SELECT, INSERT",
 }
 # The tables migration 0003 grants on, frozen. 0003 passes this to ``apply_grants`` instead of
 # relying on GRANTS, which later phases extend: a fresh ``alembic upgrade head`` runs 0003 before

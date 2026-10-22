@@ -59,6 +59,8 @@ SALE_MOVED = "sale_moved"
 DAY_OPENED = "day_opened"
 DAY_CLOSED = "day_closed"
 DAY_REOPENED = "day_reopened"
+DAY_EXPORT_STORED = "day_export_stored"
+EXPORT_DOWNLOADED = "export_downloaded"
 
 _SECRET_KEY = re.compile(r"password|passwd|token|secret|hash|csrf|cookie|credential", re.IGNORECASE)
 

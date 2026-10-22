@@ -26,7 +26,7 @@ from sqlalchemy.orm import Session
 
 from app import repository
 from app.db import Base, make_engine, make_session_factory
-from app.models import Agency, Ticket, Upload
+from app.models import Agency, AmadeusLine, Ticket, Upload
 from app.parsing.amadeus import FIELD_LIMITS, ParsedReport, parse_report
 from app.questions import build_questions
 from app.repository import (
@@ -392,7 +392,9 @@ def test_parser_field_limits_match_column_lengths() -> None:
     # SQLite ignores VARCHAR lengths; Postgres rejects longer values, so the parser's
     # truncation limits must never drift above the real columns.
     for key, limit in FIELD_LIMITS.items():
-        column_type = Ticket.__table__.c[key].type
+        # The optional text columns exist on amadeus_lines only.
+        table = Ticket.__table__ if key in Ticket.__table__.c else AmadeusLine.__table__
+        column_type = table.c[key].type
         assert isinstance(column_type, String)
         assert column_type.length == limit, key
 

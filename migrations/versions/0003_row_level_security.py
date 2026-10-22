@@ -70,7 +70,7 @@ import sqlalchemy as sa
 from alembic import op
 
 from app import db_roles
-from app.db_roles import MIGRATION_0003_TABLES, ROLE_ENV_VAR, validate_role_name
+from app.db_roles import MIGRATION_0003_TABLES, ROLE_ENV_VAR
 
 revision: str = "0003"
 down_revision: str | None = "0002"
@@ -92,29 +92,6 @@ ISOLATED_TABLES = (
 RLS_TABLES = ("agencies", *ISOLATED_TABLES, "audit_events")
 
 
-def _app_role(bind: sa.Connection, *, must_exist: bool) -> str | None:
-    """The validated APP_DB_ROLE, or None for single-role mode (unset, blank or - on downgrade -
-    a role that no longer exists)."""
-    raw = os.environ.get(ROLE_ENV_VAR, "").strip()
-    if not raw:
-        return None
-    role = validate_role_name(raw)
-    exists = bind.execute(sa.text("SELECT 1 FROM pg_roles WHERE rolname = :r"), {"r": role})
-    if exists.scalar() is None:
-        if must_exist:
-            raise RuntimeError(
-                f"{ROLE_ENV_VAR} names the role {role!r}, which does not exist. Create it first "
-                f"(CREATE ROLE {role} LOGIN ...), or unset {ROLE_ENV_VAR} for single-role mode."
-            )
-        log.warning("%s=%s does not exist; no privileges to revoke from it.", ROLE_ENV_VAR, role)
-        return None
-    if must_exist:
-        problem = db_roles.role_privilege_problem(bind, role)
-        if problem is not None:
-            raise RuntimeError(f"{ROLE_ENV_VAR}: {problem}")
-    return role
-
-
 def _run(statements: Sequence[str]) -> None:
     for statement in statements:
         op.execute(sa.text(statement))
@@ -125,7 +102,9 @@ def upgrade() -> None:
     bind = op.get_bind()
     if bind.dialect.name != "postgresql":
         return
-    role = _app_role(bind, must_exist=True)  # fail before any DDL on a bad name
+    role = db_roles.configured_role(
+        bind, os.environ.get(ROLE_ENV_VAR, ""), must_exist=True
+    )  # fail before any DDL on a bad name
 
     _run(
         [
@@ -179,7 +158,7 @@ def upgrade() -> None:
 def downgrade() -> None:
     bind = op.get_bind()
     if bind.dialect.name == "postgresql":
-        role = _app_role(bind, must_exist=False)
+        role = db_roles.configured_role(bind, os.environ.get(ROLE_ENV_VAR, ""), must_exist=False)
         if role is None:
             log.warning(
                 "%s is not set (or the role is gone): privileges granted to the app role were "

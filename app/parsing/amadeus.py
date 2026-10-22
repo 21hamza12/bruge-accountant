@@ -1,7 +1,8 @@
 """Parser for the Amadeus daily sales report (.xlsx).
 
-Only the eight Amadeus columns are read, located by header name. Anything else in
-the sheet (hand-typed columns, stray formulas) has no effect on the result.
+The eight required Amadeus columns and the optional ones (TAX, COMM, FP, CONFIRMED) are read,
+located by header name. Anything else in the sheet (hand-typed columns, stray formulas) has no
+effect on the result, except that unknown header titles are named in one warning.
 
 The workbook is streamed (``read_only``) so a tiny file that declares a cell on row
 1,048,576 cannot make us materialise a million empty rows, and the archive is checked
@@ -36,6 +37,8 @@ MAX_DATA_ROWS = 50_000  # non-blank rows below the header
 MAX_COLUMNS = 30  # only this many leading columns are ever read
 HEADER_SCAN_ROWS = 20
 MAX_WARNINGS = 100
+MAX_UNKNOWN_COLUMNS = 10  # header titles named in the "unknown columns" warning
+UNKNOWN_COLUMN_CHARS = 30
 WARNING_VALUE_CHARS = 40
 
 PaxType = Literal["ADT", "CHD", "INF"]
@@ -68,13 +71,16 @@ KNOWN_FLAGS = frozenset(
     }
 )
 
-# Column lengths of ``app.models.Ticket``; longer values are truncated and flagged.
+# Column lengths of ``app.models.Ticket`` and ``app.models.AmadeusLine``; longer values are
+# truncated and flagged.
 FIELD_LIMITS = {
     "seq_no": 32,
     "airline": 8,
     "staff_sign": 32,
     "transaction_type": 16,
     "booking_ref": 16,
+    "form_of_payment": 16,
+    "confirmed": 32,
 }
 COST_LIMIT = Decimal(10) ** 12  # Numeric(14, 2)
 _CENT = Decimal("0.01")
@@ -103,6 +109,17 @@ _REQUIRED = {
     "TRNC": "transaction_type",
     "RLOC": "booking_ref",
 }
+# Optional columns (the newer 16-column export); absent ones give None.
+_OPTIONAL = {
+    "TAX": "tax",
+    "COMM": "comm",
+    "FP": "form_of_payment",
+    "CONFIRMED": "confirmed",
+}
+# Columns that are deliberately not read, so they get no warning: Amadeus columns of the newer
+# export (FEE, AGENT, REPORT IND, NDC) and the accountant's own hand-typed columns, which are in
+# every working file (P.B, AG, CLT, AP).
+_KNOWN_IGNORED = frozenset({"FEE", "AGENT", "REPORT IND", "NDC", "P.B", "AG", "CLT", "AP"})
 
 
 class ParseError(Exception):
@@ -129,6 +146,10 @@ class ParsedTicket:
     booking_ref: str
     flags: tuple[str, ...]
     source_row: int
+    tax: Decimal | None = None
+    comm: Decimal | None = None
+    form_of_payment: str | None = None
+    confirmed: str | None = None
 
 
 @dataclass(frozen=True)
@@ -170,10 +191,19 @@ def parse_report(source: Path | bytes | bytearray | BinaryIO) -> ParsedReport:
     with _open_sheet(data) as ws:
         rows = _iter_rows(ws)
         head = list(itertools.islice(rows, HEADER_SCAN_ROWS))
-        header_row, columns = _locate_columns(head)
+        header_row, columns, unknown, truncated = _locate_columns(head)
         header = _parse_header(head[: header_row - 1])
 
         warnings = _Warnings()
+        if truncated:
+            warnings.add(
+                f"only the first {MAX_COLUMNS} columns were read; "
+                f"columns after the {MAX_COLUMNS}th were ignored"
+            )
+        if unknown:
+            warnings.add(_unknown_columns_message(unknown))
+        # Every known column has a key; a column the file lacks is read as an empty cell.
+        all_keys = (*_REQUIRED.values(), *_OPTIONAL.values())
         tickets: list[ParsedTicket] = []
         index_by_no: dict[str, int] = {}
         non_blank = 0
@@ -183,8 +213,11 @@ def parse_report(source: Path | bytes | bytearray | BinaryIO) -> ParsedReport:
         for row_no, row in enumerate(data_rows, start=header_row + 1):
             if row is blank_row:  # openpyxl yields one shared tuple for every missing row
                 continue
-            cells = {key: (row[idx] if idx < len(row) else None) for key, idx in columns.items()}
-            if all(_is_blank(v) for v in cells.values()):
+            cells = {
+                key: (row[columns[key]] if key in columns and columns[key] < len(row) else None)
+                for key in all_keys
+            }
+            if all(_is_blank(cells[key]) for key in _REQUIRED.values()):
                 blank_row = row
                 continue
             non_blank += 1
@@ -283,21 +316,41 @@ def _norm(value: object) -> str:
     return " ".join(str(value).upper().split()) if value is not None else ""
 
 
-def _locate_columns(rows: list[tuple[Any, ...]]) -> tuple[int, dict[str, int]]:
+def _locate_columns(
+    rows: list[tuple[Any, ...]],
+) -> tuple[int, dict[str, int], list[str], bool]:
+    """The header row number, the column index of every known column, the header titles that
+    are neither known nor deliberately ignored (cleaned, shortened, without duplicates), and
+    whether the header fills every column that is read (so more may follow, unread)."""
     for number, row in enumerate(rows, start=1):
         if any(_norm(v) == "DOC NUMBER" for v in row):
             columns: dict[str, int] = {}
+            unknown: list[str] = []
             for idx, value in enumerate(row):
-                key = _REQUIRED.get(_norm(value))
-                if key is not None and key not in columns:
-                    columns[key] = idx
+                title = _norm(value)
+                key = _REQUIRED.get(title) or _OPTIONAL.get(title)
+                if key is not None:
+                    columns.setdefault(key, idx)
+                    continue
+                shown = clean_text(title)[:UNKNOWN_COLUMN_CHARS].strip()
+                if shown and shown not in _KNOWN_IGNORED and shown not in unknown:
+                    unknown.append(shown)
             missing = [h for h, k in _REQUIRED.items() if k not in columns]
             if missing:
                 raise ParseError(f"missing required column(s): {', '.join(missing)}")
-            return number, columns
+            full = len(row) >= MAX_COLUMNS and not _is_blank(row[MAX_COLUMNS - 1])
+            return number, columns, unknown, full
     raise ParseError(
         f"header row not found (no 'DOC NUMBER' column in the first {HEADER_SCAN_ROWS} rows)"
     )
+
+
+def _unknown_columns_message(unknown: list[str]) -> str:
+    shown = ", ".join(unknown[:MAX_UNKNOWN_COLUMNS])
+    extra = len(unknown) - MAX_UNKNOWN_COLUMNS
+    if extra > 0:
+        shown += f" (+{extra} more)"
+    return f"unknown columns ignored: {shown}"
 
 
 def _label_value(rows: list[tuple[Any, ...]], label: str) -> Any:
@@ -418,6 +471,46 @@ def _limited(
     return text[:limit]
 
 
+_PLAIN_AMOUNT_RE = re.compile(r"-?[0-9]+(?:\.[0-9]+)?", re.ASCII)
+_COMMA_DECIMAL_RE = re.compile(r"(-?[0-9]+),([0-9]{1,2})", re.ASCII)
+_COMMA_THOUSANDS_RE = re.compile(r"-?[0-9]{1,3}(?:,[0-9]{3})+(?:\.[0-9]+)?", re.ASCII)
+
+
+def _amount_text(raw: str) -> str | None:
+    """``raw`` as a plain decimal string, or None when it is ambiguous or not an amount.
+
+    A trailing comma with one or two digits is the decimal separator ("350,5", "1 234,56"); a
+    comma followed by exactly three digits is a thousands separator ("1,234", "1,234.56"). Spaces
+    (and no-break spaces) are ignored. Anything else ("1.234,56", "1,2,3") is refused."""
+    text = "".join(raw.split())
+    if _PLAIN_AMOUNT_RE.fullmatch(text):
+        return text
+    decimal = _COMMA_DECIMAL_RE.fullmatch(text)
+    if decimal:
+        return f"{decimal.group(1)}.{decimal.group(2)}"
+    if _COMMA_THOUSANDS_RE.fullmatch(text):
+        return text.replace(",", "")
+    return None
+
+
+def _optional_money(value: object, label: str, row_no: int, warnings: _Warnings) -> Decimal | None:
+    """An optional amount (TAX, COMM): None when the cell is empty. A cell that is not an
+    amount, or is ambiguous, is ignored with a warning (it never fails the row); an amount with
+    more than two decimals is rounded, with a warning. Unlike TOTAL DOC, a comma before one or
+    two digits is a decimal comma."""
+    if _is_blank(value):
+        return None
+    parsable: object = value
+    if isinstance(value, str):
+        parsable = _amount_text(value)
+    amount, rounded = _cost(parsable)
+    if amount is None:
+        warnings.add(f"row {row_no}: {label} is not a valid amount, ignored")
+    elif rounded:
+        warnings.add(f"row {row_no}: {label} rounded to 2 decimals")
+    return amount
+
+
 def _build_ticket(cells: dict[str, Any], row_no: int, warnings: _Warnings) -> ParsedTicket | None:
     ticket_no = _text(cells["ticket_no"], "DOC NUMBER", row_no, warnings)
     if not ticket_no:
@@ -471,6 +564,11 @@ def _build_ticket(cells: dict[str, Any], row_no: int, warnings: _Warnings) -> Pa
     if not staff_sign:
         flags.add(FLAG_MISSING_STAFF_SIGN)
 
+    tax = _optional_money(cells["tax"], "TAX", row_no, warnings)
+    comm = _optional_money(cells["comm"], "COMM", row_no, warnings)
+    fop = field("form_of_payment", "FP")
+    confirmed = field("confirmed", "CONFIRMED")
+
     return ParsedTicket(
         seq_no=seq_no,
         airline=airline,
@@ -483,4 +581,8 @@ def _build_ticket(cells: dict[str, Any], row_no: int, warnings: _Warnings) -> Pa
         booking_ref=booking_ref,
         flags=tuple(sorted(flags)),
         source_row=row_no,
+        tax=tax,
+        comm=comm,
+        form_of_payment=fop or None,
+        confirmed=confirmed or None,
     )

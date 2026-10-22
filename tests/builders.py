@@ -5,7 +5,7 @@ from __future__ import annotations
 import io
 import re
 import zipfile
-from collections.abc import Callable
+from collections.abc import Callable, Mapping, Sequence
 from typing import Any
 
 import openpyxl
@@ -116,3 +116,82 @@ def add_zip_entries(xlsx: bytes, entries: dict[str, bytes]) -> bytes:
         for name, data in entries.items():
             dst.writestr(name, data)
     return out.getvalue()
+
+
+# --- the newer 16-column Amadeus export -----------------------------------------------------
+
+AMADEUS_16_HEADERS = [
+    "SEQ NO",
+    "CONFIRMED",
+    "A/L",
+    "DOC NUMBER",
+    "TOTAL DOC",
+    "TAX",
+    "FEE",
+    "COMM",
+    "AGENT",
+    "FP",
+    "PAX NAME",
+    "AS",
+    "RLOC",
+    "TRNC",
+    "REPORT IND",
+    "NDC",
+]
+
+
+def amadeus_line(
+    seq: Any = "000001",
+    airline: Any = "199",
+    doc: Any = "1990000001",
+    total: Any = 1000,
+    name: Any = "SYNTH01/PAX",
+    staff: Any = "0004SV",
+    trnc: Any = "TKTT",
+    rloc: Any = "AAAAAA",
+    **others: Any,
+) -> dict[str, Any]:
+    """One line keyed by header title; TAX, FEE, COMM, FP, CONFIRMED... go in ``others``
+    with the title as key (``**{"FP": "CA"}``)."""
+    line: dict[str, Any] = {
+        "SEQ NO": seq,
+        "A/L": airline,
+        "DOC NUMBER": doc,
+        "TOTAL DOC": total,
+        "PAX NAME": name,
+        "AS": staff,
+        "TRNC": trnc,
+        "RLOC": rloc,
+    }
+    line.update(others)
+    return line
+
+
+def build_amadeus_xlsx(
+    lines: Sequence[Mapping[str, Any]],
+    *,
+    header: Sequence[str] | None = None,
+    extra_columns: Mapping[str, Sequence[Any]] | None = None,
+    range_raw: str | None = "20OCT",
+    current: Any = "21-OCT-2026",
+) -> bytes:
+    """An .xlsx in the 16-column layout of the real export (or in the column order ``header``).
+
+    ``lines`` are dicts keyed by header title (see ``amadeus_line``); a title missing from a line
+    leaves the cell empty. ``extra_columns`` adds columns after the header: title -> one value per
+    line. Rows 1 to 3 hold Agy no / Office / Agent, the report date range, the current date and
+    the currency, like the real export.
+    """
+    titles = list(AMADEUS_16_HEADERS if header is None else header)
+    extras = dict(extra_columns or {})
+    rows = [
+        [line.get(title) for title in titles] + [values[i] for values in extras.values()]
+        for i, line in enumerate(lines)
+    ]
+    return build_workbook(
+        rows,
+        range_raw=range_raw,
+        current=current,
+        headers=[*titles, *extras],
+        stray={"F1": "Currency", "G1": "MRU"},
+    )

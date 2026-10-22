@@ -13,12 +13,14 @@ from typing import Any
 
 import pytest
 from sqlalchemy import create_engine, delete, func, insert, select, text, update
+from sqlalchemy.engine import make_url
 from sqlalchemy.exc import DBAPIError, ProgrammingError
 from sqlalchemy.orm import Session
 
 from app.db import make_engine, make_session_factory
 from app.models import (
     Agency,
+    AmadeusLine,
     AuditEvent,
     RateLimitBucket,
     StaffSignLink,
@@ -49,6 +51,7 @@ SCOPED_MODELS: list[Any] = [
     UserSession,
     TemporaryPassword,
     AuditEvent,
+    AmadeusLine,
 ]
 
 
@@ -223,6 +226,35 @@ def test_insert_for_another_agency_is_rejected(world: World, table: str) -> None
         assert violates_rls(info.value)
 
 
+def test_an_amadeus_line_for_another_agency_is_rejected(world: World) -> None:
+    db, a, b = world
+    with app_session(db) as s:
+        bind_tenant(s, b.agency_id)
+        upload_id = s.scalars(select(Upload.id)).one()
+    with app_session(db) as s:
+        bind_tenant(s, a.agency_id)
+        s.add(
+            AmadeusLine(
+                agency_id=b.agency_id,
+                upload_id=upload_id,
+                seq_no="1",
+                seq_order=1,
+                doc_number="3999999999",
+                airline="199",
+                pax_name="X",
+                pax_type="ADT",
+                staff_sign="S",
+                rloc="R",
+                trnc="TKTT",
+                flags=[],
+                source_row=6,
+            )
+        )
+        with pytest.raises(DBAPIError) as info:
+            s.commit()
+        assert violates_rls(info.value)
+
+
 def test_moving_a_row_to_another_agency_is_rejected(world: World) -> None:
     db, a, b = world
     for model in (User, Ticket, Upload):
@@ -373,6 +405,48 @@ def test_audit_rows_are_append_only_for_the_tenant(world: World) -> None:
         assert s.scalars(select(AuditEvent.event_type)).all() == ["seed"]
 
 
+def test_amadeus_lines_are_append_only_for_the_tenant(world: World) -> None:
+    """No UPDATE and no DELETE policy: a stored line cannot be edited or removed, not even by the
+    owner in single-role mode (the app role has no such privilege at all)."""
+    db, a, _ = world
+    with app_session(db) as s:
+        bind_tenant(s, a.agency_id)
+        before = s.execute(select(AmadeusLine.id, AmadeusLine.total_doc)).all()
+        assert len(before) == 2
+        for statement in (
+            update(AmadeusLine).values(total_doc=1),
+            delete(AmadeusLine),
+        ):
+            if db.mode == "app-role":
+                with pytest.raises(ProgrammingError, match="permission denied"):
+                    s.execute(statement)
+                s.rollback()
+                bind_tenant(s, a.agency_id)
+            else:
+                assert affected(s.execute(statement)) == 0
+        s.rollback()
+        assert s.execute(select(AmadeusLine.id, AmadeusLine.total_doc)).all() == before
+
+
+def test_amadeus_lines_grants_are_select_and_insert_only(app_role_world: World) -> None:
+    db, _, _ = app_role_world
+    engine = create_engine(db.owner_url)
+    try:
+        with engine.connect() as conn:
+            privileges = set(
+                conn.execute(
+                    text(
+                        "SELECT privilege_type FROM information_schema.role_table_grants "
+                        "WHERE table_name = 'amadeus_lines' AND grantee = :g"
+                    ),
+                    {"g": make_url(db.app_url).username},
+                ).scalars()
+            )
+    finally:
+        engine.dispose()
+    assert privileges == {"SELECT", "INSERT"}
+
+
 # --- what the app role may not do (separate role only) -------------------------------
 
 
@@ -383,7 +457,7 @@ def app_role_world(world: World) -> World:
     return world
 
 
-@pytest.mark.parametrize("model", [Ticket, Upload, User, Agency])
+@pytest.mark.parametrize("model", [Ticket, Upload, User, Agency, AmadeusLine])
 def test_app_role_cannot_delete_where_deleting_is_not_needed(
     app_role_world: World, model: Any
 ) -> None:
@@ -528,5 +602,7 @@ def test_the_exact_policies_installed(world: World) -> None:
         ("user_sessions", "purge_expired", "DELETE"),
         ("temporary_passwords", "purge_expired", "DELETE"),
         ("audit_events", "retention_purge", "DELETE"),
+        ("amadeus_lines", "tenant_read", "SELECT"),
+        ("amadeus_lines", "tenant_insert", "INSERT"),
     }
     assert installed == expected

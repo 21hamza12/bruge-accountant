@@ -6,8 +6,10 @@ the message is never unpickled.
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import pickle
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
@@ -199,9 +201,13 @@ def test_ticket_and_warning_counts_are_bounded(
 ) -> None:
     one = message(parsed_fixture)["report"]["tickets"][0]
     payload = message(parsed_fixture)
-    payload["report"]["tickets"] = [one] * wire.MAX_TICKETS
+
+    def many(count: int) -> list[dict[str, Any]]:
+        return [{**one, "ticket_no": f"{n:010d}"} for n in range(count)]
+
+    payload["report"]["tickets"] = many(wire.MAX_TICKETS)
     assert len(decode(payload).tickets) == wire.MAX_TICKETS
-    payload["report"]["tickets"] = [one] * (wire.MAX_TICKETS + 1)
+    payload["report"]["tickets"] = many(wire.MAX_TICKETS + 1)
     with pytest.raises(ParseError):
         decode(payload)
     payload = message(parsed_fixture)
@@ -272,3 +278,72 @@ def test_the_transaction_type_comes_back_upper_case(parsed_fixture: ParsedReport
 def test_the_cancelled_flag_crosses_the_wire(parsed_fixture: ParsedReport) -> None:
     ticket = decode(with_ticket(parsed_fixture, flags=["cancelled"])).tickets[0]
     assert ticket.flags == ("cancelled",)
+
+
+# --- the optional columns (TAX, COMM, FP, CONFIRMED) --------------------------------------------
+
+
+def test_the_optional_fields_round_trip_through_the_wire(parsed_fixture: ParsedReport) -> None:
+    ticket = dataclasses.replace(
+        parsed_fixture.tickets[0],
+        tax=Decimal("1200.00"),
+        comm=Decimal("0.05"),
+        form_of_payment="CA",
+        confirmed="OK",
+    )
+    original = dataclasses.replace(parsed_fixture, tickets=(ticket, *parsed_fixture.tickets[1:]))
+    payload = message(original)
+    assert payload["report"]["tickets"][0]["tax"] == "1200.00"  # a string, never a float
+    assert payload["report"]["tickets"][0]["comm"] == "0.05"
+    decoded = decode_message(encode_report(original))
+    assert decoded == original
+    assert isinstance(decoded.tickets[0].tax, Decimal)
+    assert decoded.tickets[0].comm == Decimal("0.05")
+    assert (decoded.tickets[0].form_of_payment, decoded.tickets[0].confirmed) == ("CA", "OK")
+
+
+def test_absent_optional_fields_round_trip_as_none(parsed_fixture: ParsedReport) -> None:
+    first = message(parsed_fixture)["report"]["tickets"][0]
+    assert (first["tax"], first["comm"], first["form_of_payment"], first["confirmed"]) == (
+        None,
+        None,
+        None,
+        None,
+    )
+    assert decode_message(encode_report(parsed_fixture)) == parsed_fixture
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"tax": 1200},
+        {"tax": 12.5},
+        {"comm": "1e5"},
+        {"comm": "NaN"},
+        {"tax": "1" * 13},
+        {"form_of_payment": 5},
+        {"form_of_payment": "X" * 17},
+        {"confirmed": "Y" * 33},
+        {"confirmed": "ok‮"},
+    ],
+)
+def test_bad_optional_fields_are_refused(
+    parsed_fixture: ParsedReport, changes: dict[str, Any]
+) -> None:
+    with pytest.raises(ParseError):
+        decode(with_ticket(parsed_fixture, **changes))
+
+
+def test_a_message_without_the_optional_keys_is_refused(parsed_fixture: ParsedReport) -> None:
+    payload = message(parsed_fixture)
+    del payload["report"]["tickets"][0]["tax"]
+    with pytest.raises(ParseError):
+        decode(payload)
+
+
+def test_a_repeated_ticket_number_is_refused(parsed_fixture: ParsedReport) -> None:
+    payload = message(parsed_fixture)
+    tickets = payload["report"]["tickets"]
+    tickets[1]["ticket_no"] = tickets[0]["ticket_no"]
+    with pytest.raises(ParseError):
+        decode(payload)

@@ -15,6 +15,7 @@ from sqlalchemy import (
     delete,
     distinct,
     func,
+    insert,
     or_,
     select,
     table,
@@ -27,6 +28,7 @@ from app.models import (
     PRICE_STATUS_AWAITING,
     ROLE_MANAGER,
     Agency,
+    AmadeusLine,
     AuditEvent,
     StaffSignLink,
     TemporaryPassword,
@@ -337,6 +339,96 @@ def _count_existing(session: Session, agency_id: int, ticket_nos: Sequence[str])
     return session.scalar(stmt) or 0
 
 
+def _store_amadeus_lines(
+    session: Session, agency_id: int, upload_id: int, tickets: Sequence[ParsedTicket]
+) -> None:
+    """Append one ``amadeus_lines`` row per parsed line, in file order (``seq_order`` 1..n).
+
+    Precondition: no two lines share a DOC NUMBER (the parser keeps the first); the table's
+    UNIQUE (agency_id, upload_id, doc_number) would refuse the whole upload otherwise."""
+    if len({t.ticket_no for t in tickets}) != len(tickets):
+        raise ValueError("duplicate DOC NUMBER in the parsed lines")
+    for chunk_start in range(0, len(tickets), UPSERT_CHUNK):
+        chunk = tickets[chunk_start : chunk_start + UPSERT_CHUNK]
+        session.execute(
+            insert(AmadeusLine),
+            [
+                {
+                    "agency_id": agency_id,
+                    "upload_id": upload_id,
+                    "seq_no": t.seq_no,
+                    "seq_order": chunk_start + offset,
+                    "doc_number": t.ticket_no,
+                    "airline": t.airline,
+                    "total_doc": t.cost,
+                    "tax": t.tax,
+                    "comm": t.comm,
+                    "pax_name": t.passenger_name,
+                    "pax_type": t.pax_type,
+                    "staff_sign": t.staff_sign,
+                    "rloc": t.booking_ref,
+                    "trnc": t.transaction_type,
+                    "form_of_payment": t.form_of_payment,
+                    "confirmed": t.confirmed,
+                    "flags": list(t.flags),
+                    "source_row": t.source_row,
+                }
+                for offset, t in enumerate(chunk, start=1)
+            ],
+        )
+
+
+def _identical_upload_with_lines(
+    session: Session, agency_id: int, sha256: str, report_date: date, *, before: int | None = None
+) -> int | None:
+    """The earliest upload of this agency with the same bytes and report date that has stored
+    lines (and, with ``before``, an id below it), or None."""
+    stmt = (
+        select(Upload.id)
+        .where(
+            Upload.agency_id == agency_id,
+            Upload.sha256 == sha256,
+            Upload.report_date == report_date,
+            select(AmadeusLine.id)
+            .where(
+                AmadeusLine.agency_id == Upload.agency_id,
+                AmadeusLine.upload_id == Upload.id,
+            )
+            .exists(),
+        )
+        .order_by(Upload.id)
+        .limit(1)
+    )
+    if before is not None:
+        stmt = stmt.where(Upload.id < before)
+    return session.scalar(stmt)
+
+
+def lines_upload_for(session: Session, agency_id: int, upload_id: int) -> int | None:
+    """The upload whose ``amadeus_lines`` are the original report of ``upload_id``.
+
+    An upload stores its own lines unless an earlier upload of the same agency had identical
+    bytes and the same report date: then it stores none (a second identical set would only
+    repeat the first) and this returns that earlier upload. None when no lines exist at all
+    (an upload from before migration 0006)."""
+    bind_tenant(session, agency_id)
+    own = session.scalar(
+        select(AmadeusLine.id)
+        .where(AmadeusLine.agency_id == agency_id, AmadeusLine.upload_id == upload_id)
+        .limit(1)
+    )
+    if own is not None:
+        return upload_id
+    upload = session.scalar(
+        select(Upload).where(Upload.agency_id == agency_id, Upload.id == upload_id)
+    )
+    if upload is None:
+        return None
+    return _identical_upload_with_lines(
+        session, agency_id, upload.sha256, upload.report_date, before=upload_id
+    )
+
+
 def import_report(
     session: Session,
     agency_id: int,
@@ -357,6 +449,9 @@ def import_report(
     the end ends the transaction and its tenant setting; the session's ``after_begin`` listener
     applies the binding again to whatever the caller reads next.
 
+    Lines: one ``amadeus_lines`` row per parsed line, unless the same bytes were already stored
+    for the same report date (see ``lines_upload_for``).
+
     Each chunk is one atomic upsert, so concurrent imports of the same tickets cannot
     collide; rows go in ticket-number order so concurrent writers lock in the same order.
     ``inserted``/``updated`` come from a count taken in the same transaction (exact unless
@@ -369,6 +464,10 @@ def import_report(
             raise LookupError(f"unknown agency id {agency_id}")
 
         header = parsed.header
+        # An identical re-upload (same bytes, same day) keeps the first line set: no second copy.
+        already_stored = (
+            _identical_upload_with_lines(session, agency_id, sha256, header.report_date) is not None
+        )
         unique = {t.ticket_no: t for t in sorted(parsed.tickets, key=lambda t: t.ticket_no)}
         upload = Upload(
             agency_id=agency_id,
@@ -383,6 +482,9 @@ def import_report(
         )
         session.add(upload)
         session.flush()
+
+        if not already_stored:
+            _store_amadeus_lines(session, agency_id, upload.id, parsed.tickets)
 
         now = datetime.now(UTC)
         existing = 0

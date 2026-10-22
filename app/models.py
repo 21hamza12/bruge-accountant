@@ -144,6 +144,58 @@ class Ticket(Base):
     )
 
 
+class AmadeusLine(Base):
+    """One parsed line of one upload of an Amadeus report: the original report, as received.
+
+    Append-only (migration 0006: no UPDATE/DELETE policy on Postgres, triggers on SQLite). Unlike
+    ``tickets`` it is never overwritten by a later upload, so the lines of an upload can be read
+    back in file order (``seq_order``). A re-upload of identical bytes for the same day stores no
+    second set; ``repository.lines_upload_for`` names the upload that holds the lines.
+    """
+
+    __tablename__ = "amadeus_lines"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["agency_id", "upload_id"],
+            ["uploads.agency_id", "uploads.id"],
+            name="fk_amadeus_lines_agency_upload",
+            ondelete="RESTRICT",
+        ),
+        # The parser keeps the first line of a repeated DOC NUMBER: a valid parse never hits this.
+        UniqueConstraint(
+            "agency_id", "upload_id", "doc_number", name="uq_amadeus_lines_agency_upload_doc"
+        ),
+        CheckConstraint("pax_type IN ('ADT', 'CHD', 'INF')", name="pax_type"),
+        CheckConstraint("seq_order >= 1", name="seq_order_positive"),
+        CheckConstraint("source_row >= 1", name="source_row_positive"),
+        CheckConstraint("doc_number <> ''", name="doc_number_nonempty"),
+        Index("ix_amadeus_lines_agency_upload_order", "agency_id", "upload_id", "seq_order"),
+    )
+
+    id: Mapped[int] = mapped_column(BigIntType, primary_key=True)
+    agency_id: Mapped[int] = mapped_column(ForeignKey("agencies.id", ondelete="RESTRICT"))
+    upload_id: Mapped[int] = mapped_column(BigIntType)
+    seq_no: Mapped[str] = mapped_column(String(32))
+    seq_order: Mapped[int] = mapped_column(Integer)
+    doc_number: Mapped[str] = mapped_column(String(32))
+    airline: Mapped[str] = mapped_column(String(8))
+    total_doc: Mapped[Decimal | None] = mapped_column(Numeric(14, 2))
+    tax: Mapped[Decimal | None] = mapped_column(Numeric(14, 2))
+    comm: Mapped[Decimal | None] = mapped_column(Numeric(14, 2))
+    pax_name: Mapped[str] = mapped_column(Text)
+    pax_type: Mapped[str] = mapped_column(String(3))
+    staff_sign: Mapped[str] = mapped_column(String(32))
+    rloc: Mapped[str] = mapped_column(String(16))
+    trnc: Mapped[str] = mapped_column(String(16))
+    form_of_payment: Mapped[str | None] = mapped_column(String(16))
+    confirmed: Mapped[str | None] = mapped_column(String(32))
+    flags: Mapped[list[str]] = mapped_column(JSONType)
+    source_row: Mapped[int] = mapped_column(Integer)
+    created_at: Mapped[datetime] = mapped_column(
+        UTCDateTime, default=_now, server_default=func.now()
+    )
+
+
 ROLE_MANAGER = "manager"
 ROLE_ACCOUNTANT = "accountant"
 ROLE_STAFF = "staff"

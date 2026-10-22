@@ -60,6 +60,10 @@ _TICKET_KEYS = frozenset(
         "booking_ref",
         "flags",
         "source_row",
+        "tax",
+        "comm",
+        "form_of_payment",
+        "confirmed",
     }
 )
 
@@ -68,6 +72,8 @@ class _Invalid(ValueError):
     """A message field that is not acceptable (internal; becomes a ``ParseError``)."""
 
 
+# No version field: the parent and the sandboxed child always ship in the same release, so the two
+# sides of this message never differ.
 def encode_report(report: ParsedReport) -> bytes:
     header = report.header
     message = {
@@ -91,6 +97,10 @@ def encode_report(report: ParsedReport) -> bytes:
                     "booking_ref": t.booking_ref,
                     "flags": list(t.flags),
                     "source_row": t.source_row,
+                    "tax": None if t.tax is None else str(t.tax),
+                    "comm": None if t.comm is None else str(t.comm),
+                    "form_of_payment": t.form_of_payment,
+                    "confirmed": t.confirmed,
                 }
                 for t in report.tickets
             ],
@@ -140,6 +150,10 @@ def _cost(value: object) -> Decimal | None:
     return Decimal(text)
 
 
+def _opt_str(value: object, max_chars: int) -> str | None:
+    return None if value is None else _str(value, max_chars)
+
+
 def _list(value: object, max_items: int) -> list[Any]:
     if not isinstance(value, list):
         raise _Invalid("expected a list")
@@ -173,6 +187,10 @@ def _ticket(raw: object) -> ParsedTicket:
         booking_ref=_str(raw["booking_ref"], FIELD_LIMITS["booking_ref"]),
         flags=flags,
         source_row=_int_in(raw["source_row"], 1, MAX_SOURCE_ROW),
+        tax=_cost(raw["tax"]),
+        comm=_cost(raw["comm"]),
+        form_of_payment=_opt_str(raw["form_of_payment"], FIELD_LIMITS["form_of_payment"]),
+        confirmed=_opt_str(raw["confirmed"], FIELD_LIMITS["confirmed"]),
     )
 
 
@@ -184,13 +202,17 @@ def _report(raw: object) -> ParsedReport:
         raise _Invalid("bad header")
     tickets = _list(raw["tickets"], MAX_TICKETS)
     warnings = _list(raw["warnings"], MAX_WARNING_COUNT)
+    parsed_tickets = tuple(_ticket(t) for t in tickets)
+    # The parser keeps the first line of a repeated DOC NUMBER; the stored snapshot relies on it.
+    if len({t.ticket_no for t in parsed_tickets}) != len(parsed_tickets):
+        raise _Invalid("duplicate ticket number")
     return ParsedReport(
         header=ReportHeader(
             report_range_raw=_str(header["report_range_raw"], MAX_RANGE_CHARS),
             report_date=date.fromisoformat(_str(header["report_date"], 10)),
             generated_on=date.fromisoformat(_str(header["generated_on"], 10)),
         ),
-        tickets=tuple(_ticket(t) for t in tickets),
+        tickets=parsed_tickets,
         warnings=tuple(_str(w, MAX_WARNING_CHARS) for w in warnings),
     )
 

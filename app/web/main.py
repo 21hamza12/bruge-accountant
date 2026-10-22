@@ -39,6 +39,7 @@ from app.web.errors import (
 )
 from app.web.middleware import build_middleware
 from app.web.routes import auth as auth_routes
+from app.web.routes import days as day_routes
 from app.web.routes import home as home_routes
 from app.web.routes import partners as partner_routes
 from app.web.routes import password as password_routes
@@ -147,6 +148,7 @@ def create_app(
     app.include_router(partner_routes.router)
     app.include_router(sale_entry_routes.router)  # first: /sales/new before /sales/{sale_id}
     app.include_router(sales_routes.router)
+    app.include_router(day_routes.router)
     app.include_router(staff_routes.router)
     app.include_router(upload_routes.router)
     app.include_router(questions_routes.router)

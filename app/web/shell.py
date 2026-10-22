@@ -36,6 +36,7 @@ ACTIVE_STAFF = "staff"
 ACTIVE_PARTNERS = "partners"
 ACTIVE_SALE_NEW = "sale_new"
 ACTIVE_SALES = "sales"
+ACTIVE_DAYS = "days"
 ACTIVE_PROFILE = "profile"
 
 

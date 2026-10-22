@@ -130,6 +130,7 @@ __all__ = [
     "sale_history_for",
     "sale_profit",
     "sales_for_day_for",
+    "sales_for_days_for",
     "sign_warnings",
     "ticket_rows",
     "validate",
@@ -460,6 +461,25 @@ def sales_for_day_for(
     else:
         wanted = [s for s in signs if s in allowed]
     return _sales_for_day(db, actor.agency_id, day, wanted, include_voided)
+
+
+MAX_DAYS_PER_QUERY = 366
+
+
+def sales_for_days_for(db: Session, actor: User, wanted_days: Collection[date]) -> list[SaleView]:
+    """The active sales of several days (at most 366) that the actor may see, in creation order,
+    in one query. The same sales as ``sales_for_day_for`` gives day by day."""
+    if len(wanted_days) > MAX_DAYS_PER_QUERY:
+        raise ValueError(f"at most {MAX_DAYS_PER_QUERY} days at a time")
+    allowed = visible_signs(db, actor)
+    if not wanted_days or (allowed is not None and not allowed):
+        return []
+    query = _current(actor.agency_id).where(
+        ReportDay.day.in_(list(wanted_days)), Sale.status == SALE_ACTIVE
+    )
+    if allowed is not None:
+        query = query.where(Sale.staff_sign.in_(allowed))
+    return [_view(head, version, day) for head, version, day in db.execute(query.order_by(Sale.id))]
 
 
 def view_warnings(db: Session, actor: User, view: SaleView) -> tuple[str, ...]:

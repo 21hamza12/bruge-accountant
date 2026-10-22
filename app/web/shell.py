@@ -23,7 +23,7 @@ from fastapi import HTTPException
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app import accounts, flags, permissions
+from app import accounts, flags, partner_aliases, permissions
 from app.models import Agency, User
 from app.repository import awaiting_counts_by_sign, latest_report_date, sign_owners
 from app.web.deps import AuthContext
@@ -36,6 +36,7 @@ ACTIVE_STAFF = "staff"
 ACTIVE_PARTNERS = "partners"
 ACTIVE_SALE_NEW = "sale_new"
 ACTIVE_SALES = "sales"
+ACTIVE_DAYS = "days"
 ACTIVE_PROFILE = "profile"
 ACTIVE_FLAGS = "flags"
 
@@ -64,6 +65,7 @@ class Shell:
     latest_day: date | None
     badge: int
     flag_badge: int  # open blocking comparison flags the viewer may see ("Écarts")
+    pending_aliases: int  # agency names waiting for a decision (who may manage partners)
     agents: tuple[AgentNav, ...]  # managers only
     owners: Mapping[str, str]  # managers only: sign to person
     my_signs: tuple[str, ...]  # staff only: the signs linked to them
@@ -115,6 +117,9 @@ def build_shell(db: Session, auth: AuthContext, active: str) -> Shell:
         if sees_all
         else ()
     )
+    pending = (
+        partner_aliases.pending_count(db, agency_id) if permissions.can_manage_partners(user) else 0
+    )
     return Shell(
         agency=agency,
         user=user,
@@ -131,6 +136,7 @@ def build_shell(db: Session, auth: AuthContext, active: str) -> Shell:
         latest_day=day,
         badge=sum(counts.values()),
         flag_badge=flags.open_blocking_count(db, user),
+        pending_aliases=pending,
         agents=agents,
         owners=owners,
         my_signs=my_signs,

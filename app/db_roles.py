@@ -60,6 +60,8 @@ GRANTS = {
     # (and the facts that follow the ticket) change, through ``app/flags.py``.
     "comparison_runs": "SELECT, INSERT",
     "comparison_flags": "SELECT, INSERT, UPDATE",
+    # Phase B6 (migration 0010). Alias proposals are decided in place: no DELETE.
+    "partner_aliases": "SELECT, INSERT, UPDATE",
 }
 # The tables migration 0003 grants on, frozen. 0003 passes this to ``apply_grants`` instead of
 # relying on GRANTS, which later phases extend: a fresh ``alembic upgrade head`` runs 0003 before

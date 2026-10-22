@@ -17,6 +17,7 @@
   <span class="muted">{{ _("Aucun billet pour cette date (%(date)s)", date=day|date_fr) }}</span>
   {% endif %}
   <a class="btn" href="/sales?date={{ day.isoformat() }}">{{ icon("list", small=true) }}{{ _("Ventes du jour") }}</a>
+  <a class="btn" href="/days/{{ day.isoformat() }}">{{ icon("stats", small=true) }}{{ _("Journée du %(date)s", date=day|date_fr) }}</a>
   <form class="date-form" method="get" action="/">
     <label for="date">{{ _("Jour") }}</label>
     <input id="date" name="date" type="date" value="{{ day.isoformat() }}" required aria-describedby="date-readout">

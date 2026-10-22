@@ -14,6 +14,21 @@
 </div>
 {% endif %}
 
+{% if ask %}
+<section class="card{% if not ask.exact %} notice{% endif %}" aria-labelledby="ask-title">
+  <h2 class="card-title" id="ask-title">{{ _("Agence du texte collé") }}</h2>
+  <p>
+    {% if ask.text %}{{ _("Agence : %(text)s.", text=ask.text) }}{% else %}{{ _("Aucune agence dans le texte.") }}{% endif %}
+    {% if ask.kind == "partner" %}{{ _("Reconnue comme partenaire %(name)s", name=ask.partner_name) }}{% if ask.fee is not none %} ({{ _("frais %(fee)s %(cur)s/billet", fee=ask.fee | money_fr, cur=agency.currency) }}){% endif %}.
+    {% elif ask.kind == "direct" %}{{ _("Reconnue comme vente directe BRUGE.") }}
+    {% elif ask.kind == "suggest" %}{{ _("Aucun partenaire de ce nom ; suggestion : %(name)s.", name=ask.partner_name) }}
+    {% else %}{{ _("Aucun partenaire reconnu.") }}{% endif %}
+  </p>
+  {% if ask.reason %}<p class="help"><strong>{{ _("Attention") }}</strong> : {{ ask.reason }}.</p>{% endif %}
+  <p>{{ _("Votre réponse") }} : <strong>{{ answer }}</strong> {{ _("Si ce n'est pas le bon partenaire, utilisez « Modifier ».") }}</p>
+</section>
+{% endif %}
+
 <section class="card" aria-labelledby="readback-title">
   <h2 class="card-title" id="readback-title">{{ _("Billets") }}</h2>
   {{ ticket_table(v.tickets, _("Billets de la vente (défilement horizontal)")) }}

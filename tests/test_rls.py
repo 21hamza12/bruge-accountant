@@ -28,6 +28,7 @@ from app.models import (
     ComparisonRun,
     DayEvent,
     Partner,
+    PartnerAlias,
     PartnerFee,
     RateLimitBucket,
     ReportDay,
@@ -64,6 +65,7 @@ SCOPED_MODELS: list[Any] = [
     AuditEvent,
     AmadeusLine,
     Partner,
+    PartnerAlias,
     PartnerFee,
     ReportDay,
     DayEvent,
@@ -240,6 +242,13 @@ def rows_for_agency_b(b: Tenant) -> dict[str, Any]:
             valid_from=date(2026, 1, 1),
             set_by_user_id=b.user_id,
         ),
+        "partner_aliases": PartnerAlias(
+            agency_id=b.agency_id,
+            partner_id=b.partner_id,
+            alias="Forged",
+            alias_key="forged",
+            proposed_by_user_id=b.user_id,
+        ),
         "report_days": ReportDay(agency_id=b.agency_id, day=date(2026, 10, 19), status="open"),
         "day_events": DayEvent(
             agency_id=b.agency_id,
@@ -304,6 +313,7 @@ def rows_for_agency_b(b: Tenant) -> dict[str, Any]:
         "uploads",
         "partners",
         "partner_fees",
+        "partner_aliases",
         "report_days",
         "day_events",
         "sales",
@@ -644,6 +654,14 @@ def test_the_app_role_cannot_delete_partners(app_role_world: World) -> None:
             s.execute(delete(Partner))
 
 
+def test_the_app_role_cannot_delete_partner_aliases(app_role_world: World) -> None:
+    db, a, _ = app_role_world
+    with app_session(db) as s:
+        bind_tenant(s, a.agency_id)
+        with pytest.raises(ProgrammingError, match="permission denied"):
+            s.execute(delete(PartnerAlias))
+
+
 # --- report days and sales (migration 0008) -----------------------------------------
 
 
@@ -933,6 +951,7 @@ def test_the_exact_policies_installed(world: World) -> None:
             "user_sessions",
             "temporary_passwords",
             "partners",
+            "partner_aliases",
             "report_days",
             "sales",
             "sale_tickets",

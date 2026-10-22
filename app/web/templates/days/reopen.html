@@ -1,0 +1,20 @@
+{% extends "base.html" %}
+{% block title %}{{ _("Rouvrir la journée") }}{% endblock %}
+{% block content %}
+<p><a class="card-link card-link-back" href="/days/{{ day.isoformat() }}">{{ _("Retour à la journée") }}</a></p>
+{% if error %}<p class="error-box" id="form-error" role="alert" tabindex="-1" autofocus>{{ error }}</p>{% endif %}
+<section class="card" aria-labelledby="reopen-title">
+  <h2 class="card-title" id="reopen-title">{{ _("Rouvrir la journée du %(date)s ?", date=day | date_fr) }}</h2>
+  <form class="form" method="post" action="/days/{{ day.isoformat() }}/reopen">
+    {% include "_csrf.html" %}
+    <div class="field">
+      <label for="reason">{{ _("Motif (5 caractères au moins)") }}</label>
+      <input id="reason" name="reason" type="text" required maxlength="500" autocomplete="off" value="{{ reason }}">
+    </div>
+    <div class="actions">
+      <button class="btn btn-primary" type="submit">{{ _("Rouvrir la journée") }}</button>
+      <a class="btn" href="/days/{{ day.isoformat() }}">{{ _("Annuler") }}</a>
+    </div>
+  </form>
+</section>
+{% endblock %}

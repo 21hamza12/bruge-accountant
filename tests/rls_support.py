@@ -16,6 +16,7 @@ from app.models import (
     ComparisonRun,
     DayEvent,
     Partner,
+    PartnerAlias,
     PartnerFee,
     ReportDay,
     Sale,
@@ -91,6 +92,15 @@ def seed_tenant(owner_url: str, slug: str, phone: str, token_hash: str, doc_base
                     fee=Decimal("500"),
                     valid_from=date(2026, 1, 1),
                     set_by_user_id=user.id,
+                )
+            )
+            s.add(
+                PartnerAlias(
+                    agency_id=agency_id,
+                    partner_id=partner.id,
+                    alias="BADI VOYAGES",
+                    alias_key="badi voyages",
+                    proposed_by_user_id=user.id,
                 )
             )
             s.commit()

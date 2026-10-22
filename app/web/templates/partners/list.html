@@ -2,6 +2,66 @@
 {% block title %}{{ _("Partenaires") }}{% endblock %}
 {% block content %}
 {% if error %}<p class="error-box" id="form-error" role="alert" tabindex="-1" autofocus>{{ error }}</p>{% endif %}
+{% if aliases %}
+<section class="card notice" aria-labelledby="aliases-title">
+  <h2 class="card-title" id="aliases-title">{{ _("Noms d'agence à valider") }}</h2>
+  <p class="help">{{ _("Ces noms ont été vus dans un texte Amadeus et associés à un partenaire par un agent. Un nom validé est reconnu automatiquement ensuite ; un nom refusé n'est plus proposé.") }}</p>
+  <div class="table-wrap" tabindex="0" role="region" aria-label="{{ _('Noms d agence à valider (défilement horizontal)') }}">
+    <table class="table" aria-labelledby="aliases-title">
+      <thead>
+        <tr><th scope="col">{{ _("Nom vu") }}</th><th scope="col">{{ _("Partenaire proposé") }}</th><th scope="col">{{ _("Proposé par") }}</th><th scope="col">{{ _("Proposé le") }}</th><th scope="col">{{ _("Décision") }}</th></tr>
+      </thead>
+      <tbody>
+      {% for item in aliases %}
+        <tr>
+          <td>{{ item.alias.alias }}</td>
+          <td>{{ item.partner_name }}</td>
+          <td>{{ item.by or "-" }}</td>
+          <td>{{ item.alias.created_at | date_fr }}</td>
+          <td>
+            <form class="inline-form" method="post" action="/partners/aliases/{{ item.alias.id }}/approve">
+              {% include "_csrf.html" %}
+              <button class="btn btn-primary" type="submit">{{ _("Valider") }}<span class="visually-hidden"> {{ item.alias.alias }}</span></button>
+            </form>
+            <form class="inline-form" method="post" action="/partners/aliases/{{ item.alias.id }}/reject">
+              {% include "_csrf.html" %}
+              <button class="btn btn-danger" type="submit">{{ _("Refuser") }}<span class="visually-hidden"> {{ item.alias.alias }}</span></button>
+            </form>
+            <form class="inline-form" method="post" action="/partners/aliases/{{ item.alias.id }}/reassign">
+              {% include "_csrf.html" %}
+              <label class="visually-hidden" for="reassign-{{ item.alias.id }}">{{ _("Autre partenaire pour %(name)s", name=item.alias.alias) }}</label>
+              <select id="reassign-{{ item.alias.id }}" name="partner_id">
+                {% for p in active_partners %}{% if p.id != item.alias.partner_id %}<option value="{{ p.id }}">{{ p.name }}</option>{% endif %}{% endfor %}
+              </select>
+              <button class="btn" type="submit">{{ _("Valider pour cet autre partenaire") }}</button>
+            </form>
+          </td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+{% endif %}
+{% if alias_cap %}<p class="error-box" role="status">{{ _("Il y a trop de noms en attente : validez ou refusez-en avant que de nouveaux soient proposés.") }}</p>{% endif %}
+{% if rejected %}
+<section class="card" aria-labelledby="rejected-title">
+  <h2 class="card-title" id="rejected-title">{{ _("Noms refusés") }}</h2>
+  <p class="help">{{ _("Ces noms ne sont plus proposés. Réactivez-en un pour qu'il soit de nouveau à valider.") }}</p>
+  <ul class="list-plain">
+    {% for item in rejected %}
+    <li>
+      {{ item.alias.alias }} ({{ item.partner_name }})
+      <form class="inline-form" method="post" action="/partners/aliases/{{ item.alias.id }}/reactivate">
+        {% include "_csrf.html" %}
+        <button class="btn" type="submit">{{ _("Réactiver") }}<span class="visually-hidden"> {{ item.alias.alias }}</span></button>
+      </form>
+    </li>
+    {% endfor %}
+  </ul>
+</section>
+{% endif %}
+
 <section class="card" aria-labelledby="partners-title">
   <h2 class="card-title" id="partners-title">{{ _("Partenaires") }}</h2>
   {% if rows %}

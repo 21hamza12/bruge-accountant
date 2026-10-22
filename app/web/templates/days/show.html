@@ -1,0 +1,139 @@
+{% extends "base.html" %}
+{% block title %}{{ _("Journée du %(date)s", date=day | date_fr) }}{% endblock %}
+{% block content %}
+<p><a class="card-link card-link-back" href="/days">{{ _("Toutes les journées") }}</a></p>
+{% if error %}<p class="error-box" id="form-error" role="alert" tabindex="-1" autofocus>{{ error }}</p>{% endif %}
+<div class="toolbar">
+  <span class="status-line">
+    {% if status %}<span class="pill pill-neutral">{{ status_label }}{% if closed_on and not sees_all %} {{ _("le %(date)s", date=closed_on | date_fr) }}{% endif %}</span>{% endif %}
+    {% if received %}{{ _("Rapport Amadeus : reçu") }}{% else %}<span class="muted">{{ _("Rapport Amadeus : non reçu") }}</span>{% endif %}
+  </span>
+  <a class="btn" href="/sales?date={{ day.isoformat() }}">{{ _("Ventes du jour") }}</a>
+  {% if can_close %}<a class="btn btn-primary" href="/days/{{ day.isoformat() }}/close">{{ _("Clôturer la journée") }}</a>{% endif %}
+  {% if can_reopen %}<a class="btn" href="/days/{{ day.isoformat() }}/reopen">{{ _("Rouvrir la journée") }}</a>{% endif %}
+</div>
+
+<section class="card" aria-labelledby="totals-title">
+  <h2 class="card-title" id="totals-title">{{ _("Totaux du jour") }}</h2>
+  <dl class="kv">
+    <dt>{{ _("Ventes") }}</dt><dd class="num">{{ totals.sales }}</dd>
+    <dt>{{ _("Billets") }}</dt><dd class="num">{{ totals.tickets }}</dd>
+    <dt>{{ _("Coût total") }}</dt><dd class="num">{{ totals.cost | money_fr }} {{ agency.currency }}</dd>
+    <dt>{{ _("P.B total") }}</dt><dd class="num">{{ totals.revenue | money_fr }} {{ agency.currency }}</dd>
+    <dt>{{ _("Profit") }}</dt><dd class="num">{{ totals.profit | money_fr }} {{ agency.currency }}</dd>
+  </dl>
+  {% if signs %}
+  <div class="table-wrap" tabindex="0" role="region" aria-label="{{ _('Totaux par signe (défilement horizontal)') }}">
+    <table class="table" id="sign-totals">
+      <caption class="visually-hidden">{{ _("Totaux par signe") }}</caption>
+      <thead>
+        <tr>
+          <th scope="col">{{ _("Signe") }}</th>
+          <th scope="col" class="col-end">{{ _("Ventes") }}</th>
+          <th scope="col" class="col-end">{{ _("Billets") }}</th>
+          <th scope="col" class="col-end">{{ _("Coût") }}</th>
+          <th scope="col" class="col-end">{{ _("P.B") }}</th>
+          <th scope="col" class="col-end">{{ _("Profit") }}</th>
+        </tr>
+      </thead>
+      <tbody>
+      {% for t in signs %}
+        <tr>
+          <th scope="row" class="mono">{{ t.staff_sign }}</th>
+          <td class="num col-end">{{ t.sales }}</td>
+          <td class="num col-end">{{ t.tickets }}</td>
+          <td class="num col-end">{{ t.cost | money_fr }}</td>
+          <td class="num col-end">{{ t.revenue | money_fr }}</td>
+          <td class="num col-end">{{ t.profit | money_fr }}</td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% endif %}
+</section>
+
+<section class="card" aria-labelledby="tjq-title">
+  <h2 class="card-title" id="tjq-title">{{ _("TJQ AVANT") }}</h2>
+  {% if groups %}
+  <div class="table-wrap" tabindex="0" role="region" aria-label="{{ _('Billets du jour (défilement horizontal)') }}">
+    <table class="table table-day">
+      <caption class="visually-hidden">{{ _("TJQ AVANT : billets du jour, groupés par vente") }}</caption>
+      <thead>
+        <tr>
+          <th scope="col">{{ _("DOC NUMBER") }}</th>
+          <th scope="col">{{ _("A/L") }}</th>
+          <th scope="col" class="col-end">{{ _("TOTAL DOC") }}</th>
+          <th scope="col">{{ _("PAX NAME") }}</th>
+          <th scope="col">{{ _("Type") }}</th>
+          <th scope="col">{{ _("AS") }}</th>
+          <th scope="col">{{ _("RLOC") }}</th>
+          <th scope="col">{{ _("TRNC") }}</th>
+          <th scope="col" class="col-end">{{ _("P.B") }}</th>
+          <th scope="col">{{ _("AG") }}</th>
+          <th scope="col">{{ _("CLT") }}</th>
+        </tr>
+      </thead>
+      {% for g in groups %}
+      <tbody class="sale-group">
+        <tr class="sale-head">
+          <th scope="rowgroup" colspan="11"><a href="/sales/{{ g.sale_id }}">{{ _("Vente #%(id)s", id=g.sale_id) }}</a> · {{ ngettext("%(num)d billet", "%(num)d billets", g.ticket_count) }} · {{ _("P.B") }} {{ g.pb | money_fr }}</th>
+        </tr>
+        {% for l in g.lines %}
+        <tr>
+          <td class="mono">{{ l.row.doc_number }}</td>
+          <td>{{ l.row.airline }}</td>
+          <td class="num col-end">{{ l.row.total_doc | money_fr }}</td>
+          <td>{{ l.row.pax_name }}</td>
+          <td>{{ l.row.pax_type }}</td>
+          <td class="mono">{{ l.row.staff_sign }}</td>
+          <td class="mono">{{ l.row.rloc }}</td>
+          <td>{{ l.row.trnc }}</td>
+          <td class="num col-end">{{ l.row.pb_line | money_fr }}</td>
+          <td>{{ l.ag }}</td>
+          <td>{{ l.clt }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+      {% endfor %}
+    </table>
+  </div>
+  {% else %}
+  <p class="muted">{{ _("Aucune vente ce jour.") }}</p>
+  {% endif %}
+</section>
+
+<section class="card" aria-labelledby="report-title">
+  <h2 class="card-title" id="report-title">{{ _("Rapport Amadeus") }}</h2>
+  {% if upload %}
+  <dl class="kv" id="upload-details">
+    <dt>{{ _("Statut") }}</dt><dd>{{ _("Reçu") }}</dd>
+    <dt>{{ _("Fichier") }}</dt><dd>{{ upload.upload.filename }}</dd>
+    <dt>{{ _("Envoyé le") }}</dt><dd>{{ upload.upload.uploaded_at | datetime_fr }}</dd>
+    <dt>{{ _("Envoyé par") }}</dt><dd>{% if uploader and uploader[0] %}{{ uploader[0] }}{% else %}—{% endif %}</dd>
+    <dt>{{ _("Lignes") }}</dt><dd class="num">{{ upload.lines }}</dd>
+    <dt>{{ _("Annulées") }}</dt><dd class="num">{{ upload.cancelled }}</dd>
+  </dl>
+  {% elif received %}
+  <p id="upload-received">{{ _("Reçu.") }}</p>
+  {% else %}
+  <p class="muted" id="upload-missing">{{ _("Rapport Amadeus : non reçu.") }}</p>
+  {% endif %}
+</section>
+
+{% if sees_all and events %}
+<section class="card" aria-labelledby="events-title">
+  <h2 class="card-title" id="events-title">{{ _("Historique de la journée") }}</h2>
+  <ul class="history">
+    {% for item in events %}
+    <li>
+      {% if item.e.kind == "close" %}{{ _("Clôturée") }}{% elif item.e.kind == "reopen" %}{{ _("Rouverte") }}{% elif item.e.kind == "open" %}{{ _("Ouverte") }}{% else %}{{ item.e.kind }}{% endif %}
+      · {{ item.e.created_at | datetime_fr }}
+      · {% if item.actor and item.actor[0] %}{{ item.actor[0] }}{% else %}—{% endif %}
+      {% if item.e.reason %}<br><span class="muted">{{ _("Motif") }} : {{ item.e.reason }}</span>{% endif %}
+    </li>
+    {% endfor %}
+  </ul>
+</section>
+{% endif %}
+{% endblock %}

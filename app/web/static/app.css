@@ -1813,3 +1813,13 @@ details.field summary {
 .table-sale {
   min-inline-size: 34rem;
 }
+
+.table-day {
+  min-inline-size: 60rem;
+}
+
+.table-day .sale-head th {
+  text-align: start;
+  background: var(--subtle);
+  border-block-start: 2px solid var(--border);
+}

@@ -16,6 +16,21 @@ from fastapi import HTTPException, Path, Query
 
 MAX_DB_ID = 2**63 - 1
 
+_DB_ID = re.compile(r"[0-9]{1,19}", re.ASCII)
+
+
+def parse_db_id(raw: object) -> int | None:
+    """A database id typed or posted as text: ASCII digits only (no ``²`` or full-width digits,
+    which ``str.isdigit`` accepts and ``int`` refuses), 1 to ``MAX_DB_ID``. None otherwise."""
+    if not isinstance(raw, str):
+        return None
+    text = raw.strip()
+    if _DB_ID.fullmatch(text) is None:
+        return None
+    value = int(text)
+    return value if 1 <= value <= MAX_DB_ID else None
+
+
 DbId = Annotated[int, Path(ge=1, le=MAX_DB_ID)]  # any BIGINT id in a path
 UserId = Annotated[int, Path(ge=1, le=MAX_DB_ID)]
 SignId = Annotated[int, Path(ge=1, le=MAX_DB_ID)]

@@ -13,6 +13,28 @@
   {% if can_reopen %}<a class="btn" href="/days/{{ day.isoformat() }}/reopen">{{ _("Rouvrir la journée") }}</a>{% endif %}
 </div>
 
+{% if gate %}
+<section class="card" aria-labelledby="gate-title">
+  <h2 class="card-title" id="gate-title">{{ _("Avant de clôturer") }}</h2>
+  {% if gate.reasons %}
+  <ul class="list-plain">
+    {% for reason in gate.reasons %}<li>{{ reason }}</li>
+    {% endfor %}
+  </ul>
+  {% if gate.stale %}<p class="muted">{{ _("La comparaison sera relancée à la clôture : des ventes ou le rapport ont changé depuis.") }}</p>{% endif %}
+  {% if can_acknowledge %}
+  <form class="inline-form" method="post" action="/days/{{ day.isoformat() }}/partner-list">
+    {% include "_csrf.html" %}
+    <button class="btn btn-primary" type="submit">{{ _("J'ai vu la liste") }}</button>
+  </form>
+  {% endif %}
+  {% else %}
+  <p>{{ _("Tout est réglé : la journée peut être clôturée.") }}</p>
+  {% if gate.stale %}<p class="muted">{{ _("La comparaison sera relancée à la clôture : des ventes ou le rapport ont changé depuis.") }}</p>{% endif %}
+  {% endif %}
+</section>
+{% endif %}
+
 {% if received %}
 <section class="card" aria-labelledby="comparison-title">
   <h2 class="card-title" id="comparison-title">{{ _("Comparaison avec le rapport Amadeus") }}</h2>

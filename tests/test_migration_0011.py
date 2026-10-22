@@ -205,11 +205,10 @@ def _names(url: str, kind: str) -> list[str]:
 # --- chain and shape ---------------------------------------------------------------------------
 
 
-def test_0011_follows_0010_and_is_the_single_head() -> None:
+def test_0011_follows_0010() -> None:
     script = ScriptDirectory.from_config(alembic_config("sqlite://"))
     revision = script.get_revision("0011")
     assert revision is not None and revision.down_revision == "0010"
-    assert script.get_heads() == ["0011"]
 
 
 def test_grants_follow_the_design() -> None:

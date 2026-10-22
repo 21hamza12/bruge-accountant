@@ -57,7 +57,7 @@ order. Spec: [05-daily-comparison.md](05-daily-comparison.md); partners: [06](06
 | **B6** Pasted text | `PastedTicketParser` interface + placeholder format + fixtures; fills the B5 form | – | **yes** |
 | **B7** Day page | app TJQ AVANT per day, totals, status | – | – |
 | **B8** Comparison | pure `compare()`; flags; run after upload; moved-to-later-day; re-run keeps decisions; closed day refuses uploads | 0009: `comparison_flags` | **yes** |
-| **B9** Approvals | agent answers; validator for cost/ticket no/type (not their own answer); close; reopen (manager, reason) | 0010: `flag_decisions` | **yes** |
+| **B9** Approvals | agent answers; validator for cost/ticket no/type (not their own answer); close; reopen (manager, reason) | 0013: `flag_decisions`, `day_acknowledgements` (numbers were shifted by the phases before it; see `app/approvals.py` for the rules, the close gate and what B10 calls) | **yes** |
 | **B10** TJQ APRES | build at close, store versions, download (accountant/manager); highlighted corrections with comments; totals; neutralised cells | 0011: `day_exports` | **yes** |
 | **B11** Acceptance | synthetic 20 Oct end-to-end (34 lines, 624 126, 9 cancelled); local real-file check skipped when `intake/` files absent | – | – |
 

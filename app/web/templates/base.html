@@ -52,6 +52,12 @@
           <span class="nav-label">{{ icon("check") }}{{ _("Écarts") }}</span>
           {% if shell.flag_badge %}<span class="badge">{{ shell.flag_badge }}<span class="visually-hidden"> {{ _("à traiter") }}</span></span>{% endif %}
         </a>
+        {% if shell.can_validate %}
+        <a class="nav-link" href="/flags/validate"{% if shell.active == "validate" %} aria-current="page"{% endif %}>
+          <span class="nav-label">{{ icon("check") }}{{ _("À valider") }}</span>
+          {% if shell.validate_badge %}<span class="badge">{{ shell.validate_badge }}<span class="visually-hidden"> {{ _("en attente de validation") }}</span></span>{% endif %}
+        </a>
+        {% endif %}
         <a class="nav-link" href="/days"{% if shell.active == "days" %} aria-current="page"{% endif %}>
           <span class="nav-label">{{ icon("stats") }}{{ _("Journées") }}</span>
         </a>

@@ -492,12 +492,13 @@ def test_a_run_is_audited_with_ids_and_counts_only(w: FlagWorld) -> None:
 
 
 def test_only_flags_py_writes_flags() -> None:
-    """The status of a flag changes only through app/flags.py (docs: mutable status only there)."""
+    """The status of a flag changes only through app/flags.py and its merge, and (B9) through the
+    compare-and-set of app/approvals.py, where an agent's answer or a validator's decision lands."""
     root = Path(__file__).resolve().parent.parent / "app"
     offenders = [
         str(path.relative_to(root))
         for path in root.rglob("*.py")
-        if path.name not in {"flags.py", "flag_merge.py", "models.py"}
+        if path.name not in {"flags.py", "flag_merge.py", "models.py", "approvals.py"}
         and re.search(r"\bComparisonFlag\b", path.read_text(encoding="utf-8"))
     ]
     assert offenders == []

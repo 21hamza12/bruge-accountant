@@ -53,6 +53,7 @@
           <th scope="col">{{ _("Amadeus") }}</th>
           <th scope="col">{{ _("Signe") }}</th>
           <th scope="col">{{ _("Statut") }}</th>
+          <th scope="col">{{ _("Réponse") }}</th>
         </tr>
       </thead>
       <tbody>
@@ -65,6 +66,59 @@
           <td class="num">{{ row.amadeus_value }}</td>
           <td class="mono">{{ row.sign }}</td>
           <td>{{ row.status }}</td>
+          <td>
+            {% if row.note %}<p class="muted">{{ row.note }}</p>{% endif %}
+            {% if row.hint %}<p class="muted">{{ row.hint }}</p>{% endif %}
+            {% if row.actions %}
+            <div class="flag-actions">
+              {% if "amadeus_right" in row.actions %}
+              <form class="inline-form" method="post" action="/flags/{{ row.id }}/answer">
+                {% include "_csrf.html" %}
+                <input type="hidden" name="choice" value="amadeus_right">
+                <button class="btn" type="submit">{{ _("Amadeus a raison") }}</button>
+              </form>
+              {% endif %}
+              {% if "mine_right" in row.actions %}
+              <details>
+                <summary class="btn">{{ _("Ma valeur est juste") }}</summary>
+                <form class="form" method="post" action="/flags/{{ row.id }}/answer">
+                  {% include "_csrf.html" %}
+                  <input type="hidden" name="choice" value="mine_right">
+                  <div class="field">
+                    <label for="mine-{{ row.id }}">{{ _("Motif (5 caractères au moins)") }}</label>
+                    <input id="mine-{{ row.id }}" name="reason" type="text" required minlength="5" maxlength="500" autocomplete="off">
+                  </div>
+                  <button class="btn btn-primary" type="submit">{{ _("Envoyer") }}</button>
+                </form>
+              </details>
+              {% endif %}
+              {% if "void_entry" in row.actions %}
+              <details>
+                <summary class="btn">{{ _("Annuler la vente") }}</summary>
+                <form class="form" method="post" action="/flags/{{ row.id }}/answer">
+                  {% include "_csrf.html" %}
+                  <input type="hidden" name="choice" value="void_entry">
+                  <div class="field">
+                    <label for="void-{{ row.id }}">{{ _("Motif (5 caractères au moins)") }}</label>
+                    <input id="void-{{ row.id }}" name="reason" type="text" required minlength="5" maxlength="500" autocomplete="off">
+                  </div>
+                  <button class="btn btn-primary" type="submit">{{ _("Annuler la vente") }}</button>
+                </form>
+              </details>
+              {% endif %}
+              {% if "acknowledged" in row.actions %}
+              <form class="inline-form" method="post" action="/flags/{{ row.id }}/answer">
+                {% include "_csrf.html" %}
+                <input type="hidden" name="choice" value="acknowledged">
+                <button class="btn" type="submit">{{ _("Attendre le prochain rapport") }}</button>
+              </form>
+              {% endif %}
+              {% if "enter" in row.actions %}
+              <a class="btn" href="/flags/{{ row.id }}/enter">{{ _("Saisir cette vente") }}</a>
+              {% endif %}
+            </div>
+            {% endif %}
+          </td>
         </tr>
       {% endfor %}
       </tbody>
@@ -96,6 +150,12 @@
     {% for t in summary.partner_not_in_report %}<li><span class="mono">{{ t.doc_number }}</span> · {{ t.pax_name }} · <span class="mono">{{ t.staff_sign }}</span> · {{ t.total_doc | money_fr }} {{ agency.currency }}</li>
     {% endfor %}
   </ul>
+  {% if partner_open %}
+  <form class="inline-form" method="post" action="/days/{{ day.isoformat() }}/partner-list">
+    {% include "_csrf.html" %}
+    <button class="btn btn-primary" type="submit">{{ _("J'ai vu la liste") }}</button>
+  </form>
+  {% endif %}
   {% else %}
   <p class="muted">{{ _("Aucun billet partenaire absent.") }}</p>
   {% endif %}

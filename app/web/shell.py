@@ -23,7 +23,7 @@ from fastapi import HTTPException
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app import accounts, flags, partner_aliases, permissions
+from app import accounts, approvals, partner_aliases, permissions
 from app.models import Agency, User
 from app.repository import awaiting_counts_by_sign, latest_report_date, sign_owners
 from app.web.deps import AuthContext
@@ -39,6 +39,7 @@ ACTIVE_SALES = "sales"
 ACTIVE_DAYS = "days"
 ACTIVE_PROFILE = "profile"
 ACTIVE_FLAGS = "flags"
+ACTIVE_VALIDATE = "validate"
 
 
 @dataclass(frozen=True)
@@ -65,6 +66,8 @@ class Shell:
     latest_day: date | None
     badge: int
     flag_badge: int  # open blocking comparison flags the viewer may see ("Écarts")
+    can_validate: bool  # manager, accountant: the "À valider" screen
+    validate_badge: int  # answers and fee overrides waiting for a validator ("À valider")
     pending_aliases: int  # agency names waiting for a decision (who may manage partners)
     agents: tuple[AgentNav, ...]  # managers only
     owners: Mapping[str, str]  # managers only: sign to person
@@ -135,7 +138,9 @@ def build_shell(db: Session, auth: AuthContext, active: str) -> Shell:
         active=active,
         latest_day=day,
         badge=sum(counts.values()),
-        flag_badge=flags.open_blocking_count(db, user),
+        flag_badge=approvals.to_answer_count(db, user),
+        can_validate=permissions.can_validate_money(user),
+        validate_badge=approvals.to_validate_count(db, user),
         pending_aliases=pending,
         agents=agents,
         owners=owners,

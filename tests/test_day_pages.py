@@ -14,6 +14,7 @@ from html.parser import HTMLParser
 import pytest
 from fastapi.testclient import TestClient
 
+from app import approvals
 from app import sales as sales_service
 from app.auth import ratelimit
 from app.ingest import ingest_report
@@ -51,6 +52,14 @@ from tests.web_support import (
 )
 
 __all__ = ["env"]
+
+
+@pytest.fixture(autouse=True)
+def gate_open(monkeypatch: pytest.MonkeyPatch) -> None:
+    """These tests are about closing and reopening, on days that have no Amadeus report: the close
+    gate (B9) is switched off here and tested for real in tests/test_close_gate.py and
+    tests/test_approval_pages.py."""
+    monkeypatch.setattr(approvals, "can_close", lambda *args, **kwargs: [])
 
 
 @pytest.fixture
@@ -668,7 +677,7 @@ def test_every_post_route_of_the_day_pages_has_csrf_on_its_router() -> None:
         for r in days.router.routes
         if isinstance(r, APIRoute) and "POST" in (r.methods or ())
     }
-    assert posts == {"/days/{day}/close", "/days/{day}/reopen"}
+    assert posts == {"/days/{day}/close", "/days/{day}/reopen", "/days/{day}/partner-list"}
     assert any(d.dependency is csrf_protect for d in days.router.dependencies)
 
 

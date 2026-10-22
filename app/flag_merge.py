@@ -17,8 +17,9 @@ Used by ``app/flags.py``; the callers hold the day lock (``FOR UPDATE``) and own
   Becoming approved is audited.
 * Signs are stored stripped and upper-cased (``norm_sign``); a blank sign is stored as ``""`` and is
   visible to manager and accountant only, since no staff member's sign is blank.
-* TODO B9: a sale edited, voided or moved after a comparison makes the flags stale. B9 must re-run
-  the comparison (or make the close gate run it first) before it trusts the flags.
+* A sale edited, voided or moved after a comparison makes the flags stale. B9 (``app/approvals.py``)
+  runs the comparison again after every decision that edits or voids a sale, and the close gate
+  runs it first when ``flags.is_current`` says the flags no longer match the sales or the report.
 """
 
 from __future__ import annotations

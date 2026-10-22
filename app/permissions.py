@@ -66,6 +66,12 @@ def can_use_sales_screens(user: User) -> bool:
     return can_enter_own_sales(user) or can_edit_any_entry(user)
 
 
+def can_answer_flags(user: User) -> bool:
+    """Answer a comparison flag (B9): staff for the flags of their own signs, manager and
+    accountant for any flag. Which flags a staff member may see is decided by app/flags.py."""
+    return can_use_sales_screens(user)
+
+
 def can_reissue_password_for(actor: User, target: User) -> bool:
     """``actor`` may issue a temporary password to ``target``: only a staff manager, and only for
     staff or an accountant (never for a manager, themselves included, nor an unknown role)."""

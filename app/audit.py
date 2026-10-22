@@ -66,6 +66,11 @@ DAY_REOPENED = "day_reopened"
 COMPARISON_RUN = "comparison_run"
 COMPARISON_SUPERSEDED = "comparison_flags_superseded"
 DAY_APPROVED = "day_approved"
+FLAG_ANSWERED = "flag_answered"
+FLAG_VALIDATED = "flag_validated"
+FLAG_REJECTED = "flag_rejected"
+OVERRIDE_VALIDATED = "override_validated"
+PARTNER_LIST_ACKNOWLEDGED = "partner_list_acknowledged"
 
 _SECRET_KEY = re.compile(r"password|passwd|token|secret|hash|csrf|cookie|credential", re.IGNORECASE)
 

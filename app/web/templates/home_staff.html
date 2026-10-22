@@ -17,7 +17,7 @@
     <a class="btn btn-primary btn-lg" href="/uploads/new">{{ icon("upload", small=true) }}{{ _("Envoyer un rapport") }}</a>
   </section>
 {% else %}
-  <p class="greeting-sub">{{ day|date_fr(weekday=True) }} · {% for sign in shell.my_signs %}<span class="mono">{{ sign }}</span>{% if not loop.last %}, {% endif %}{% endfor %}</p>
+  <p class="greeting-sub">{{ day|date_fr(weekday=True) }} · {% for sign in shell.my_signs %}<span class="mono">{{ sign }}</span>{% if not loop.last %}, {% endif %}{% endfor %} · <a href="/days/{{ day.isoformat() }}">{{ _("Voir la journée") }}</a></p>
   {% if not summary.ticket_count %}
   <section class="card empty">
     <h2 class="empty-title">{{ _("Aucun billet pour cette date") }}</h2>

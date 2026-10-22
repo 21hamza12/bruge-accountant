@@ -1,0 +1,42 @@
+{% extends "base.html" %}
+{% block title %}{{ _("Journées") }}{% endblock %}
+{% block content %}
+<section class="card" aria-labelledby="days-title">
+  <h2 class="card-title" id="days-title">{{ _("Journées récentes") }}</h2>
+  {% if rows %}
+  <div class="table-wrap" tabindex="0" role="region" aria-label="{{ _('Journées (défilement horizontal)') }}">
+    <table class="table">
+      <caption class="visually-hidden">{{ _("Journées récentes") }}</caption>
+      <thead>
+        <tr>
+          <th scope="col">{{ _("Jour") }}</th>
+          <th scope="col">{{ _("Statut") }}</th>
+          <th scope="col" class="col-end">{{ _("Ventes") }}</th>
+          <th scope="col" class="col-end">{{ _("Billets") }}</th>
+          <th scope="col" class="col-end">{{ _("Coût") }}</th>
+          <th scope="col" class="col-end">{{ _("P.B") }}</th>
+          <th scope="col" class="col-end">{{ _("Profit") }}</th>
+          <th scope="col">{{ _("Rapport Amadeus") }}</th>
+        </tr>
+      </thead>
+      <tbody>
+      {% for row in rows %}
+        <tr>
+          <td><a href="/days/{{ row.r.day.isoformat() }}">{{ row.r.day | date_fr }}</a></td>
+          <td>{% if row.r.status == "closed" %}<span class="pill pill-neutral">{{ row.label }}</span>{% elif row.r.status == "approved" %}<span class="pill pill-green">{{ row.label }}</span>{% elif row.r.status == "compared" %}<span class="pill pill-accent">{{ row.label }}</span>{% elif row.r.status == "no_sales" %}<span class="pill pill-neutral">{{ row.label }}</span>{% else %}<span class="pill pill-amber">{{ row.label }}</span>{% endif %}</td>
+          <td class="num col-end">{{ row.r.sales }}</td>
+          <td class="num col-end">{{ row.r.tickets }}</td>
+          <td class="num col-end">{{ row.r.cost | money_fr }}</td>
+          <td class="num col-end">{{ row.r.revenue | money_fr }}</td>
+          <td class="num col-end">{{ row.r.profit | money_fr }}</td>
+          <td>{% if row.r.report_received %}{{ _("Reçu") }}{% else %}<span class="muted">{{ _("Non reçu") }}</span>{% endif %}</td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <p class="muted">{{ _("Aucune journée pour le moment.") }}</p>
+  {% endif %}
+</section>
+{% endblock %}

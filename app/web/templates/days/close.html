@@ -1,0 +1,17 @@
+{% extends "base.html" %}
+{% block title %}{{ _("Clôturer la journée") }}{% endblock %}
+{% block content %}
+<p><a class="card-link card-link-back" href="/days/{{ day.isoformat() }}">{{ _("Retour à la journée") }}</a></p>
+<section class="card" aria-labelledby="close-title">
+  <h2 class="card-title" id="close-title">{{ _("Clôturer la journée du %(date)s ?", date=day | date_fr) }}</h2>
+  <p>{{ ngettext("%(num)d billet", "%(num)d billets", totals.tickets) }} · {{ totals.revenue | money_fr }} {{ agency.currency }}</p>
+  <p class="muted">{{ _("Une journée clôturée refuse toute modification de ses ventes. Seul le gérant peut la rouvrir, avec un motif.") }}</p>
+  <form class="form" method="post" action="/days/{{ day.isoformat() }}/close">
+    {% include "_csrf.html" %}
+    <div class="actions">
+      <button class="btn btn-primary" type="submit">{{ _("Oui, clôturer la journée") }}</button>
+      <a class="btn" href="/days/{{ day.isoformat() }}">{{ _("Non, garder ouverte") }}</a>
+    </div>
+  </form>
+</section>
+{% endblock %}

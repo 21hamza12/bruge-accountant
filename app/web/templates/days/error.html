@@ -1,0 +1,6 @@
+{% extends "base.html" %}
+{% block title %}{{ _("Journée") }}{% endblock %}
+{% block content %}
+<p><a class="card-link card-link-back" href="/days">{{ _("Toutes les journées") }}</a></p>
+<p class="error-box" id="form-error" role="alert" tabindex="-1" autofocus>{{ error }}</p>
+{% endblock %}

@@ -165,12 +165,19 @@ def _too_many(
 
 
 def throttle(
-    db: Session, request: Request, auth: AuthContext, clock: Clock, *, write: bool
+    db: Session,
+    request: Request,
+    auth: AuthContext,
+    clock: Clock,
+    *,
+    write: bool,
+    limit: ratelimit.Limit | None = None,
 ) -> None:
     """Count this request against the user's budget (committed at once, so a failing request still
     counts) and raise the 429 when it is spent: ``SALE_WRITE_USER`` for a save, edit or void,
     the looser ``SALE_PREVIEW_USER`` for a read-back. The limit is read at call time."""
-    limit = ratelimit.SALE_WRITE_USER if write else ratelimit.SALE_PREVIEW_USER
+    if limit is None:
+        limit = ratelimit.SALE_WRITE_USER if write else ratelimit.SALE_PREVIEW_USER
     decision = ratelimit.hit(db, limit, str(auth.user.id), clock())
     db.commit()
     if not decision.allowed:

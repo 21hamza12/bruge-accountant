@@ -15,6 +15,7 @@
     {% endif %}
     <button class="btn" type="submit">{{ _("Afficher") }}</button>
   </form>
+  <a class="btn" href="/days/{{ day.isoformat() }}">{{ _("Voir la journée") }}</a>
   <a class="btn btn-primary" href="/sales/new">{{ _("Saisir une vente") }}</a>
 </div>
 

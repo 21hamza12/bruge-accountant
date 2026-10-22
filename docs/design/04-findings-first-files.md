@@ -122,3 +122,6 @@ What this means for each ticket:
 3. Why do some 495 tickets cost 0?
 4. Are ADM and refund lines always typed by hand into the partner sheet? Where do they come from?
 5. Code 495: which airline?
+7. Optional check: in a past TJQ APRES, how was a layover sale (one RM price, two tickets) written?
+   The app uses full price on the first ticket and 0 on the others (decision 21) and can follow her
+   layout later if it differs. Partner fees are per ticket (decision 22).

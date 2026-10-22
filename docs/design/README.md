@@ -15,6 +15,7 @@ AI advice). Real agency files go in `intake/` (git-ignored, local only).
 | [06-partners-and-invoices.md](06-partners-and-invoices.md) | Partner accounts, client invoices, payments, reminders | Approved |
 | [07-chat.md](07-chat.md) | What agents, accountant and manager do in the chat; AI advice | Approved |
 | [08-build-plan.md](08-build-plan.md) | Phases A–I, in order, with what each delivers | Approved |
+| [10-ticket-screens.md](10-ticket-screens.md) | What the ticket screenshots show: pasteable PNR text, RM per passenger, two ticketing offices | New |
 | [09-phase-b-plan.md](09-phase-b-plan.md) | Phase B step by step (B1–B11), conventions, approved defaults | Approved |
 
 Still to come once the ticket samples arrive: how screenshots are read (plain code or AI), the

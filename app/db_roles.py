@@ -56,6 +56,8 @@ GRANTS = {
     "sales": "SELECT, INSERT, UPDATE",
     "sale_tickets": "SELECT, INSERT, DELETE",
     "sale_versions": "SELECT, INSERT",
+    # Phase B10 (migration 0012): the stored TJQ APRES of each close, append-only.
+    "day_exports": "SELECT, INSERT",
     # Phase B8 (migration 0011). A run is append-only. A flag is never deleted: only its status
     # (and the facts that follow the ticket) change, through ``app/flags.py``.
     "comparison_runs": "SELECT, INSERT",

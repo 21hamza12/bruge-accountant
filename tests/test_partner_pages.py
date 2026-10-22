@@ -122,6 +122,11 @@ STAFF_POSTS = [
     "/partners/{p}/fees",
     "/partners/{p}/deactivate",
     "/partners/{p}/reactivate",
+    "/partners/aliases/{p}/approve",
+    "/partners/aliases/{p}/reassign",
+    "/partners/aliases/{p}/reject",
+    "/partners/aliases/{p}/remove",
+    "/partners/aliases/{p}/reactivate",
 ]
 
 
@@ -165,7 +170,7 @@ def test_every_partner_route_uses_the_partner_admin_dependency() -> None:
     from app.web.routes import partners as partner_routes
 
     routes = [r for r in partner_routes.router.routes if isinstance(r, APIRoute)]
-    assert len(routes) == len(STAFF_GETS) + len(STAFF_POSTS) == 8
+    assert len(routes) == len(STAFF_GETS) + len(STAFF_POSTS) == 13
     for route in routes:
         calls = [d.call for d in route.dependant.dependencies]
         assert partner_routes.require_partner_admin in calls, route.path

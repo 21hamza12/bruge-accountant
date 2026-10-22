@@ -734,3 +734,65 @@ class SaleVersion(Base):
     created_at: Mapped[datetime] = mapped_column(
         UTCDateTime, default=_now, server_default=func.now()
     )
+
+
+# --- Phase B6: partner aliases (migration 0010) ---------------------------------------------
+
+ALIAS_PENDING = "pending"
+ALIAS_APPROVED = "approved"
+ALIAS_REJECTED = "rejected"
+ALIAS_STATUSES = (ALIAS_PENDING, ALIAS_APPROVED, ALIAS_REJECTED)
+
+
+class PartnerAlias(Base):
+    """Another name an agency is known by in the Amadeus text (``AP``), for one partner. An agent
+    proposes it (``pending``), a manager or accountant approves it (it then matches like the
+    partner's own name) or rejects it (never proposed again). The partner's own name is an
+    implicit alias and is not stored. Rows are never deleted. ``alias_key`` is unique per agency
+    (``app.parsing.pnr_sales.normalise_key``)."""
+
+    __tablename__ = "partner_aliases"
+    __table_args__ = (
+        UniqueConstraint("agency_id", "alias_key", name="uq_partner_aliases_agency_alias_key"),
+        ForeignKeyConstraint(
+            ["agency_id", "partner_id"],
+            ["partners.agency_id", "partners.id"],
+            name="fk_partner_aliases_agency_partner",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["agency_id", "proposed_by_user_id"],
+            ["users.agency_id", "users.id"],
+            name="fk_partner_aliases_agency_proposed_by",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["agency_id", "decided_by_user_id"],
+            ["users.agency_id", "users.id"],
+            name="fk_partner_aliases_agency_decided_by",
+            ondelete="RESTRICT",
+        ),
+        CheckConstraint(_in_list("status", ALIAS_STATUSES), name="status"),
+        CheckConstraint("alias_key <> ''", name="alias_key_nonempty"),
+        CheckConstraint(
+            "(status = 'pending' AND decided_at IS NULL AND decided_by_user_id IS NULL) OR "
+            "(status <> 'pending' AND decided_at IS NOT NULL AND decided_by_user_id IS NOT NULL)",
+            name="decision_consistent",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigIntType, primary_key=True)
+    agency_id: Mapped[int] = mapped_column(ForeignKey("agencies.id", ondelete="RESTRICT"))
+    partner_id: Mapped[int] = mapped_column(BigIntType)
+    alias: Mapped[str] = mapped_column(String(120))
+    alias_key: Mapped[str] = mapped_column(String(480))
+    status: Mapped[str] = mapped_column(String(16), default=ALIAS_PENDING, server_default="pending")
+    proposed_by_user_id: Mapped[int] = mapped_column(BigIntType)
+    decided_by_user_id: Mapped[int | None] = mapped_column(BigIntType)
+    decided_at: Mapped[datetime | None] = mapped_column(UTCDateTime)
+    created_at: Mapped[datetime] = mapped_column(
+        UTCDateTime, default=_now, server_default=func.now()
+    )
+
+
+Index("ix_partner_aliases_agency_status", PartnerAlias.agency_id, PartnerAlias.status)

@@ -1,7 +1,7 @@
 """partners and their fee history
 
 Revision ID: 0007
-Revises: 0005
+Revises: 0006
 Create Date: 2026-10-21 14:00:00.000000
 
 EXPAND-ONLY: two new tables, nothing existing is touched, so the previous release keeps working.
@@ -32,11 +32,10 @@ import sqlalchemy as sa
 from alembic import op
 
 from app import db_roles
-from app.db_roles import ROLE_ENV_VAR, validate_role_name
+from app.db_roles import ROLE_ENV_VAR
 
 revision: str = "0007"
-# TODO rebase onto 0006 (B2 amadeus_lines) before merge
-down_revision: str | None = "0005"
+down_revision: str | None = "0006"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
@@ -56,29 +55,6 @@ SQLITE_TRIGGERS = {
     "trg_partner_fees_no_update": "BEFORE UPDATE ON partner_fees",
     "trg_partner_fees_no_delete": "BEFORE DELETE ON partner_fees",
 }
-
-
-def _app_role(bind: sa.Connection, *, must_exist: bool) -> str | None:
-    """The validated APP_DB_ROLE, or None for single-role mode (unset, blank or - on downgrade -
-    a role that no longer exists)."""
-    raw = os.environ.get(ROLE_ENV_VAR, "").strip()
-    if not raw:
-        return None
-    role = validate_role_name(raw)
-    exists = bind.execute(sa.text("SELECT 1 FROM pg_roles WHERE rolname = :r"), {"r": role})
-    if exists.scalar() is None:
-        if must_exist:
-            raise RuntimeError(
-                f"{ROLE_ENV_VAR} names the role {role!r}, which does not exist. Create it first "
-                f"(CREATE ROLE {role} LOGIN ...), or unset {ROLE_ENV_VAR} for single-role mode."
-            )
-        log.warning("%s=%s does not exist; no privileges to revoke from it.", ROLE_ENV_VAR, role)
-        return None
-    if must_exist:
-        problem = db_roles.role_privilege_problem(bind, role)
-        if problem is not None:
-            raise RuntimeError(f"{ROLE_ENV_VAR}: {problem}")
-    return role
 
 
 def _run(statements: Sequence[str]) -> None:
@@ -160,7 +136,9 @@ def upgrade() -> None:
     bind = op.get_bind()
     role = None
     if bind.dialect.name == "postgresql":
-        role = _app_role(bind, must_exist=True)  # fail before any DDL on a bad name
+        role = db_roles.configured_role(
+            bind, os.environ.get(ROLE_ENV_VAR, ""), must_exist=True
+        )  # fail before any DDL on a bad name
     _create_tables()
     if bind.dialect.name != "postgresql":
         for name, when in SQLITE_TRIGGERS.items():
@@ -194,7 +172,7 @@ def upgrade() -> None:
 def downgrade() -> None:
     bind = op.get_bind()
     if bind.dialect.name == "postgresql":
-        role = _app_role(bind, must_exist=False)
+        role = db_roles.configured_role(bind, os.environ.get(ROLE_ENV_VAR, ""), must_exist=False)
         if role is not None:
             db_roles.revoke_table_grants(bind, role, TABLES)
         _run(

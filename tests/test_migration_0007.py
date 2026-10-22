@@ -87,17 +87,15 @@ def _scalar(url: str, sql: str) -> object:
         engine.dispose()
 
 
-def test_the_revision_chain_is_pinned_until_the_rebase() -> None:
+def test_0007_follows_0006() -> None:
     from alembic.script import ScriptDirectory
 
     script = ScriptDirectory.from_config(alembic_config("sqlite://"))
     revision = script.get_revision("0007")
     assert revision is not None
-    # TODO rebase onto 0006 (B2): this becomes "0006" and the test is updated with it.
-    assert revision.down_revision == "0005"
+    assert revision.down_revision == "0006"
 
 
-@pytest.mark.xfail(reason="B3 rebases onto 0006 before merge", strict=False)
 def test_the_script_directory_has_a_single_head() -> None:
     from alembic.script import ScriptDirectory
 
@@ -106,7 +104,7 @@ def test_the_script_directory_has_a_single_head() -> None:
 
 
 def test_upgrade_creates_both_tables_and_the_lookup_index(db_url: str) -> None:
-    migrate(db_url, revision="0005")
+    migrate(db_url, revision="0006")
     assert not {"partners", "partner_fees"} & _tables(db_url)
     command.upgrade(alembic_config(db_url), "0007")
     assert {"partners", "partner_fees"} <= _tables(db_url)
@@ -225,9 +223,9 @@ def test_partner_fees_are_append_only_on_sqlite(db_url: str) -> None:
 def test_downgrade_drops_tables_and_triggers_and_upgrade_works_again(db_url: str) -> None:
     migrate(db_url)
     cfg = alembic_config(db_url)
-    command.downgrade(cfg, "0005")
+    command.downgrade(cfg, "0006")
     assert not {"partners", "partner_fees"} & _tables(db_url)
-    assert _scalar(db_url, "SELECT version_num FROM alembic_version") == "0005"
+    assert _scalar(db_url, "SELECT version_num FROM alembic_version") == "0006"
     if not _is_postgres(db_url):
         assert (
             _scalar(
@@ -345,7 +343,7 @@ def test_postgres_grants_follow_the_map_and_survive_a_downgrade_of_only_these_ta
     assert _privileges(pg_url, role, "partners") == {"SELECT", "INSERT", "UPDATE"}
     assert _privileges(pg_url, role, "partner_fees") == {"SELECT", "INSERT"}
     with app_role_env(role):
-        command.downgrade(alembic_config(pg_url), "0005")
+        command.downgrade(alembic_config(pg_url), "0006")
     assert _privileges(pg_url, role, "tickets") == {"SELECT", "INSERT", "UPDATE"}
     assert _privileges(pg_url, role, "users") == {"SELECT", "INSERT", "UPDATE"}  # untouched
     assert not {"partners", "partner_fees"} & _tables(pg_url)

@@ -472,8 +472,16 @@ def test_partner_rows_of_another_agency_cannot_be_updated_or_deleted(world: Worl
         bind_tenant(s, a.agency_id)
         other = update(Partner).where(Partner.id == b.partner_id).values(is_active=False)
         assert affected(s.execute(other)) == 0
-        assert affected(s.execute(delete(Partner).where(Partner.id == b.partner_id))) == 0
         s.commit()
+    with app_session(db) as s:
+        bind_tenant(s, a.agency_id)
+        other_delete = delete(Partner).where(Partner.id == b.partner_id)
+        if db.mode == "app-role":  # no DELETE privilege at all
+            with pytest.raises(ProgrammingError, match="permission denied"):
+                s.execute(other_delete)
+        else:  # the owner: no policy row matches
+            assert affected(s.execute(other_delete)) == 0
+        s.rollback()
     with app_session(db) as s:
         bind_tenant(s, b.agency_id)
         assert s.scalar(select(Partner.is_active).where(Partner.id == b.partner_id)) is True

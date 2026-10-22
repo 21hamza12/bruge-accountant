@@ -194,11 +194,10 @@ def _names(url: str, kind: str) -> list[str]:
 # --- chain and shape ---------------------------------------------------------------------------
 
 
-def test_0011_follows_0009_for_now_and_is_the_single_head() -> None:
+def test_0011_follows_0010_and_is_the_single_head() -> None:
     script = ScriptDirectory.from_config(alembic_config("sqlite://"))
     revision = script.get_revision("0011")
-    # TODO rebase onto 0010 (B6 wiring partner_aliases) before merge: then this reads "0010".
-    assert revision is not None and revision.down_revision == "0009"
+    assert revision is not None and revision.down_revision == "0010"
     assert script.get_heads() == ["0011"]
 
 
@@ -211,7 +210,7 @@ def test_up_and_down_on_sqlite(db_url: str) -> None:
     if _is_postgres(db_url):
         pytest.skip("SQLite objects; the Postgres tests are below")
     cfg = alembic_config(db_url)
-    migrate(db_url, revision="0009")
+    migrate(db_url, revision="0010")
     assert not set(TABLES) & _tables(db_url)
     command.upgrade(cfg, "0011")
     assert set(TABLES) <= _tables(db_url)
@@ -237,10 +236,10 @@ def test_up_and_down_on_sqlite(db_url: str) -> None:
         assert run_indexes["ix_comparison_runs_agency_day"] == ["agency_id", "report_day_id", "id"]
     finally:
         engine.dispose()
-    command.downgrade(cfg, "0009")
+    command.downgrade(cfg, "0010")
     assert not set(TABLES) & _tables(db_url)
     assert not [n for n in _names(db_url, "trigger") if "comparison" in n]
-    assert _scalar(db_url, "SELECT version_num FROM alembic_version") == "0009"
+    assert _scalar(db_url, "SELECT version_num FROM alembic_version") == "0010"
     command.upgrade(cfg, "head")
     assert set(TABLES) <= _tables(db_url)
 
@@ -519,7 +518,7 @@ def test_postgres_grants_follow_the_map_and_a_downgrade_revokes_only_these_table
             table
         )
     with app_role_env(role):
-        command.downgrade(alembic_config(pg_url), "0009")
+        command.downgrade(alembic_config(pg_url), "0010")
     assert not set(TABLES) & _tables(pg_url)
     assert _privileges(pg_url, role, "sales") == {"SELECT", "INSERT", "UPDATE"}  # untouched
     migrate(pg_url, app_role=role)

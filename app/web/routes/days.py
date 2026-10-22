@@ -20,7 +20,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.orm import Session
 from starlette.responses import RedirectResponse, Response
 
-from app import day_page, days, permissions, reasons, sales
+from app import day_page, days, flags, permissions, reasons, sales
 from app.auth import ratelimit
 from app.clock import Clock
 from app.models import DAY_CLOSED, ReportDay
@@ -108,6 +108,8 @@ def day_view(
     uploader = None
     if upload is not None and upload.upload.uploaded_by_user_id is not None:
         uploader = names.get(upload.upload.uploaded_by_user_id)
+    # The comparison with the Amadeus report (B8): the numbers this viewer may see.
+    counts = flags.day_summary(db, user, report_day).counts if report_day else None
     return page(
         "days/show.html",
         status_code=status_code,
@@ -124,6 +126,8 @@ def day_view(
         totals=sales.day_totals(views),
         signs=day_page.sign_totals(views),
         received=received,
+        comparison=counts,
+        can_run_comparison=received and not closed and permissions.can_run_comparison(user),
         events=[{"e": e, "actor": names.get(e.actor_user_id)} for e in events],
         upload=upload,
         uploader=uploader,

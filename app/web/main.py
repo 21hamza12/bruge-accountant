@@ -39,8 +39,8 @@ from app.web.errors import (
 )
 from app.web.middleware import build_middleware
 from app.web.routes import auth as auth_routes
-from app.web.routes import flags as flag_routes
 from app.web.routes import days as day_routes
+from app.web.routes import flags as flag_routes
 from app.web.routes import home as home_routes
 from app.web.routes import partners as partner_routes
 from app.web.routes import password as password_routes

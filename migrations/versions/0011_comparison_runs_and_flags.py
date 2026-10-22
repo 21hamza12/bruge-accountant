@@ -1,7 +1,7 @@
 """comparison runs and comparison flags (B8 wiring)
 
 Revision ID: 0011
-Revises: 0009
+Revises: 0010
 Create Date: 2026-10-22 18:00:00.000000
 
 EXPAND-ONLY: two new tables, nothing existing is touched, so the previous release keeps working.
@@ -45,8 +45,7 @@ from app import db_roles
 from app.db_roles import ROLE_ENV_VAR
 
 revision: str = "0011"
-# TODO rebase onto 0010 (B6 wiring partner_aliases) before merge
-down_revision: str | None = "0009"
+down_revision: str | None = "0010"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 

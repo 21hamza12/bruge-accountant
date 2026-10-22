@@ -90,8 +90,8 @@ The owner reported sales where **one RM price covers several ticket numbers** (l
 airlines; family bookings). B4 therefore stores **sales**, not single-ticket entries: a sale has one
 or more tickets (`sale_tickets`, each ticket number in at most one sale per agency), one P.B, AG,
 CLT, AP and payment method, and append-only `sale_versions`. Comparison (B8) stays per ticket.
-The per-line P.B in the TJQ APRES (B10) follows the accountant's rule once known (see
-[05](05-daily-comparison.md) §2); default: full price on the first ticket, 0 on the others.
+Per-line P.B in the TJQ APRES (B10): full price on the first ticket, 0 on the others, lines
+marked as one sale (decision 21). Partner fee is charged per ticket (decision 22).
 
 ## 4. Approved defaults
 

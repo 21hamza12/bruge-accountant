@@ -51,13 +51,14 @@ on one booking may also have one price for everyone.
 - The agent sends all the tickets of the sale together (several screenshots or one paste); the
   read-back lists every ticket number and the one price.
 - **Cost of the sale** = Σ TOTAL DOC of its tickets; **profit** = P.B − that sum. A partner sale
-  with several tickets: P.B = Σ cost + the fee **per ticket** (to confirm with the accountant).
+  with several tickets: P.B = Σ cost + the fee **per ticket** (decision 22).
 - The comparison with Amadeus stays **per ticket** (each ticket number is still one Amadeus line).
 - A ticket belongs to at most one sale. Adding a forgotten ticket to a sale, or splitting a sale,
   is an edit with history like any other.
-- **How P.B appears per line in the TJQ APRES is waiting on the accountant**: (a) full price on the
-  first ticket and 0 on the others, (b) split between them, or (c) another rule. The app will follow
-  her current practice; until confirmed, the export uses (a) and marks the sale's lines as linked.
+- **Per-line P.B in the TJQ APRES** (decision 21): the full price on the sale's first ticket (SEQ
+  order) and 0 on the others; every line of the sale is marked as linked ("Sale #12, 2 tickets").
+  Only the export layout depends on this, so it can follow the accountant's practice later without
+  changing stored data.
 
 ## 3. The comparison
 

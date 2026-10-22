@@ -62,6 +62,8 @@ SALE_WRITE_USER = Limit("sale_write_user", 300, 3600)
 # Read-backs (and the "add a ticket" re-renders): they write nothing but validate, price and look
 # up duplicates, so they get a looser budget of their own.
 SALE_PREVIEW_USER = Limit("sale_preview_user", 1000, 3600)
+# Running the comparison of a day again by hand (manager, accountant): 30 an hour for each user.
+COMPARISON_RUN_USER = Limit("comparison_run_user", 30, 3600)
 # Closing and reopening a day: a handful a day is normal.
 DAY_ACTION_USER = Limit("day_action_user", 60, 3600)
 # Guesses at the current password of a logged-in account (stolen-session brute force).

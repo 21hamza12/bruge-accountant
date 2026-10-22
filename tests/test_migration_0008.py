@@ -172,7 +172,7 @@ def test_0008_follows_0007_and_is_the_single_head() -> None:
     script = ScriptDirectory.from_config(alembic_config("sqlite://"))
     revision = script.get_revision("0008")
     assert revision is not None and revision.down_revision == "0007"
-    assert script.get_heads() == ["0010"]
+    assert len(script.get_heads()) == 1
     later = script.get_revision("0009")
     assert later is not None and later.down_revision == "0008"
 

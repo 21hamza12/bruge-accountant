@@ -56,6 +56,10 @@ GRANTS = {
     "sales": "SELECT, INSERT, UPDATE",
     "sale_tickets": "SELECT, INSERT, DELETE",
     "sale_versions": "SELECT, INSERT",
+    # Phase B8 (migration 0011). A run is append-only. A flag is never deleted: only its status
+    # (and the facts that follow the ticket) change, through ``app/flags.py``.
+    "comparison_runs": "SELECT, INSERT",
+    "comparison_flags": "SELECT, INSERT, UPDATE",
     # Phase B6 (migration 0010). Alias proposals are decided in place: no DELETE.
     "partner_aliases": "SELECT, INSERT, UPDATE",
 }

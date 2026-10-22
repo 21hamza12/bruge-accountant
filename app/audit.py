@@ -63,6 +63,9 @@ SALE_MOVED = "sale_moved"
 DAY_OPENED = "day_opened"
 DAY_CLOSED = "day_closed"
 DAY_REOPENED = "day_reopened"
+COMPARISON_RUN = "comparison_run"
+COMPARISON_SUPERSEDED = "comparison_flags_superseded"
+DAY_APPROVED = "day_approved"
 
 _SECRET_KEY = re.compile(r"password|passwd|token|secret|hash|csrf|cookie|credential", re.IGNORECASE)
 

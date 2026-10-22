@@ -24,6 +24,33 @@
   {% endif %}
 </section>
 
+{% if comparison %}
+<section class="card" aria-labelledby="comparison-title">
+  <h2 class="card-title" id="comparison-title">{{ _("Comparaison avec les ventes") }}</h2>
+  <dl class="kv">
+    {% if comparison.matched is not none %}<dt>{{ _("Billets identiques") }}</dt><dd class="num">{{ comparison.matched }}</dd>{% endif %}
+    <dt>{{ _("Écarts bloquants") }}</dt><dd class="num">{{ comparison.blocking }}</dd>
+    <dt>{{ _("Billets annulés") }}</dt><dd class="num">{{ comparison.cancelled }}</dd>
+    {% if comparison.moves is not none %}<dt>{{ _("Billets déplacés") }}</dt><dd class="num">{{ comparison.moves }}</dd>{% endif %}
+    <dt>{{ _("Billets partenaires absents du rapport") }}</dt><dd class="num">{{ comparison.partner_not_in_report }}</dd>
+  </dl>
+  <p><a class="btn btn-primary" href="/flags?date={{ upload.report_date.isoformat() }}">{{ _("Voir les écarts de ce jour") }}</a></p>
+</section>
+{% elif comparison_pending %}
+<section class="card" aria-labelledby="comparison-title">
+  <h2 class="card-title" id="comparison-title">{{ _("Comparaison avec les ventes") }}</h2>
+  <p class="notice" role="status">{{ _("Comparaison à relancer") }}</p>
+  {% if can_run %}
+  <form class="inline-form" method="post" action="/flags/run?date={{ upload.report_date.isoformat() }}">
+    {% include "_csrf.html" %}
+    <button class="btn btn-primary" type="submit">{{ _("Relancer la comparaison") }}</button>
+  </form>
+  {% else %}
+  <p class="muted">{{ _("Demandez au gérant de relancer la comparaison.") }}</p>
+  {% endif %}
+</section>
+{% endif %}
+
 <section class="card" aria-labelledby="days-title">
   {% if ticket_dates %}
   <h2 class="card-title" id="days-title">{{ _("Jours des billets") }}</h2>

@@ -796,3 +796,143 @@ class PartnerAlias(Base):
 
 
 Index("ix_partner_aliases_agency_status", PartnerAlias.agency_id, PartnerAlias.status)
+
+
+# --- Phase B8: the comparison with the Amadeus report (migration 0011) ---------------------------
+
+FLAG_DIFFERENT = "different"
+FLAG_NOT_SENT = "not_sent"
+FLAG_NOT_IN_AMADEUS = "not_in_amadeus"
+FLAG_ELSEWHERE = "elsewhere"
+FLAG_BAD_NUMBER = "bad_number"
+FLAG_KINDS = (FLAG_DIFFERENT, FLAG_NOT_SENT, FLAG_NOT_IN_AMADEUS, FLAG_ELSEWHERE, FLAG_BAD_NUMBER)
+FLAG_FIELDS = ("airline", "total_doc", "pax_name", "pax_type", "staff_sign", "rloc", "trnc")
+FLAG_FIELD_DOC_NUMBER = "doc_number"
+FLAG_OPEN = "open"
+FLAG_ANSWERED = "answered"
+FLAG_RESOLVED = "resolved"
+FLAG_SUPERSEDED = "superseded"
+FLAG_MOVED = "moved"
+FLAG_STATUSES = (FLAG_OPEN, FLAG_ANSWERED, FLAG_RESOLVED, FLAG_SUPERSEDED, FLAG_MOVED)
+# A flag in one of these statuses is "live": the one flag of its key for the day. The partial
+# unique index (Postgres, migration 0011) and ``app/flags.py`` (SQLite) allow one per key.
+FLAG_LIVE_STATUSES = (FLAG_OPEN, FLAG_ANSWERED, FLAG_RESOLVED)
+FLAG_KEY_CHECK = f"(kind IN ('{FLAG_DIFFERENT}', '{FLAG_BAD_NUMBER}')) = (field IS NOT NULL)"
+
+
+class ComparisonRun(Base):
+    """Append-only: one run of the comparison of a day with the line set of an upload. Holds the
+    counts of the run; who started it (NULL: the system); nothing else changes after the insert."""
+
+    __tablename__ = "comparison_runs"
+    __table_args__ = (
+        UniqueConstraint("agency_id", "id", name="uq_comparison_runs_agency_id_id"),
+        ForeignKeyConstraint(
+            ["agency_id", "report_day_id"],
+            ["report_days.agency_id", "report_days.id"],
+            name="fk_comparison_runs_agency_report_day",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["agency_id", "upload_id"],
+            ["uploads.agency_id", "uploads.id"],
+            name="fk_comparison_runs_agency_upload",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["agency_id", "started_by_user_id"],
+            ["users.agency_id", "users.id"],
+            name="fk_comparison_runs_agency_started_by",
+            ondelete="RESTRICT",
+        ),
+        CheckConstraint(
+            "matched_count >= 0 AND flag_count >= 0 AND blocking_count >= 0 "
+            "AND cancelled_count >= 0 AND move_count >= 0 AND partner_missing_count >= 0",
+            name="counts_nonneg",
+        ),
+        CheckConstraint("blocking_count <= flag_count", name="blocking_within_flags"),
+        Index("ix_comparison_runs_agency_day", "agency_id", "report_day_id", "id"),
+        Index("ix_comparison_runs_agency_upload", "agency_id", "upload_id"),
+    )
+
+    id: Mapped[int] = mapped_column(BigIntType, primary_key=True)
+    agency_id: Mapped[int] = mapped_column(ForeignKey("agencies.id", ondelete="RESTRICT"))
+    report_day_id: Mapped[int] = mapped_column(BigIntType)
+    upload_id: Mapped[int] = mapped_column(BigIntType)
+    started_by_user_id: Mapped[int | None] = mapped_column(BigIntType)
+    matched_count: Mapped[int] = mapped_column(Integer)
+    flag_count: Mapped[int] = mapped_column(Integer)
+    blocking_count: Mapped[int] = mapped_column(Integer)
+    cancelled_count: Mapped[int] = mapped_column(Integer)
+    move_count: Mapped[int] = mapped_column(Integer)
+    partner_missing_count: Mapped[int] = mapped_column(Integer)
+    created_at: Mapped[datetime] = mapped_column(
+        UTCDateTime, default=_now, server_default=func.now()
+    )
+
+
+class ComparisonFlag(Base):
+    """A thing to settle after a comparison. Never deleted; only its status (and the facts that
+    follow the ticket: sale, report line, responsible sign) change, and only through
+    ``app/flags.py``. On Postgres a partial unique index (migration 0011) keeps one live flag per
+    ``(day, ticket number, kind, field)``; on SQLite the service keeps that rule (the index uses an
+    expression, which the SQLite reflection tests would warn about)."""
+
+    __tablename__ = "comparison_flags"
+    __table_args__ = (
+        UniqueConstraint("agency_id", "id", name="uq_comparison_flags_agency_id_id"),
+        ForeignKeyConstraint(
+            ["agency_id", "report_day_id"],
+            ["report_days.agency_id", "report_days.id"],
+            name="fk_comparison_flags_agency_report_day",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["agency_id", "run_id"],
+            ["comparison_runs.agency_id", "comparison_runs.id"],
+            name="fk_comparison_flags_agency_run",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["agency_id", "sale_id"],
+            ["sales.agency_id", "sales.id"],
+            name="fk_comparison_flags_agency_sale",
+            ondelete="RESTRICT",
+        ),
+        CheckConstraint(_in_list("kind", FLAG_KINDS), name="kind"),
+        CheckConstraint(
+            "field IS NULL OR " + _in_list("field", (*FLAG_FIELDS, FLAG_FIELD_DOC_NUMBER)),
+            name="field",
+        ),
+        CheckConstraint(FLAG_KEY_CHECK, name="field_iff_different_or_bad_number"),
+        CheckConstraint(_in_list("status", FLAG_STATUSES), name="status"),
+        Index("ix_comparison_flags_agency_day_status", "agency_id", "report_day_id", "status"),
+        Index("ix_comparison_flags_agency_sign_status", "agency_id", "responsible_sign", "status"),
+        Index("ix_comparison_flags_agency_status_blocking", "agency_id", "status", "blocking"),
+        Index("ix_comparison_flags_agency_run", "agency_id", "run_id"),
+        Index("ix_comparison_flags_agency_sale", "agency_id", "sale_id"),
+    )
+
+    id: Mapped[int] = mapped_column(BigIntType, primary_key=True)
+    agency_id: Mapped[int] = mapped_column(ForeignKey("agencies.id", ondelete="RESTRICT"))
+    report_day_id: Mapped[int] = mapped_column(BigIntType)
+    run_id: Mapped[int] = mapped_column(BigIntType)
+    doc_number: Mapped[str] = mapped_column(String(32))
+    kind: Mapped[str] = mapped_column(String(16))
+    field: Mapped[str | None] = mapped_column(String(16))
+    app_value: Mapped[str | None] = mapped_column(Text)
+    amadeus_value: Mapped[str | None] = mapped_column(Text)
+    # A short hash of the ticket facts on both sides: a decision is kept only for the same facts.
+    fingerprint: Mapped[str] = mapped_column(String(16))
+    sale_id: Mapped[int | None] = mapped_column(BigIntType)
+    amadeus_seq: Mapped[int | None] = mapped_column(Integer)
+    responsible_sign: Mapped[str] = mapped_column(String(32))
+    needs_validation: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false())
+    blocking: Mapped[bool] = mapped_column(Boolean, default=True, server_default=true())
+    status: Mapped[str] = mapped_column(String(16), default=FLAG_OPEN)
+    created_at: Mapped[datetime] = mapped_column(
+        UTCDateTime, default=_now, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        UTCDateTime, default=_now, onupdate=_now, server_default=func.now()
+    )

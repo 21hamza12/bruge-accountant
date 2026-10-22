@@ -48,6 +48,10 @@
           <span class="nav-label">{{ icon("list") }}{{ _("Ventes du jour") }}</span>
         </a>
         {% endif %}
+        <a class="nav-link" href="/flags"{% if shell.active == "flags" %} aria-current="page"{% endif %}>
+          <span class="nav-label">{{ icon("check") }}{{ _("Écarts") }}</span>
+          {% if shell.flag_badge %}<span class="badge">{{ shell.flag_badge }}<span class="visually-hidden"> {{ _("à traiter") }}</span></span>{% endif %}
+        </a>
         <a class="nav-link" href="/days"{% if shell.active == "days" %} aria-current="page"{% endif %}>
           <span class="nav-label">{{ icon("stats") }}{{ _("Journées") }}</span>
         </a>

@@ -43,6 +43,11 @@ def can_reopen_day(user: User) -> bool:
     return user.role in _MANAGER_ONLY
 
 
+def can_run_comparison(user: User) -> bool:
+    """Run (again) the comparison of a day with its Amadeus report: manager and accountant."""
+    return user.role in _MANAGER_OR_ACCOUNTANT
+
+
 def can_edit_any_entry(user: User) -> bool:
     return user.role in _MANAGER_OR_ACCOUNTANT
 

@@ -54,9 +54,10 @@ from starlette.concurrency import run_in_threadpool
 from starlette.datastructures import UploadFile
 from starlette.responses import RedirectResponse, Response
 
-from app import audit, permissions
+from app import audit, days, flags, permissions
 from app.auth import ratelimit
 from app.clock import Clock
+from app.errors import UserError
 from app.ingest import (
     EmptyFileError,
     FileTooLargeError,
@@ -65,10 +66,12 @@ from app.ingest import (
     ingest_report,
     sanitize_filename,
 )
+from app.models import DAY_CLOSED, Upload
 from app.parsing.amadeus import MAX_FILE_BYTES, ParsedReport, ParseError
 from app.parsing.sandbox import SandboxBusy, parse_in_sandbox
 from app.repository import get_upload, recent_uploads, upload_ticket_dates, user_names
 from app.settings import Settings
+from app.tenancy import bind_tenant
 from app.web.csrf import CSRF_FIELD, CSRF_HEADER, verify_origin, verify_token
 from app.web.deps import AuthContext, client_ip, current_user, get_clock, get_session, get_settings
 from app.web.pages import page
@@ -97,6 +100,11 @@ MSG_NO_FILE = "Choisissez un fichier .xlsx."
 MSG_EMPTY = "Le fichier est vide."
 MSG_NOT_XLSX = "Ce fichier n'est pas un classeur Excel (.xlsx)."
 MSG_PARSE = "Le fichier n'a pas pu être lu : {reason}"
+MSG_DAY_CLOSED = "Journée clôturée : demandez au gérant de la rouvrir"
+
+
+class UploadForClosedDay(Exception):
+    """The report is dated on a day that is closed: nothing is stored."""
 
 
 async def get_parser(settings: Annotated[Settings, Depends(get_settings)]) -> Parser:
@@ -147,6 +155,15 @@ def upload_list(
     )
 
 
+def _comparison_counts(db: Session, auth: AuthContext, upload: Upload) -> flags.Counts | None:
+    """The comparison numbers of the upload's day that THIS viewer may see (None: not compared)."""
+    agency_id = auth.user.agency_id
+    if flags.run_for_upload(db, agency_id, upload) is None:
+        return None
+    day = days.get_day(db, agency_id, upload.report_date)
+    return None if day is None else flags.day_summary(db, auth.user, day).counts
+
+
 @router.get("/{upload_id}")
 def upload_result(
     upload_id: UploadId,
@@ -162,6 +179,8 @@ def upload_result(
     # Warnings quote cell values (ticket numbers, passenger name fragments): managers only.
     warnings = list(upload.warnings) if manager else []
     ticket_dates = upload_ticket_dates(db, agency_id, upload.id)
+    newest = flags.latest_upload_for_day(db, agency_id, upload.report_date)
+    is_newest = newest is not None and newest.id == upload.id
     return page(
         "uploads/show.html",
         headers={"Cache-Control": "no-store"},
@@ -172,6 +191,9 @@ def upload_result(
         more_warnings=max(0, len(warnings) - MAX_WARNINGS_SHOWN),
         ticket_dates=ticket_dates,
         dates_differ=any(day != upload.report_date for day, _ in ticket_dates),
+        comparison=_comparison_counts(db, auth, upload) if is_newest else None,
+        comparison_pending=is_newest,
+        can_run=permissions.can_run_comparison(auth.user),
         **shell_context(db, auth, ACTIVE_UPLOADS),
     )
 
@@ -292,6 +314,34 @@ def _reserve(db: Session, request: Request, clock: Clock, auth: AuthContext) -> 
     return quota
 
 
+def _compare_quietly(
+    db: Session, request: Request, clock: Clock, auth: AuthContext, result: IngestResult
+) -> None:
+    """Compare the day with the report that was just stored, in a transaction of its own: the
+    upload is committed already and stays whatever happens here. A failure is logged; the result
+    page then says the comparison has to be run again."""
+    try:
+        now = clock()
+        ip = client_ip(request)
+        report_day = days.get_or_open_day(db, auth.user, result.report_date, now=now, ip=ip)
+        flags.run_comparison(db, auth.user, report_day, now=now, ip=ip)
+        db.commit()
+    except UserError as exc:  # no report lines, a closed or changed day: expected, not a bug
+        log.warning(
+            "comparison after upload not run: %s",
+            exc,
+            extra={"upload_id": result.upload_id, "agency_id": auth.user.agency_id},
+        )
+        _rollback_quietly(db)
+    except Exception:
+        log.error(
+            "comparison after upload failed",
+            exc_info=True,
+            extra={"upload_id": result.upload_id, "agency_id": auth.user.agency_id},
+        )
+        _rollback_quietly(db)
+
+
 def _store(
     db: Session,
     request: Request,
@@ -313,9 +363,24 @@ def _store(
     if upload is None or (not data and not upload.filename):
         return refuse("no_file", MSG_NO_FILE)
     result: IngestResult
+
+    def refuse_closed_day(parsed: ParsedReport) -> ParsedReport:
+        """Called between the parse and the first write: a report for a closed day is refused
+        before anything is stored (the date is only known once the file is read)."""
+        bind_tenant(db, agency_id)
+        found = days.get_day(db, agency_id, parsed.header.report_date)
+        if found is not None and found.status == DAY_CLOSED:
+            raise UploadForClosedDay
+        return parsed
+
     try:
         result = ingest_report(
-            db, agency_id, data, upload.filename, parse=parse, uploaded_by=auth.user.id
+            db,
+            agency_id,
+            data,
+            upload.filename,
+            parse=lambda raw: refuse_closed_day(parse(raw)),
+            uploaded_by=auth.user.id,
         )
     except FileTooLargeError:
         _failed(db, request, clock, auth, name, "too_large")
@@ -324,6 +389,11 @@ def _store(
         return refuse("empty", MSG_EMPTY)
     except NotAnXlsxError:
         return refuse("not_xlsx", MSG_NOT_XLSX)
+    except UploadForClosedDay:
+        _rollback_quietly(db)
+        _refund(db, clock, quota)
+        _failed_quietly(db, request, clock, auth, name, "day_closed")
+        return _form(db, auth, error=MSG_DAY_CLOSED, status_code=409)
     except SandboxBusy:
         _refund(db, clock, quota)
         _failed_quietly(db, request, clock, auth, name, "busy")
@@ -365,6 +435,7 @@ def _store(
         )
         _rollback_quietly(db)
     log.info("upload stored", extra={"upload_id": result.upload_id, "agency_id": agency_id})
+    _compare_quietly(db, request, clock, auth, result)
     return RedirectResponse(f"/uploads/{result.upload_id}", status_code=303)
 
 

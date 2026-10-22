@@ -75,3 +75,18 @@ same PNR (likely an added service).
    partners? Their current fees?
 6. XTNFI9 (exchange): is `RM 32000` the price of the change, and what is the 8 245 `FE` line
    (penalty kept by the airline)?
+
+## 7. Owner's answers (22 Oct)
+
+1. **Agents can paste the PNR text directly.** Pasting is the normal input; a photo is the fallback.
+   B6 builds the real PNR-text reader (replacing the placeholder format), so reading costs nothing.
+2. **"I don't think there is a separate TJQ."** But the 20 Oct report (agency 51211381, office
+   NKC262213) contains Bruge's own ticket 3940299469 (YH927B) and **not** partner ticket
+   495-3940281465, issued the same day by office NKC262353 (IATA 51211845). So partner tickets need
+   their own report. To check with the accountant: does she ever run the TJQ for 51211845 /
+   NKC262353, or are partner tickets only checked through the partner statements? Until then the
+   comparison covers office NKC262213 only, and partner tickets are listed as "not in this report"
+   without blocking the day.
+3. **`FP NONREF …` is not reliable**: it can be the word CLIENT, the client's name, or another
+   agency's name. The app uses it only as a **suggestion** in the read-back; the agent confirms
+   AG (BRUGE or partner) and CLT. The `AP … - <agency> - A` line is the stronger hint for AG.

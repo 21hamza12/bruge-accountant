@@ -56,3 +56,19 @@ Read-only suggestions, each labelled *Conseil*, never applied by the app:
 Estimated about $5–15 a month per agency with Haiku for routine reading and Sonnet for free
 questions and advice; pasted text is read by plain code at no cost. Confirmed after the
 ticket-sample test ([00-data-request.md](00-data-request.md) #1–2).
+
+## 6. AI set-up for a multi-agency service (22 Oct)
+
+- **One Anthropic API key**, owned by the service operator, stored as a secret on the host; agencies
+  need no AI account. A Claude subscription (claude.ai) cannot be used by the app: the app uses the
+  Claude API, billed separately in the Claude Console (same login, separate credit).
+- **Three jobs:** reading screenshots (Haiku), chat (Haiku by default, Sonnet for harder questions),
+  weekly advice (Sonnet, batch at half price).
+- **Tools only:** the chat can only call fixed actions the app exposes (read reports, propose a sale
+  or payment); the app runs them with the logged-in person's rights, and every change waits for a
+  confirmation.
+- **Per-agency controls** (operator admin page): AI on/off, a **monthly budget** (default about $5;
+  when reached, fall back to the cheap model or pause free questions until next month, while
+  screenshots and the daily routine keep working), usage this month in requests and dollars.
+- **Every AI call logged per agency:** job, model, tokens, cost; no ticket contents in the log.
+- **Cost estimate:** about $5 per agency per month (20 agencies ≈ $100 AI + ≈ $60 hosting).

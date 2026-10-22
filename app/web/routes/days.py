@@ -18,14 +18,15 @@ validate money records "J'ai vu la liste" for the partner tickets that are not i
 
 from __future__ import annotations
 
+import re
 from datetime import date
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy.orm import Session
 from starlette.responses import RedirectResponse, Response
 
-from app import approvals, day_page, days, flags, permissions, reasons, sales
+from app import approvals, audit, day_page, days, export_apres, flags, permissions, reasons, sales
 from app.auth import ratelimit
 from app.clock import Clock
 from app.models import DAY_CLOSED, ReportDay
@@ -41,11 +42,18 @@ router = APIRouter(prefix="/days", dependencies=[Depends(csrf_protect)])
 NO_STORE = {"Cache-Control": "no-store"}
 BAD_DATE = "Date invalide."
 MAX_REASON = 500
+BAD_VERSION = "Version invalide."
+NOT_CLOSED_YET = "Journée non clôturée."
+NO_STORED_EXPORT = "Aucun export enregistré pour cette journée."
+UNKNOWN_VERSION = "Version introuvable."
+CLOSED_USE_STORED = "Cette journée est clôturée : téléchargez la version enregistrée."
+VERSION = re.compile(r"[0-9]{1,6}")  # ASCII digits only
 
 Viewer = Annotated[AuthContext, Depends(require_permission(permissions.can_use_sales_screens))]
 Closer = Annotated[AuthContext, Depends(require_permission(permissions.can_close_day))]
 Validator = Annotated[AuthContext, Depends(require_permission(permissions.can_validate_money))]
 BLOCKED = "La journée ne peut pas être clôturée."
+Exporter = Annotated[AuthContext, Depends(require_permission(permissions.can_export_day))]
 Reopener = Annotated[AuthContext, Depends(require_permission(permissions.can_reopen_day))]
 
 
@@ -64,10 +72,10 @@ def _day_or_error(raw: str, clock: Clock) -> tuple[date | None, str]:
     return parsed, ""
 
 
-def _error_page(db: Session, auth: AuthContext, message: str) -> Response:
+def _error_page(db: Session, auth: AuthContext, message: str, status_code: int = 400) -> Response:
     return page(
         "days/error.html",
-        status_code=400,
+        status_code=status_code,
         headers=NO_STORE,
         **shell_context(db, auth, ACTIVE_DAYS),
         error=message,
@@ -112,6 +120,12 @@ def day_view(
     received = upload is not None if sees_all else day_page.report_received(db, user.agency_id, day)
     status = report_day.status if report_day else ""
     closed = status == DAY_CLOSED
+    exportable = sees_all and permissions.can_export_day(user)
+    exports = (
+        export_apres.export_history(db, user.agency_id, report_day.id)
+        if exportable and report_day is not None
+        else []
+    )
     uploader = None
     if upload is not None and upload.upload.uploaded_by_user_id is not None:
         uploader = names.get(upload.upload.uploaded_by_user_id)
@@ -147,6 +161,9 @@ def day_view(
         and approvals.GATE_LIST in gate.reasons
         and permissions.can_validate_money(user),
         can_reopen=closed and permissions.can_reopen_day(user),
+        exports=exports,
+        can_preview=exportable and not closed and upload is not None,
+        no_export_note=exportable and closed and not exports,
     )
 
 
@@ -198,9 +215,11 @@ def day_close(day: str, request: Request, db: Db, clock: Now, auth: Closer) -> R
         return _error_page(db, auth, problem)
     report_day = _existing(db, auth, chosen)
     try:
-        approvals.close_day(db, auth.user, report_day, now=clock(), ip=client_ip(request))
-        # B10 hook: store the TJQ APRES here, in this transaction, once the day is closed
-        # (``approvals.corrections_for`` gives the export its corrections).
+        # The close gate (``approvals``) runs inside ``close_day_with_export``, then the day is
+        # closed and its TJQ APRES stored (none without an Amadeus report), in one transaction.
+        export_apres.close_day_with_export(
+            db, auth.user, report_day, now=clock(), ip=client_ip(request)
+        )
         db.commit()
     except approvals.CloseBlocked:
         db.commit()  # the gate may have run the comparison again: keep that
@@ -231,6 +250,99 @@ def day_partner_list(day: str, request: Request, db: Db, clock: Now, auth: Valid
         db.rollback()
         return day_view(db, auth, chosen, error=str(exc), status_code=400)
     return RedirectResponse(f"/days/{chosen.isoformat()}", status_code=303)
+
+
+def _download(content: bytes, day: date, *, draft: bool) -> Response:
+    """The workbook as an attachment; the name comes from the date only."""
+    name = export_apres.export_filename(day, draft=draft)
+    return Response(
+        content,
+        media_type=export_apres.XLSX_MEDIA_TYPE,
+        headers={
+            **NO_STORE,
+            "Content-Disposition": f'attachment; filename="{name}"',
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
+
+
+def _audit_download(
+    db: Session, request: Request, auth: AuthContext, clock: Clock, details: dict[str, object]
+) -> None:
+    audit.record(
+        db,
+        audit.EXPORT_DOWNLOADED,
+        agency_id=auth.user.agency_id,
+        actor_user_id=auth.user.id,
+        ip=client_ip(request),
+        details=details,
+        now=clock(),
+    )
+    db.commit()
+
+
+@router.get("/{day}/apres.xlsx")
+def day_apres(
+    day: str,
+    request: Request,
+    db: Db,
+    clock: Now,
+    auth: Exporter,
+    v: Annotated[str | None, Query()] = None,
+) -> Response:
+    """The stored TJQ APRES of a closed day: the latest version, or ``?v=N``."""
+    throttle(db, request, auth, clock, write=False, limit=ratelimit.EXPORT_USER)
+    chosen, problem = _day_or_error(day, clock)
+    if chosen is None:
+        return _error_page(db, auth, problem)
+    version: int | None = None
+    if v is not None:
+        if VERSION.fullmatch(v) is None or int(v) < 1:
+            return _error_page(db, auth, BAD_VERSION)
+        version = int(v)
+    report_day = days.get_day(db, auth.user.agency_id, chosen)
+    if report_day is None or report_day.status != DAY_CLOSED:
+        return _error_page(db, auth, NOT_CLOSED_YET, 404)
+    stored = export_apres.get_export(db, auth.user.agency_id, report_day.id, version)
+    if stored is None:
+        return _error_page(
+            db, auth, UNKNOWN_VERSION if version is not None else NO_STORED_EXPORT, 404
+        )
+    _audit_download(
+        db,
+        request,
+        auth,
+        clock,
+        {"report_day_id": report_day.id, "version": stored.version, "draft": False},
+    )
+    return _download(stored.content, chosen, draft=False)
+
+
+@router.get("/{day}/apres-preview.xlsx")
+def day_apres_preview(day: str, request: Request, db: Db, clock: Now, auth: Exporter) -> Response:
+    """A live draft of the TJQ APRES of a day that is not closed: built now, never stored."""
+    throttle(db, request, auth, clock, write=False, limit=ratelimit.EXPORT_USER)
+    chosen, problem = _day_or_error(day, clock)
+    if chosen is None:
+        return _error_page(db, auth, problem)
+    report_day = days.get_day(db, auth.user.agency_id, chosen)
+    if report_day is not None and report_day.status == DAY_CLOSED:
+        return _error_page(db, auth, CLOSED_USE_STORED, 409)
+    try:
+        report = export_apres.apres_rows(db, auth.user, chosen)
+    except export_apres.ExportError as exc:
+        return _error_page(db, auth, str(exc), 409)
+    if report is None:
+        return _error_page(db, auth, export_apres.NO_REPORT, 404)
+    content = export_apres.build_apres_xlsx(report)
+    _audit_download(
+        db,
+        request,
+        auth,
+        clock,
+        {"report_day_id": report_day.id if report_day else None, "draft": True},
+    )
+    return _download(content, chosen, draft=True)
 
 
 def _reopen_page(

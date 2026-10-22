@@ -206,3 +206,36 @@ def test_a_cost_difference_goes_from_flag_to_closed_day(w: FlagWorld) -> None:
     assert w.day().status == "closed"
     summary = flags.day_summary(w.db, w.manager, w.day())
     assert [f.status for f in summary.flags] == ["resolved"]
+
+
+# --- the TJQ APRES (B10) goes through the gate and carries the corrections -----------------------
+
+
+def test_the_export_close_is_gated_and_stores_the_approved_cost(w: FlagWorld) -> None:
+    import io
+
+    import openpyxl
+
+    from app import export_apres
+
+    flag, line = diff_world(w, "total_doc")
+    with pytest.raises(approvals.CloseBlocked):
+        export_apres.close_day_with_export(w.db, w.accountant, w.day(), now=NOW)
+    w.db.rollback()
+    assert (
+        w.day().status != "closed"
+        and export_apres.stored_versions(w.db, w.agency_id, w.day().id) == []
+    )
+    answer(w, w.staff, flag.id, "mine_right", "Tarif négocié avec la compagnie")
+    validate(w, w.accountant, flag.id, True)
+    stored = export_apres.close_day_with_export(w.db, w.accountant, w.day(), now=NOW)
+    w.db.commit()
+    assert stored is not None and w.day().status == "closed"
+    sheet = openpyxl.load_workbook(io.BytesIO(stored.content)).active
+    assert sheet is not None
+    cells = [c for row in sheet.iter_rows(min_row=6) for c in row if c.comment is not None]
+    assert len(cells) == 1
+    assert cells[0].value == float(w.cost_of(line) + 100)
+    comment = cells[0].comment
+    assert comment is not None
+    assert "Valeur Amadeus d'origine : " + str(int(w.cost_of(line))) in comment.text

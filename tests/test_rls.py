@@ -974,6 +974,8 @@ def test_the_exact_policies_installed(world: World) -> None:
         ("day_events", "tenant_insert", "INSERT"),
         ("sale_versions", "tenant_read", "SELECT"),
         ("sale_versions", "tenant_insert", "INSERT"),
+        ("day_exports", "tenant_read", "SELECT"),
+        ("day_exports", "tenant_insert", "INSERT"),
         ("comparison_runs", "tenant_read", "SELECT"),
         ("comparison_runs", "tenant_insert", "INSERT"),
     }

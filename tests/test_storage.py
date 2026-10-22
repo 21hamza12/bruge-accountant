@@ -276,12 +276,25 @@ def test_alembic_upgrade_creates_schema(alembic_cfg: tuple[Config, str]) -> None
     engine.dispose()
 
 
+# Postgres-only objects that live in a migration on purpose and have no model counterpart:
+# the partial unique index on live comparison flags (an expression index with a WHERE clause;
+# on SQLite app/flags.py enforces the same rule under the day lock).
+MIGRATION_ONLY_INDEXES = frozenset({"uq_comparison_flags_live_key"})
+
+
+def _not_migration_only(
+    obj: object, name: str | None, type_: str, reflected: bool, compare_to: object
+) -> bool:
+    return not (type_ == "index" and name in MIGRATION_ONLY_INDEXES)
+
+
 def test_alembic_matches_models(alembic_cfg: tuple[Config, str]) -> None:
     cfg, url = alembic_cfg
     command.upgrade(cfg, "head")
     engine = create_engine(url)
     with engine.connect() as conn:
-        diff = compare_metadata(MigrationContext.configure(conn), Base.metadata)
+        context = MigrationContext.configure(conn, opts={"include_object": _not_migration_only})
+        diff = compare_metadata(context, Base.metadata)
     engine.dispose()
     assert diff == []
 

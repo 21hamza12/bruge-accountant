@@ -66,6 +66,8 @@ SALE_PREVIEW_USER = Limit("sale_preview_user", 1000, 3600)
 COMPARISON_RUN_USER = Limit("comparison_run_user", 30, 3600)
 # Closing and reopening a day: a handful a day is normal.
 DAY_ACTION_USER = Limit("day_action_user", 60, 3600)
+# Downloads of the TJQ APRES (stored or draft): a light budget.
+EXPORT_USER = Limit("export_user", 120, 3600)
 # Guesses at the current password of a logged-in account (stolen-session brute force).
 PASSWORD_CHANGE_USER = Limit("password_change_user", 5, 15 * 60)
 

@@ -20,6 +20,7 @@ from sqlalchemy import (
     ForeignKeyConstraint,
     Index,
     Integer,
+    LargeBinary,
     Numeric,
     String,
     Text,
@@ -935,6 +936,49 @@ class ComparisonFlag(Base):
     )
     updated_at: Mapped[datetime] = mapped_column(
         UTCDateTime, default=_now, onupdate=_now, server_default=func.now()
+    )
+
+
+class DayExport(Base):
+    """Append-only: one stored TJQ APRES workbook of a report day (``version`` 1, 2, ... one per
+    close). Never updated or deleted (migration 0012: no UPDATE/DELETE policy on Postgres,
+    triggers on SQLite); a reopened day that is closed again gets the next version."""
+
+    __tablename__ = "day_exports"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["agency_id", "report_day_id"],
+            ["report_days.agency_id", "report_days.id"],
+            name="fk_day_exports_agency_report_day",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["agency_id", "created_by_user_id"],
+            ["users.agency_id", "users.id"],
+            name="fk_day_exports_agency_created_by",
+            ondelete="RESTRICT",
+        ),
+        UniqueConstraint(
+            "agency_id", "report_day_id", "version", name="uq_day_exports_agency_day_version"
+        ),
+        CheckConstraint("version >= 1", name="version_positive"),
+        CheckConstraint(
+            "length(sha256) = 64 AND rtrim(sha256, '0123456789abcdef') = ''", name="sha256_hex"
+        ),
+        CheckConstraint(
+            "length(content) > 0 AND length(content) <= 5000000", name="content_nonempty"
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigIntType, primary_key=True)
+    agency_id: Mapped[int] = mapped_column(ForeignKey("agencies.id", ondelete="RESTRICT"))
+    report_day_id: Mapped[int] = mapped_column(BigIntType)
+    version: Mapped[int] = mapped_column(Integer)
+    content: Mapped[bytes] = mapped_column(LargeBinary)
+    sha256: Mapped[str] = mapped_column(String(64))
+    created_by_user_id: Mapped[int] = mapped_column(BigIntType)
+    created_at: Mapped[datetime] = mapped_column(
+        UTCDateTime, default=_now, server_default=func.now()
     )
 
 

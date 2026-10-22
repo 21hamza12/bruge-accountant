@@ -208,11 +208,11 @@ def _tables(url: str) -> set[str]:
 # --- chain and shape ---------------------------------------------------------------------------
 
 
-def test_0013_follows_0011_and_is_a_head() -> None:
+def test_0013_follows_0012_and_is_the_single_head() -> None:
     script = ScriptDirectory.from_config(alembic_config("sqlite://"))
     revision = script.get_revision("0013")
-    assert revision is not None and revision.down_revision == "0011"
-    assert "0013" in script.get_heads()  # B10's 0012 shares the parent: rebase before merging
+    assert revision is not None and revision.down_revision == "0012"
+    assert script.get_heads() == ["0013"]
 
 
 def test_grants_follow_the_design() -> None:
@@ -224,7 +224,7 @@ def test_up_and_down_on_sqlite(db_url: str) -> None:
     if _is_postgres(db_url):
         pytest.skip("SQLite objects")
     cfg = alembic_config(db_url)
-    migrate(db_url, revision="0011")
+    migrate(db_url, revision="0012")
     assert not set(TABLES) & _tables(db_url)
     command.upgrade(cfg, "0013")
     assert set(TABLES) <= _tables(db_url)
@@ -243,9 +243,9 @@ def test_up_and_down_on_sqlite(db_url: str) -> None:
         assert indexes["ix_flag_decisions_agency_flag"] == ["agency_id", "flag_id", "id"]
     finally:
         engine.dispose()
-    command.downgrade(cfg, "0011")
+    command.downgrade(cfg, "0012")
     assert not set(TABLES) & _tables(db_url)
-    assert _scalar(db_url, "SELECT version_num FROM alembic_version") == "0011"
+    assert _scalar(db_url, "SELECT version_num FROM alembic_version") == "0012"
     command.upgrade(cfg, "0013")
     assert set(TABLES) <= _tables(db_url)
 

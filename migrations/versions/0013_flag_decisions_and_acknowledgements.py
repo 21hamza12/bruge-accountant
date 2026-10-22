@@ -1,15 +1,12 @@
 """flag decisions and day acknowledgements (B9 approvals)
 
 Revision ID: 0013
-Revises: 0011
+Revises: 0012
 Create Date: 2026-10-23 10:00:00.000000
 
 EXPAND-ONLY: two new tables, nothing existing is touched, so the previous release keeps working.
 
-TODO rebase onto 0012 (B10) before merge: ``down_revision`` is "0011" because this branch was cut
-from the B8 wiring; B10's migration 0012 (``day_exports``) has the same parent. Set
-``down_revision = "0012"`` once B10 is merged (nothing here depends on 0012); until then Alembic
-sees two heads and the single-head tests of the older migrations fail on the merged tree.
+Rebased onto 0012 (B10, ``day_exports``): nothing here depends on it, the chain is linear.
 
 * ``flag_decisions``: append-only. One row for each answer of an agent (``amadeus_right``,
   ``mine_right``, ``void_entry``, ``acknowledged``) and each decision of a validator
@@ -45,7 +42,7 @@ from app import db_roles
 from app.db_roles import ROLE_ENV_VAR
 
 revision: str = "0013"
-down_revision: str | None = "0011"  # TODO rebase onto 0012 (B10) before merge
+down_revision: str | None = "0012"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 

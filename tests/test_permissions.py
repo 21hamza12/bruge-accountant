@@ -41,7 +41,10 @@ MATRIX: dict[str, frozenset[str]] = {
     "can_close_day": frozenset({ROLE_MANAGER, ROLE_ACCOUNTANT}),
     "can_reopen_day": frozenset({ROLE_MANAGER}),
     "can_edit_any_entry": frozenset({ROLE_MANAGER, ROLE_ACCOUNTANT}),
+    "can_enter_own_sales": frozenset({ROLE_STAFF}),
 }
+# Granted to staff alone: the others write sales through can_edit_any_entry.
+STAFF_ONLY = frozenset({"can_enter_own_sales"})
 
 
 def _user(role: str) -> User:
@@ -65,7 +68,10 @@ def test_the_matrix_covers_every_single_user_permission() -> None:
 
 
 def test_staff_has_no_permission_at_all() -> None:
-    assert not any(getattr(permissions, name)(_user(ROLE_STAFF)) for name in MATRIX)
+    assert not any(
+        getattr(permissions, name)(_user(ROLE_STAFF)) for name in MATRIX if name not in STAFF_ONLY
+    )
+    assert permissions.can_enter_own_sales(_user(ROLE_STAFF))
 
 
 def test_an_accountant_never_manages_staff_or_reopens_a_day() -> None:
@@ -75,7 +81,10 @@ def test_an_accountant_never_manages_staff_or_reopens_a_day() -> None:
 
 
 def test_a_manager_has_every_permission() -> None:
-    assert all(getattr(permissions, name)(_user(ROLE_MANAGER)) for name in MATRIX)
+    assert all(
+        getattr(permissions, name)(_user(ROLE_MANAGER)) for name in MATRIX if name not in STAFF_ONLY
+    )
+    assert not any(getattr(permissions, name)(_user(ROLE_MANAGER)) for name in STAFF_ONLY)
 
 
 def test_an_unknown_role_has_no_permission() -> None:

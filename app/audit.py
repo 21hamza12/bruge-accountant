@@ -52,6 +52,13 @@ PARTNER_UPDATED = "partner_updated"
 PARTNER_FEE_SET = "partner_fee_set"
 PARTNER_DEACTIVATED = "partner_deactivated"
 PARTNER_REACTIVATED = "partner_reactivated"
+SALE_CREATED = "sale_created"
+SALE_EDITED = "sale_edited"
+SALE_VOIDED = "sale_voided"
+SALE_MOVED = "sale_moved"
+DAY_OPENED = "day_opened"
+DAY_CLOSED = "day_closed"
+DAY_REOPENED = "day_reopened"
 
 _SECRET_KEY = re.compile(r"password|passwd|token|secret|hash|csrf|cookie|credential", re.IGNORECASE)
 
@@ -120,6 +127,31 @@ def record(
     db.add(event)
     db.flush()
     _log(event_type, agency_id, actor_user_id, ip, data)
+
+
+def refused(
+    db: Session,
+    action: str,
+    *,
+    agency_id: int,
+    actor_user_id: int,
+    ip: str | None = None,
+    now: datetime | None = None,
+) -> None:
+    """A ``permission_denied`` event for a service call the actor was not allowed to make. Nothing
+    but the action name is recorded (no name, phone or amount). It commits at once, like the web
+    guard does: the caller is about to raise, and nothing else was written yet. Every service
+    must therefore refuse before its first write (tests pin this for create, edit, void, move,
+    close and reopen)."""
+    record_and_commit(
+        db,
+        PERMISSION_DENIED,
+        agency_id=agency_id,
+        actor_user_id=actor_user_id,
+        ip=ip,
+        details={"action": action},
+        now=now,
+    )
 
 
 def record_and_commit(

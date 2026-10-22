@@ -6,12 +6,14 @@ from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 
-from sqlalchemy import Connection, text
+from sqlalchemy import Connection, select, text
 from sqlalchemy.orm import Session
 
 from app.db import make_engine, make_session_factory
 from app.models import (
     AuditEvent,
+    ComparisonFlag,
+    ComparisonRun,
     DayEvent,
     Partner,
     PartnerFee,
@@ -21,6 +23,7 @@ from app.models import (
     SaleVersion,
     StaffSignLink,
     TemporaryPassword,
+    Upload,
     User,
     UserSession,
 )
@@ -44,6 +47,8 @@ class Tenant:
     partner_id: int = 0
     report_day_id: int = 0
     sale_id: int = 0
+    run_id: int = 0  # a comparison run of the seeded day (it also has one flag)
+    upload_id: int = 0
 
 
 def seed_tenant(owner_url: str, slug: str, phone: str, token_hash: str, doc_base: int) -> Tenant:
@@ -92,7 +97,11 @@ def seed_tenant(owner_url: str, slug: str, phone: str, token_hash: str, doc_base
             rows = [ticket_row(doc=f"{doc_base + n}") for n in range(2)]
             import_report(s, agency_id, parse_report(build_workbook(rows)), "seed.xlsx", SHA)
             day_id, sale_id = _seed_sale(s, agency_id, user.id, partner.id, doc_base)
-            return Tenant(agency_id, slug, phone, token_hash, user.id, partner.id, day_id, sale_id)
+            upload_id, run_id = _seed_comparison(s, agency_id, user.id, day_id, sale_id)
+            return Tenant(
+                agency_id, slug, phone, token_hash, user.id, partner.id, day_id, sale_id,
+                run_id, upload_id,
+            )  # fmt: skip
     finally:
         engine.dispose()
 
@@ -145,6 +154,42 @@ def _seed_sale(
     s.add(SaleTicket(agency_id=agency_id, sale_id=sale.id, doc_number=f"{doc_base}", position=1))
     s.commit()
     return day.id, sale.id
+
+
+def _seed_comparison(
+    s: Session, agency_id: int, user_id: int, day_id: int, sale_id: int
+) -> tuple[int, int]:
+    """A comparison run of the seeded day on the seeded upload, with one flag."""
+    upload_id = s.scalars(select(Upload.id).where(Upload.agency_id == agency_id)).first()
+    assert upload_id is not None
+    run = ComparisonRun(
+        agency_id=agency_id,
+        report_day_id=day_id,
+        upload_id=upload_id,
+        started_by_user_id=user_id,
+        matched_count=0,
+        flag_count=1,
+        blocking_count=1,
+        cancelled_count=0,
+        move_count=0,
+        partner_missing_count=0,
+    )
+    s.add(run)
+    s.commit()
+    s.add(
+        ComparisonFlag(
+            agency_id=agency_id,
+            report_day_id=day_id,
+            run_id=run.id,
+            doc_number="3999999999",
+            fingerprint="f" * 16,
+            kind="not_sent",
+            sale_id=sale_id,
+            responsible_sign="0004SV",
+        )
+    )
+    s.commit()
+    return upload_id, run.id
 
 
 def insert_unscoped_audit_event(session: Session, event_type: str = "login_failed") -> None:

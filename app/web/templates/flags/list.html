@@ -1,0 +1,104 @@
+{% extends "base.html" %}
+{% block title %}{{ _("Écarts") }}{% endblock %}
+{% block content %}
+<div class="toolbar">
+  <form class="date-form" method="get" action="/flags">
+    <label for="date">{{ _("Jour") }}</label>
+    <input id="date" name="date" type="date" value="{{ day.isoformat() }}" required aria-describedby="date-readout">
+    <span class="date-readout" id="date-readout">{{ day | date_fr }}</span>
+    <button class="btn" type="submit">{{ _("Afficher") }}</button>
+  </form>
+  {% if can_run and has_report %}
+  <form class="inline-form" method="post" action="/flags/run?date={{ day.isoformat() }}">
+    {% include "_csrf.html" %}
+    <button class="btn btn-primary" type="submit">{{ _("Relancer la comparaison") }}</button>
+  </form>
+  {% endif %}
+</div>
+
+{% if error %}<p class="notice" role="alert">{{ error }}</p>{% endif %}
+
+<section class="card" aria-labelledby="run-title">
+  <h2 class="card-title" id="run-title">{{ _("Comparaison avec le rapport Amadeus") }}</h2>
+  {% if summary and summary.run %}
+  <dl class="kv">
+    <dt>{{ _("Journée") }}</dt><dd>{{ day_status }}</dd>
+    {% if summary.counts.matched is not none %}<dt>{{ _("Billets identiques") }}</dt><dd class="num">{{ summary.counts.matched }}</dd>{% endif %}
+    <dt>{{ _("Écarts bloquants") }}</dt><dd class="num">{{ summary.counts.blocking }}</dd>
+    <dt>{{ _("Billets annulés") }}</dt><dd class="num">{{ summary.counts.cancelled }}</dd>
+    {% if summary.counts.moves is not none %}<dt>{{ _("Billets déplacés") }}</dt><dd class="num">{{ summary.counts.moves }}</dd>{% endif %}
+    <dt>{{ _("Billets partenaires absents du rapport") }}</dt><dd class="num">{{ summary.counts.partner_not_in_report }}</dd>
+    <dt>{{ _("Comparaison du") }}</dt><dd><time datetime="{{ summary.run.created_at.isoformat() }}">{{ summary.run.created_at|datetime_fr }}</time> UTC</dd>
+  </dl>
+  {% elif has_report %}
+  <p class="notice" role="status">{{ _("Comparaison à relancer") }}</p>
+  {% else %}
+  <p class="muted">{{ _("Aucun rapport Amadeus n'a été envoyé pour cette journée.") }}</p>
+  {% endif %}
+</section>
+
+{% if summary and summary.run %}
+<section class="card" aria-labelledby="flags-title">
+  <h2 class="card-title" id="flags-title">{{ _("Écarts à traiter") }}</h2>
+  {% if rows %}
+  <div class="table-wrap" tabindex="0" role="region" aria-label="{{ _('Écarts (défilement horizontal)') }}">
+    <table class="table" aria-labelledby="flags-title">
+      <caption class="visually-hidden">{{ _("Écarts entre l'application et le rapport Amadeus") }}</caption>
+      <thead>
+        <tr>
+          <th scope="col">{{ _("Type") }}</th>
+          <th scope="col">{{ _("Billet") }}</th>
+          <th scope="col">{{ _("Champ") }}</th>
+          <th scope="col">{{ _("Application") }}</th>
+          <th scope="col">{{ _("Amadeus") }}</th>
+          <th scope="col">{{ _("Signe") }}</th>
+          <th scope="col">{{ _("Statut") }}</th>
+        </tr>
+      </thead>
+      <tbody>
+      {% for row in rows %}
+        <tr>
+          <td>{{ row.kind }}{% if row.needs_validation %} <span class="muted">({{ _("validation du gérant ou du comptable") }})</span>{% endif %}</td>
+          <td class="mono">{{ row.doc_number }}</td>
+          <td>{{ row.field or "—" }}</td>
+          <td class="num">{{ row.app_value }}</td>
+          <td class="num">{{ row.amadeus_value }}</td>
+          <td class="mono">{{ row.sign }}</td>
+          <td>{{ row.status }}</td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <p class="muted">{{ _("Aucun écart.") }}</p>
+  {% endif %}
+</section>
+
+<section class="card" aria-labelledby="cancelled-title">
+  <h2 class="card-title" id="cancelled-title">{{ _("Billets annulés ce jour") }}</h2>
+  <p class="muted">{{ _("Information : ces annulations sont acceptées automatiquement.") }}</p>
+  {% if summary.cancelled %}
+  <ul class="list-plain">
+    {% for t in summary.cancelled %}<li><span class="mono">{{ t.doc_number }}</span> · {{ t.pax_name }} · <span class="mono">{{ t.staff_sign }}</span></li>
+    {% endfor %}
+  </ul>
+  {% else %}
+  <p class="muted">{{ _("Aucun billet annulé.") }}</p>
+  {% endif %}
+</section>
+
+<section class="card" aria-labelledby="partner-title">
+  <h2 class="card-title" id="partner-title">{{ _("Billets partenaires absents du rapport (autre bureau)") }}</h2>
+  <p class="muted">{{ _("Information : ces billets sont émis dans un autre bureau et ne bloquent pas la journée.") }}</p>
+  {% if summary.partner_not_in_report %}
+  <ul class="list-plain">
+    {% for t in summary.partner_not_in_report %}<li><span class="mono">{{ t.doc_number }}</span> · {{ t.pax_name }} · <span class="mono">{{ t.staff_sign }}</span> · {{ t.total_doc | money_fr }} {{ agency.currency }}</li>
+    {% endfor %}
+  </ul>
+  {% else %}
+  <p class="muted">{{ _("Aucun billet partenaire absent.") }}</p>
+  {% endif %}
+</section>
+{% endif %}
+{% endblock %}

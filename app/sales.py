@@ -114,6 +114,8 @@ __all__ = [
     "ValidatedSale",
     "ValidationContext",
     "active_ticket_lookup",
+    "agency_sales_by_id",
+    "agency_sales_for_day",
     "build_context",
     "check_sale_consistency",
     "create_sale",
@@ -509,6 +511,24 @@ def active_ticket_lookup(
         for doc, sale_id, day_id in rows:
             found[doc] = (sale_id, day_id)
     return found
+
+
+def agency_sales_for_day(db: Session, agency_id: int, day: date) -> list[SaleView]:
+    """Every active sale of the agency on a day, in creation order. For the comparison (B8), which
+    works for the agency, not for one agent: no sign filter."""
+    return _sales_for_day(db, agency_id, day, None, False)
+
+
+def agency_sales_by_id(db: Session, agency_id: int, sale_ids: Collection[int]) -> list[SaleView]:
+    """The active sales of the agency with these ids, as they stand now (the comparison, B8)."""
+    wanted = list(dict.fromkeys(sale_ids))
+    views: list[SaleView] = []
+    for start in range(0, len(wanted), _LOOKUP_CHUNK):
+        query = _current(agency_id).where(
+            Sale.id.in_(wanted[start : start + _LOOKUP_CHUNK]), Sale.status == SALE_ACTIVE
+        )
+        views.extend(_view(head, version, day) for head, version, day in db.execute(query))
+    return views
 
 
 def check_sale_consistency(db: Session, agency_id: int) -> list[str]:

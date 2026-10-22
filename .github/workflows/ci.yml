@@ -15,7 +15,7 @@ jobs:
   checks:
     name: Tests, lint and types (SQLite)
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 25  # the suite grows with each phase-B step; ~6 min today
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -39,7 +39,7 @@ jobs:
   postgres:
     name: Migrations and full suite (Postgres 16)
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 35  # full Postgres suite in both RLS modes; ~15 min today
     services:
       postgres:
         image: postgres:16

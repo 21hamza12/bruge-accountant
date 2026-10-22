@@ -47,6 +47,15 @@ GRANTS = {
     # Phase B3 (migration 0007). Partner fees are append-only: no UPDATE, no DELETE.
     "partners": "SELECT, INSERT, UPDATE",
     "partner_fees": "SELECT, INSERT",
+    # Phase B4 (migration 0008). Days are mutable; their events and the sale versions are
+    # append-only. ``sale_tickets`` is the one table of the phase with DELETE: it holds the
+    # current membership of a sale, and removing a ticket (or voiding the sale) must free its
+    # number; the history of what was there is in ``sale_versions``.
+    "report_days": "SELECT, INSERT, UPDATE",
+    "day_events": "SELECT, INSERT",
+    "sales": "SELECT, INSERT, UPDATE",
+    "sale_tickets": "SELECT, INSERT, DELETE",
+    "sale_versions": "SELECT, INSERT",
 }
 # The tables migration 0003 grants on, frozen. 0003 passes this to ``apply_grants`` instead of
 # relying on GRANTS, which later phases extend: a fresh ``alembic upgrade head`` runs 0003 before

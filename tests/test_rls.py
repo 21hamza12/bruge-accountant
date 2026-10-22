@@ -24,9 +24,14 @@ from app.models import (
     Agency,
     AmadeusLine,
     AuditEvent,
+    DayEvent,
     Partner,
     PartnerFee,
     RateLimitBucket,
+    ReportDay,
+    Sale,
+    SaleTicket,
+    SaleVersion,
     StaffSignLink,
     TemporaryPassword,
     Ticket,
@@ -58,6 +63,11 @@ SCOPED_MODELS: list[Any] = [
     AmadeusLine,
     Partner,
     PartnerFee,
+    ReportDay,
+    DayEvent,
+    Sale,
+    SaleTicket,
+    SaleVersion,
 ]
 
 
@@ -177,6 +187,26 @@ def test_tenant_binding_is_per_session_not_shared_between_connections(world: Wor
 # --- WITH CHECK ----------------------------------------------------------------------
 
 
+def sale_version(owner: Tenant, *, version_no: int, partner_id: int | None = None) -> SaleVersion:
+    return SaleVersion(
+        agency_id=owner.agency_id,
+        sale_id=owner.sale_id,
+        version_no=version_no,
+        report_day_id=owner.report_day_id,
+        staff_sign="0004SV",
+        ag_kind="partner",
+        partner_id=partner_id or owner.partner_id,
+        ag_label="BADI",
+        fee_applied=Decimal("500"),
+        pb=Decimal("1500"),
+        cost_total=Decimal("1000"),
+        payment_method="credit",
+        tickets=[],
+        source="form",
+        actor_user_id=owner.user_id,
+    )
+
+
 def rows_for_agency_b(b: Tenant) -> dict[str, Any]:
     return {
         "users": User(agency_id=b.agency_id, phone="+22233333333", role="staff"),
@@ -206,6 +236,26 @@ def rows_for_agency_b(b: Tenant) -> dict[str, Any]:
             valid_from=date(2026, 1, 1),
             set_by_user_id=b.user_id,
         ),
+        "report_days": ReportDay(agency_id=b.agency_id, day=date(2026, 10, 19), status="open"),
+        "day_events": DayEvent(
+            agency_id=b.agency_id,
+            report_day_id=b.report_day_id,
+            to_status="open",
+            kind="open",
+            actor_user_id=b.user_id,
+        ),
+        "sales": Sale(
+            agency_id=b.agency_id,
+            report_day_id=b.report_day_id,
+            staff_sign="0004SV",
+            created_by_user_id=b.user_id,
+            current_version=1,
+            status="active",
+        ),
+        "sale_tickets": SaleTicket(
+            agency_id=b.agency_id, sale_id=b.sale_id, doc_number="3999999990", position=2
+        ),
+        "sale_versions": sale_version(b, version_no=2),
         "uploads": Upload(
             agency_id=b.agency_id,
             filename="x.xlsx",
@@ -230,6 +280,11 @@ def rows_for_agency_b(b: Tenant) -> dict[str, Any]:
         "uploads",
         "partners",
         "partner_fees",
+        "report_days",
+        "day_events",
+        "sales",
+        "sale_tickets",
+        "sale_versions",
     ],
 )
 def test_insert_for_another_agency_is_rejected(world: World, table: str) -> None:
@@ -563,6 +618,142 @@ def test_the_app_role_cannot_delete_partners(app_role_world: World) -> None:
             s.execute(delete(Partner))
 
 
+# --- report days and sales (migration 0008) -----------------------------------------
+
+
+def test_a_sale_row_cannot_be_moved_to_another_agency(world: World) -> None:
+    db, a, b = world
+    for model in (ReportDay, Sale, SaleTicket):
+        with app_session(db) as s:
+            bind_tenant(s, a.agency_id)
+            with pytest.raises(DBAPIError) as info:
+                s.execute(update(model).values(agency_id=b.agency_id))
+            if model is SaleTicket and db.mode == "app-role":  # no UPDATE privilege at all
+                assert "permission denied" in str(info.value)
+            else:
+                assert violates_rls(info.value)
+
+
+def test_sales_of_another_agency_cannot_be_updated_or_deleted(world: World) -> None:
+    db, a, b = world
+    with app_session(db) as s:
+        bind_tenant(s, a.agency_id)
+        voided = update(Sale).where(Sale.id == b.sale_id).values(status="voided")
+        assert affected(s.execute(voided)) == 0
+        closed = update(ReportDay).where(ReportDay.id == b.report_day_id).values(status="closed")
+        assert affected(s.execute(closed)) == 0
+        assert affected(s.execute(delete(SaleTicket).where(SaleTicket.sale_id == b.sale_id))) == 0
+        s.commit()
+    with app_session(db) as s:
+        bind_tenant(s, b.agency_id)
+        assert s.scalar(select(Sale.status).where(Sale.id == b.sale_id)) == "active"
+        assert count(s, SaleTicket) == 1
+
+
+def test_the_tenant_may_edit_its_sale_and_delete_its_tickets(world: World) -> None:
+    db, a, _ = world
+    with app_session(db) as s:
+        bind_tenant(s, a.agency_id)
+        assert affected(s.execute(update(Sale).values(current_version=2))) == 1
+        assert affected(s.execute(update(ReportDay).values(status="compared"))) == 1
+        assert affected(s.execute(delete(SaleTicket))) == 1
+        s.commit()
+        assert count(s, SaleTicket) == 0
+
+
+@pytest.mark.parametrize("model", [DayEvent, SaleVersion], ids=lambda m: m.__tablename__)
+def test_day_events_and_sale_versions_are_append_only_for_the_tenant(
+    world: World, model: Any
+) -> None:
+    """tenant_read and tenant_insert only: no UPDATE or DELETE policy, so a row cannot be edited
+    or removed, not even by the owner in single-role mode (the app role lacks the privileges)."""
+    db, a, _ = world
+    change = {"reason": "edited"} if model is DayEvent else {"pb": Decimal("1")}
+    with app_session(db) as s:
+        bind_tenant(s, a.agency_id)
+        before = count(s, model)
+        assert before == 1
+        for statement in (update(model).values(**change), delete(model)):
+            if db.mode == "app-role":
+                with pytest.raises(ProgrammingError, match="permission denied"):
+                    s.execute(statement)
+                s.rollback()
+                bind_tenant(s, a.agency_id)
+            else:
+                assert affected(s.execute(statement)) == 0
+        s.rollback()
+        bind_tenant(s, a.agency_id)
+        assert count(s, model) == before
+        if model is SaleVersion:
+            assert s.scalars(select(SaleVersion.pb)).all() == [Decimal("1500.00")]
+
+
+def test_a_sale_version_can_be_appended_for_the_bound_tenant(world: World) -> None:
+    db, a, _ = world
+    with app_session(db) as s:
+        bind_tenant(s, a.agency_id)
+        s.add(sale_version(a, version_no=2))
+        s.commit()
+        assert count(s, SaleVersion) == 2
+
+
+def test_a_version_for_a_partner_of_another_agency_is_refused(world: World) -> None:
+    """The row passes the policy (right agency_id) and the composite foreign key refuses it."""
+    db, a, b = world
+    with app_session(db) as s:
+        bind_tenant(s, a.agency_id)
+        s.add(sale_version(a, version_no=2, partner_id=b.partner_id))
+        with pytest.raises(DBAPIError) as info:
+            s.commit()
+        assert "foreign key" in str(info.value)
+
+
+def test_a_day_compared_with_an_upload_of_another_agency_is_refused(world: World) -> None:
+    db, a, b = world
+    with app_session(db) as s:
+        bind_tenant(s, b.agency_id)
+        upload_id = s.scalars(select(Upload.id)).first()
+    with app_session(db) as s:
+        bind_tenant(s, a.agency_id)
+        s.add(
+            ReportDay(
+                agency_id=a.agency_id,
+                day=date(2026, 10, 17),
+                status="compared",
+                compared_upload_id=upload_id,
+            )
+        )
+        with pytest.raises(DBAPIError) as info:
+            s.commit()
+        assert "foreign key" in str(info.value)
+
+
+def test_a_ticket_number_is_unique_per_agency_under_rls(world: World) -> None:
+    db, a, b = world
+    with app_session(db) as s:
+        bind_tenant(s, a.agency_id)
+        taken = s.scalars(select(SaleTicket.doc_number)).one()
+        s.add(SaleTicket(agency_id=a.agency_id, sale_id=a.sale_id, doc_number=taken, position=2))
+        with pytest.raises(DBAPIError, match="uq_sale_tickets_agency_doc_number"):
+            s.commit()
+    with app_session(db) as s:  # the same number in another agency is a different ticket
+        bind_tenant(s, b.agency_id)
+        s.add(SaleTicket(agency_id=b.agency_id, sale_id=b.sale_id, doc_number=taken, position=2))
+        s.commit()
+
+
+def test_the_app_role_has_delete_only_on_sale_tickets(app_role_world: World) -> None:
+    db, a, _ = app_role_world
+    with app_session(db) as s:
+        bind_tenant(s, a.agency_id)
+        for model in (Sale, ReportDay):
+            with pytest.raises(ProgrammingError, match="permission denied"):
+                s.execute(delete(model))
+            s.rollback()
+            bind_tenant(s, a.agency_id)
+        assert affected(s.execute(delete(SaleTicket))) == 1
+
+
 # --- what the app role may not do (separate role only) -------------------------------
 
 
@@ -709,6 +900,9 @@ def test_the_exact_policies_installed(world: World) -> None:
             "user_sessions",
             "temporary_passwords",
             "partners",
+            "report_days",
+            "sales",
+            "sale_tickets",
         )
     } | {
         ("partner_fees", "tenant_read", "SELECT"),
@@ -723,5 +917,9 @@ def test_the_exact_policies_installed(world: World) -> None:
         ("audit_events", "retention_purge", "DELETE"),
         ("amadeus_lines", "tenant_read", "SELECT"),
         ("amadeus_lines", "tenant_insert", "INSERT"),
+        ("day_events", "tenant_read", "SELECT"),
+        ("day_events", "tenant_insert", "INSERT"),
+        ("sale_versions", "tenant_read", "SELECT"),
+        ("sale_versions", "tenant_insert", "INSERT"),
     }
     assert installed == expected

@@ -35,6 +35,7 @@ from sqlalchemy.orm import Session
 from app import audit
 from app.accounts import is_unique_violation
 from app.auth.phone import InvalidPhoneError, normalize_phone
+from app.errors import UserError
 from app.models import Partner, PartnerFee, User
 from app.money import MoneyError, to_amount
 from app.parsing.amadeus import clean_text
@@ -62,7 +63,7 @@ _ISO_DATE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}", re.ASCII)
 _NEWEST = (PartnerFee.valid_from.desc(), PartnerFee.created_at.desc(), PartnerFee.id.desc())
 
 
-class PartnerError(Exception):
+class PartnerError(UserError):
     """A mistake the user can correct; ``str(error)`` is a French message."""
 
 

@@ -12,8 +12,13 @@ from sqlalchemy.orm import Session
 from app.db import make_engine, make_session_factory
 from app.models import (
     AuditEvent,
+    DayEvent,
     Partner,
     PartnerFee,
+    ReportDay,
+    Sale,
+    SaleTicket,
+    SaleVersion,
     StaffSignLink,
     TemporaryPassword,
     User,
@@ -37,6 +42,8 @@ class Tenant:
     token_hash: str
     user_id: int
     partner_id: int = 0
+    report_day_id: int = 0
+    sale_id: int = 0
 
 
 def seed_tenant(owner_url: str, slug: str, phone: str, token_hash: str, doc_base: int) -> Tenant:
@@ -84,9 +91,60 @@ def seed_tenant(owner_url: str, slug: str, phone: str, token_hash: str, doc_base
             s.commit()
             rows = [ticket_row(doc=f"{doc_base + n}") for n in range(2)]
             import_report(s, agency_id, parse_report(build_workbook(rows)), "seed.xlsx", SHA)
-            return Tenant(agency_id, slug, phone, token_hash, user.id, partner.id)
+            day_id, sale_id = _seed_sale(s, agency_id, user.id, partner.id, doc_base)
+            return Tenant(agency_id, slug, phone, token_hash, user.id, partner.id, day_id, sale_id)
     finally:
         engine.dispose()
+
+
+def _seed_sale(
+    s: Session, agency_id: int, user_id: int, partner_id: int, doc_base: int
+) -> tuple[int, int]:
+    """A report day (with its event), and a partner sale with one version and one ticket."""
+    day = ReportDay(agency_id=agency_id, day=date(2026, 10, 18), status="open")
+    s.add(day)
+    s.commit()
+    s.add(
+        DayEvent(
+            agency_id=agency_id,
+            report_day_id=day.id,
+            to_status="open",
+            kind="open",
+            actor_user_id=user_id,
+        )
+    )
+    sale = Sale(
+        agency_id=agency_id,
+        report_day_id=day.id,
+        staff_sign="0004SV",
+        created_by_user_id=user_id,
+        current_version=1,
+        status="active",
+    )
+    s.add(sale)
+    s.commit()
+    s.add(
+        SaleVersion(
+            agency_id=agency_id,
+            sale_id=sale.id,
+            version_no=1,
+            report_day_id=day.id,
+            staff_sign="0004SV",
+            ag_kind="partner",
+            partner_id=partner_id,
+            ag_label="BADI",
+            fee_applied=Decimal("500"),
+            pb=Decimal("1500"),
+            cost_total=Decimal("1000"),
+            payment_method="credit",
+            tickets=[],
+            source="form",
+            actor_user_id=user_id,
+        )
+    )
+    s.add(SaleTicket(agency_id=agency_id, sale_id=sale.id, doc_number=f"{doc_base}", position=1))
+    s.commit()
+    return day.id, sale.id
 
 
 def insert_unscoped_audit_event(session: Session, event_type: str = "login_failed") -> None:

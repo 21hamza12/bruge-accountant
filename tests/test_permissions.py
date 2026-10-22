@@ -87,6 +87,13 @@ def test_a_manager_has_every_permission() -> None:
     assert not any(getattr(permissions, name)(_user(ROLE_MANAGER)) for name in STAFF_ONLY)
 
 
+def test_the_sales_screens_are_for_staff_manager_and_accountant_only() -> None:
+    for role in ROLES:
+        assert permissions.can_use_sales_screens(_user(role)) is True
+    for role in ("root", "", "MANAGER", "admin"):
+        assert permissions.can_use_sales_screens(_user(role)) is False
+
+
 def test_an_unknown_role_has_no_permission() -> None:
     for role in ("root", "", "MANAGER", "admin"):
         user = _user(role)

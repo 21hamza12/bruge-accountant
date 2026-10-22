@@ -1,0 +1,69 @@
+{% extends "base.html" %}
+{% block title %}{% if shell.sees_all %}{{ _("Ventes du jour") }}{% else %}{{ _("Mes ventes") }}{% endif %}{% endblock %}
+{% block content %}
+<div class="toolbar">
+  <form class="date-form" method="get" action="/sales">
+    <label for="date">{{ _("Jour") }}</label>
+    <input id="date" name="date" type="date" value="{{ day.isoformat() }}" required aria-describedby="date-readout">
+    <span class="date-readout" id="date-readout">{{ day | date_fr }}</span>
+    {% if shell.sees_all %}
+    <label for="sign">{{ _("Signe") }}</label>
+    <select id="sign" name="sign">
+      <option value="">{{ _("Tous les signes") }}</option>
+      {% for known in known_signs %}<option value="{{ known }}"{% if known == sign %} selected{% endif %}>{{ known }}</option>{% endfor %}
+    </select>
+    {% endif %}
+    <button class="btn" type="submit">{{ _("Afficher") }}</button>
+  </form>
+  <a class="btn btn-primary" href="/sales/new">{{ _("Saisir une vente") }}</a>
+</div>
+
+<section class="card" aria-labelledby="totals-title">
+  <h2 class="card-title" id="totals-title">{{ _("Totaux du jour") }}</h2>
+  <dl class="kv">
+    <dt>{{ _("Ventes") }}</dt><dd class="num">{{ totals.sales }}</dd>
+    <dt>{{ _("Billets") }}</dt><dd class="num">{{ ngettext("%(num)d billet", "%(num)d billets", totals.tickets) }}</dd>
+    <dt>{{ _("Coût total") }}</dt><dd class="num">{{ totals.cost | money_fr }} {{ agency.currency }}</dd>
+    <dt>{{ _("P.B total") }}</dt><dd class="num">{{ totals.revenue | money_fr }} {{ agency.currency }}</dd>
+    <dt>{{ _("Profit") }}</dt><dd class="num">{{ totals.profit | money_fr }} {{ agency.currency }}</dd>
+  </dl>
+</section>
+
+<section class="card" aria-labelledby="sales-title">
+  <h2 class="card-title" id="sales-title">{% if shell.sees_all %}{{ _("Ventes du jour") }}{% else %}{{ _("Mes ventes") }}{% endif %}</h2>
+  {% if rows %}
+  <div class="table-wrap" tabindex="0" role="region" aria-label="{{ _('Ventes (défilement horizontal)') }}">
+    <table class="table" aria-labelledby="sales-title">
+      <thead>
+        <tr>
+          <th scope="col">{{ _("Vente") }}</th>
+          <th scope="col">{{ _("Signe") }}</th>
+          <th scope="col">{{ _("Client") }}</th>
+          <th scope="col" class="col-end">{{ _("Billets") }}</th>
+          <th scope="col" class="col-end">{{ _("Coût") }}</th>
+          <th scope="col" class="col-end">{{ _("P.B") }}</th>
+          <th scope="col" class="col-end">{{ _("Profit") }}</th>
+          <th scope="col">{{ _("Paiement") }}</th>
+        </tr>
+      </thead>
+      <tbody>
+      {% for row in rows %}
+        <tr>
+          <td><a href="/sales/{{ row.s.id }}">{{ _("Vente %(id)s", id=row.s.id) }}</a></td>
+          <td class="mono">{{ row.s.staff_sign }}</td>
+          <td>{{ row.s.clt or row.s.ag_label }}</td>
+          <td class="num col-end">{{ row.s.tickets | length }}</td>
+          <td class="num col-end">{{ row.s.cost_total | money_fr }}</td>
+          <td class="num col-end">{{ row.s.pb | money_fr }}</td>
+          <td class="num col-end">{{ row.profit | money_fr }}</td>
+          <td>{{ row.payment }}</td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <p class="muted">{{ _("Aucune vente pour cette journée.") }}</p>
+  {% endif %}
+</section>
+{% endblock %}

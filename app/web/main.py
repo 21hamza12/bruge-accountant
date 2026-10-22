@@ -43,6 +43,8 @@ from app.web.routes import home as home_routes
 from app.web.routes import partners as partner_routes
 from app.web.routes import password as password_routes
 from app.web.routes import questions as questions_routes
+from app.web.routes import sale_entry as sale_entry_routes
+from app.web.routes import sales as sales_routes
 from app.web.routes import staff as staff_routes
 from app.web.routes import uploads as upload_routes
 from app.web.templating import TEMPLATES_DIR, render
@@ -143,6 +145,8 @@ def create_app(
     app.include_router(home_routes.router)
     app.include_router(password_routes.router)
     app.include_router(partner_routes.router)
+    app.include_router(sale_entry_routes.router)  # first: /sales/new before /sales/{sale_id}
+    app.include_router(sales_routes.router)
     app.include_router(staff_routes.router)
     app.include_router(upload_routes.router)
     app.include_router(questions_routes.router)

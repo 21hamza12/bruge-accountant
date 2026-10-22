@@ -31,10 +31,23 @@
         <a class="nav-link" href="/"{% if shell.active == "home" %} aria-current="page"{% endif %}>
           <span class="nav-label">{{ icon("dashboard") }}{{ _("Tableau de bord") }}</span>
         </a>
+        {% if shell.can_enter_sales %}
+        <a class="nav-link" href="/sales/new"{% if shell.active == "sale_new" %} aria-current="page"{% endif %}>
+          <span class="nav-label">{{ icon("ticket") }}{{ _("Saisir une vente") }}</span>
+        </a>
+        <a class="nav-link" href="/sales"{% if shell.active == "sales" %} aria-current="page"{% endif %}>
+          <span class="nav-label">{{ icon("list") }}{{ _("Mes ventes") }}</span>
+        </a>
+        {% endif %}
         <a class="nav-link" href="/questions"{% if shell.active == "questions" %} aria-current="page"{% endif %}>
           <span class="nav-label">{{ icon("questions") }}{{ _("Questions de prix") }}</span>
           {% if shell.badge %}<span class="badge">{{ shell.badge }}<span class="visually-hidden"> {{ _("en attente") }}</span></span>{% endif %}
         </a>
+        {% if shell.can_see_day_sales %}
+        <a class="nav-link" href="/sales"{% if shell.active in ("sales", "sale_new") %} aria-current="page"{% endif %}>
+          <span class="nav-label">{{ icon("list") }}{{ _("Ventes du jour") }}</span>
+        </a>
+        {% endif %}
         <a class="nav-link" href="/uploads"{% if shell.active == "uploads" %} aria-current="page"{% endif %}>
           <span class="nav-label">{{ icon("upload") }}{{ _("Rapports") }}</span>
         </a>
@@ -118,8 +131,14 @@
   </div>
 
   <nav class="tabbar" aria-label="{{ _('Navigation') }}">
-    <a class="tab" href="/"{% if shell.active == "home" %} aria-current="page"{% endif %}>{{ icon("dashboard") }}<span class="tab-label">{{ _("Tableau de bord") }}</span></a>
+    <a class="tab" href="/"{% if shell.active == "home" %} aria-current="page"{% endif %}><span class="tab-badge">{{ icon("dashboard") }}{% if shell.badge and not shell.bottom_bar_questions %}<span class="badge">{{ shell.badge }}<span class="visually-hidden"> {{ _("en attente") }}</span></span>{% endif %}</span><span class="tab-label">{{ _("Tableau de bord") }}</span></a>
+    {% if shell.bottom_bar_sales %}
+    <a class="tab" href="/sales/new"{% if shell.active == "sale_new" %} aria-current="page"{% endif %}>{{ icon("ticket") }}<span class="tab-label">{{ _("Saisir une vente") }}</span></a>
+    <a class="tab" href="/sales"{% if shell.active == "sales" %} aria-current="page"{% endif %}>{{ icon("list") }}<span class="tab-label">{{ _("Mes ventes") }}</span></a>
+    {% endif %}
+    {% if shell.bottom_bar_questions %}
     <a class="tab" href="/questions"{% if shell.active == "questions" %} aria-current="page"{% endif %}><span class="tab-badge">{{ icon("questions") }}{% if shell.badge %}<span class="badge">{{ shell.badge }}<span class="visually-hidden"> {{ _("en attente") }}</span></span>{% endif %}</span><span class="tab-label">{{ _("Questions") }}</span></a>
+    {% endif %}
     <a class="tab" href="/uploads/new"{% if shell.active in ("upload_new", "uploads") %} aria-current="page"{% endif %}>{{ icon("upload") }}<span class="tab-label">{{ _("Envoyer un rapport") }}</span></a>
     {% if shell.bottom_bar_partners %}
     <a class="tab" href="/partners"{% if shell.active == "partners" %} aria-current="page"{% endif %}>{{ icon("partners") }}<span class="tab-label">{{ _("Partenaires") }}</span></a>

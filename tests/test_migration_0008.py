@@ -172,7 +172,9 @@ def test_0008_follows_0007_and_is_the_single_head() -> None:
     script = ScriptDirectory.from_config(alembic_config("sqlite://"))
     revision = script.get_revision("0008")
     assert revision is not None and revision.down_revision == "0007"
-    assert script.get_heads() == ["0008"]
+    assert script.get_heads() == ["0009"]
+    later = script.get_revision("0009")
+    assert later is not None and later.down_revision == "0008"
 
 
 def test_grants_follow_the_design() -> None:
@@ -315,8 +317,20 @@ def test_the_ticket_number_guard_is_per_agency(db_url: str) -> None:
     _add(w, w.a, SaleTicket(agency_id=w.a, sale_id=w.sale_a, doc_number="3940000002", position=2))
 
 
-@pytest.mark.parametrize("doc", ["1234567", "1234567890123456", "3940000AB1", "", "394 000001"])
-def test_a_ticket_number_must_be_8_to_15_digits(db_url: str, doc: str) -> None:
+@pytest.mark.parametrize(
+    "doc",
+    [
+        "1234567",
+        "123456789",
+        "12345678901",
+        "4953940281465",  # prefixed: the application cuts the prefix off before storing
+        "1234567890123456",
+        "3940000AB1",
+        "",
+        "394 000001",
+    ],
+)
+def test_a_ticket_number_must_be_exactly_10_digits(db_url: str, doc: str) -> None:
     migrate(db_url)
     w = _world(db_url)
     with pytest.raises((IntegrityError, DBAPIError)):  # too long: a DataError on Postgres
@@ -703,3 +717,18 @@ def test_postgres_constraints_hold_too(pg_url: str) -> None:
                 compared_upload_id=w.upload_b,
             ),
         )
+
+
+def test_0009_downgrade_widens_the_rule_and_upgrade_tightens_it_again(db_url: str) -> None:
+    from alembic import command
+
+    migrate(db_url)
+    cfg = alembic_config(db_url)
+    command.downgrade(cfg, "0008")
+    w = _world(db_url)
+    # 8 to 15 digits are valid again under 0008
+    _add(
+        w, w.a, SaleTicket(agency_id=w.a, sale_id=w.sale_a, doc_number="4953940281465", position=2)
+    )
+    with app_role_env(None), pytest.raises(Exception, match="doc_number|CHECK|check"):
+        command.upgrade(cfg, "head")  # a 13-digit row stops the tightening: loud, not silent

@@ -1,0 +1,48 @@
+{#- Shared pieces of the sale pages. -#}
+{% macro hidden_fields(pairs) -%}
+{% for name, value in pairs %}<input type="hidden" name="{{ name }}" value="{{ value }}">
+{% endfor %}
+{%- endmacro %}
+
+{% macro field_error(errors, key) -%}
+{% if errors.get(key) %}<p class="error" id="{{ key|replace('.', '-') }}-error">{{ errors[key] }}</p>{% endif %}
+{%- endmacro %}
+
+{% macro described(errors, key) -%}
+{% if errors.get(key) %} aria-invalid="true" aria-describedby="{{ key|replace('.', '-') }}-error"{% endif %}
+{%- endmacro %}
+
+{% macro status_pill(status) -%}
+{% if status == "voided" %}<span class="pill pill-red">{{ _("Annulée") }}</span>{% else %}<span class="pill pill-green">{{ _("Active") }}</span>{% endif %}
+{%- endmacro %}
+
+{% macro ticket_table(tickets, label) -%}
+<div class="table-wrap" tabindex="0" role="region" aria-label="{{ label }}">
+  <table class="table table-sale">
+    <thead>
+      <tr>
+        <th scope="col">{{ _("Billet") }}</th>
+        <th scope="col">{{ _("A/L") }}</th>
+        <th scope="col">{{ _("Passager") }}</th>
+        <th scope="col">{{ _("Type") }}</th>
+        <th scope="col">{{ _("RLOC") }}</th>
+        <th scope="col">{{ _("TRNC") }}</th>
+        <th scope="col" class="col-end">{{ _("Coût") }}</th>
+      </tr>
+    </thead>
+    <tbody>
+    {% for t in tickets %}
+      <tr>
+        <td class="mono">{{ t.doc_number }}</td>
+        <td>{{ t.airline }}</td>
+        <td>{{ t.pax_name }}</td>
+        <td>{{ t.pax_type }}</td>
+        <td class="mono">{{ t.rloc }}</td>
+        <td>{{ t.trnc }}</td>
+        <td class="num col-end">{{ t.total_doc | money_fr }}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</div>
+{%- endmacro %}

@@ -469,7 +469,7 @@ def _in_list(column: str, values: tuple[str, ...]) -> str:
 
 # Same E.164 rule as users.phone, on the ``ap`` column.
 AP_E164_CHECK = PHONE_E164_CHECK.replace("phone", "ap")
-DOC_NUMBER_CHECK = "length(doc_number) BETWEEN 8 AND 15 AND rtrim(doc_number, '0123456789') = ''"
+DOC_NUMBER_CHECK = "length(doc_number) = 10 AND rtrim(doc_number, '0123456789') = ''"
 REASON_CHECK = f"reason IS NULL OR length(trim(reason)) >= {MIN_REASON_LENGTH}"
 
 

@@ -1708,3 +1708,108 @@ select:focus-visible {
   gap: 0.5rem 0.75rem;
   min-block-size: var(--tap);
 }
+
+/* ---------- sale pages ---------- */
+
+.form-wide {
+  max-inline-size: 60rem;
+}
+
+.ticket-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(9rem, 1fr));
+  gap: 0.75rem 1rem;
+  margin: 0;
+  padding: 0.75rem 0;
+  border: 0;
+  border-block-start: 1px solid var(--border-soft);
+}
+
+.ticket-row legend {
+  padding-inline: 0;
+  font-size: 0.8125rem;
+  font-weight: 600;
+  color: var(--text-2);
+}
+
+.field-check {
+  flex-direction: row;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem 0.75rem;
+  min-block-size: var(--tap);
+}
+
+.field-check input[type="checkbox"] {
+  inline-size: 1.25rem;
+  block-size: 1.25rem;
+  accent-color: var(--accent);
+}
+
+.field-check .error {
+  flex-basis: 100%;
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+details.field summary {
+  display: flex;
+  align-items: center;
+  min-block-size: var(--tap);
+  cursor: pointer;
+  font-size: 0.8125rem;
+  font-weight: 500;
+  color: var(--text-2);
+}
+
+.history {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.history-item {
+  padding-block-end: 1rem;
+  border-block-end: 1px solid var(--border-soft);
+}
+
+.history-item:last-child {
+  padding-block-end: 0;
+  border-block-end: 0;
+}
+
+.history-title {
+  font-size: 0.9375rem;
+  font-weight: 600;
+}
+
+/* A partner sale's price is computed: hide the P.B input when a partner is chosen. Browsers
+   without :has() keep showing it (the server ignores a price typed for a partner sale). */
+.sale-card:has(#ag option:not([value="direct"]):checked) .field-pb {
+  display: none;
+}
+
+.error-list {
+  margin: 0.5rem 0 0;
+  padding-inline-start: 1.25rem;
+}
+
+.error-list a {
+  display: inline-flex;
+  align-items: center;
+  min-block-size: var(--tap);
+  color: inherit;
+  text-decoration: underline;
+}
+
+.table-sale {
+  min-inline-size: 34rem;
+}

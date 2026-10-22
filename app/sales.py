@@ -80,6 +80,7 @@ from app.sales_rules import (
     TicketRow,
     ValidatedSale,
     ValidationContext,
+    below_cost_warning,
     day_totals,
     lines_from_json,
     pb_per_line,
@@ -95,6 +96,7 @@ __all__ = [
     "CarriedFee",
     "DayTotals",
     "DuplicateTicket",
+    "InvalidReason",
     "FieldError",
     "InvalidSale",
     "PartnerContext",
@@ -102,7 +104,9 @@ __all__ = [
     "SaleForbidden",
     "SaleInput",
     "SaleNotFound",
+    "SaleVoided",
     "SaleResult",
+    "StaleSale",
     "SaleView",
     "TicketInput",
     "TicketLine",
@@ -124,8 +128,10 @@ __all__ = [
     "sale_history_for",
     "sale_profit",
     "sales_for_day_for",
+    "sign_warnings",
     "ticket_rows",
     "validate",
+    "view_warnings",
     "visible_signs",
     "void_sale",
 ]
@@ -159,6 +165,24 @@ after_duplicate_check: Callable[[], None] | None = None
 
 class SaleError(UserError):
     """A mistake the user can correct; ``str(error)`` is a French message."""
+
+
+class StaleSale(SaleError):
+    """The sale changed between the form and the save ("rechargez la page")."""
+
+    def __init__(self) -> None:
+        super().__init__(STALE)
+
+
+class SaleVoided(SaleError):
+    """The sale is cancelled: it can no longer be edited or voided."""
+
+    def __init__(self) -> None:
+        super().__init__(VOIDED)
+
+
+class InvalidReason(SaleError):
+    """The reason of an edit, a void or a move is missing, too short or too long."""
 
 
 class SaleNotFound(SaleError):
@@ -268,7 +292,7 @@ def _reason_for_edit(scope: str, raw: str | None) -> str | None:
     try:
         return required_reason(raw) if scope == ALL else clean_reason(raw)
     except ReasonError as exc:
-        raise SaleError(str(exc)) from None
+        raise InvalidReason(str(exc)) from None
 
 
 def _resolve_sign(
@@ -434,6 +458,25 @@ def sales_for_day_for(
     else:
         wanted = [s for s in signs if s in allowed]
     return _sales_for_day(db, actor.agency_id, day, wanted, include_voided)
+
+
+def view_warnings(db: Session, actor: User, view: SaleView) -> tuple[str, ...]:
+    """The warnings of a stored sale, as the read-back showed them: a direct sale priced below its
+    cost, and (manager and accountant only) a sign that nobody is linked to."""
+    found: list[str] = []
+    if view.ag_kind != AG_PARTNER:
+        below = below_cost_warning(view.pb, view.cost_total)
+        if below is not None:
+            found.append(below)
+    found.extend(sign_warnings(db, actor, view.staff_sign))
+    return tuple(found)
+
+
+def sign_warnings(db: Session, actor: User, sign: str) -> tuple[str, ...]:
+    """Tell a manager or accountant when nobody is linked to the sign a sale is written under
+    (nobody else is ever told: staff can only write under their own signs)."""
+    scope = ALL if permissions.can_edit_any_entry(actor) else OWN
+    return _sign_warnings(db, actor, scope, sign)
 
 
 def overrides_for_day(db: Session, actor: User, day: date) -> list[SaleView]:
@@ -604,14 +647,20 @@ def _access(
         days.lock_day(db, actor, report_day, shared=True)
         head = _fresh_sale(db, actor, sale_id, lock=True)
         if head.report_day_id != report_day.id:
-            raise SaleError(STALE)  # moved to another day while we waited
+            raise StaleSale  # moved to another day while we waited
     days.require_writable(report_day)
     if head.status == SALE_VOIDED:
-        raise SaleError(VOIDED)
+        raise SaleVoided
     return head, report_day
 
 
 # --- writing helpers ------------------------------------------------------------------------
+
+
+def _check_expected(head: Sale, expected_version: int | None) -> None:
+    """Refuse a write built on an older version of the sale (checked under the sale's lock)."""
+    if expected_version is not None and head.current_version != expected_version:
+        raise StaleSale
 
 
 def _find_duplicate(
@@ -647,7 +696,7 @@ def _raise_unique(
         duplicate = _find_duplicate(db, actor, docs, except_sale_id=except_id)
         if duplicate is not None:
             raise duplicate from None
-        raise SaleError(STALE) from None
+        raise StaleSale from None
     raise exc
 
 
@@ -895,16 +944,19 @@ def edit_sale(
     now: datetime | None = None,
     ip: str | None = None,
     source: str = "form",
+    expected_version: int | None = None,
 ) -> SaleResult:
     """Replace the content of a sale (tickets, price, client, payment...) with a new version.
 
     Manager and accountant must give a ``reason``; staff, editing their own sale of today, need
     not. The day stays (``move_sale_day`` changes it). ``SaleError`` when nothing changed, the
-    sale is voided, or it changed under us ("rechargez").
+    sale is voided, or it changed under us ("rechargez"). ``expected_version`` is the version the
+    form was built on: when the sale has moved on, the edit is refused as stale.
     """
     _check_source(source)
     moment = now or utc_now()
     head, report_day = _access(db, actor, sale_id, moment.date(), lock=True)
+    _check_expected(head, expected_version)
     scope = _scope(actor)
     clean = _reason_for_edit(scope, reason)
     sign = _resolve_sign(db, actor, scope, data.staff_sign, head.staff_sign)
@@ -968,15 +1020,18 @@ def void_sale(
     *,
     now: datetime | None = None,
     ip: str | None = None,
+    expected_version: int | None = None,
 ) -> SaleView:
     """Cancel a sale (a new version marked void). The reason is mandatory for everybody. The
-    sale leaves the day's totals, its ticket numbers become free, its history stays."""
+    sale leaves the day's totals, its ticket numbers become free, its history stays.
+    ``expected_version`` as for ``edit_sale``."""
     moment = now or utc_now()
     head, _ = _access(db, actor, sale_id, moment.date(), lock=True)
+    _check_expected(head, expected_version)
     try:
         clean = required_reason(reason)
     except ReasonError as exc:
-        raise SaleError(str(exc)) from None
+        raise InvalidReason(str(exc)) from None
     previous = _current_version(db, head)
     number = head.current_version + 1
     kept = _validated_from(previous)
@@ -1038,7 +1093,7 @@ def move_sale_day(
     try:
         clean = required_reason(reason)
     except ReasonError as exc:
-        raise SaleError(str(exc)) from None
+        raise InvalidReason(str(exc)) from None
     head = db.scalars(
         select(Sale)
         .where(Sale.agency_id == actor.agency_id, Sale.id == sale_id)
@@ -1047,7 +1102,7 @@ def move_sale_day(
     if head is None:
         raise SaleNotFound
     if head.status == SALE_VOIDED:
-        raise SaleError(VOIDED)
+        raise SaleVoided
     old_day = db.scalars(
         select(ReportDay)
         .where(ReportDay.agency_id == head.agency_id, ReportDay.id == head.report_day_id)
@@ -1066,9 +1121,9 @@ def move_sale_day(
         .execution_options(populate_existing=True)
     ).one()
     if locked.report_day_id != old_day.id:
-        raise SaleError(STALE)
+        raise StaleSale
     if locked.status == SALE_VOIDED:
-        raise SaleError(VOIDED)
+        raise SaleVoided
     previous = _current_version(db, locked)
     number = locked.current_version + 1
     kept = _validated_from(previous)

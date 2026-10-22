@@ -1,0 +1,186 @@
+{% extends "base.html" %}
+{% from "sales/_parts.html" import field_error, described %}
+{% block title %}{% if sale %}{{ _("Modifier la vente") }}{% else %}{{ _("Saisir une vente") }}{% endif %}{% endblock %}
+{% block content %}
+{% if banner or summary %}
+<div class="error-box" id="form-error" role="alert">
+  {% if banner %}<p>{{ banner }}</p>{% endif %}
+  {% if summary %}
+  <p>{{ _("Corrigez les champs signalés :") }}</p>
+  <ul class="error-list">
+    {% for href, text in summary %}<li><a href="{{ href }}">{{ text }}</a></li>{% endfor %}
+  </ul>
+  {% endif %}
+  {% if duplicate and duplicate.sale_id %}
+  <p><a class="btn" href="/sales/{{ duplicate.sale_id }}/edit">{{ _("Modifier la vente existante") }}</a></p>
+  {% endif %}
+</div>
+{% endif %}
+
+<p><a class="card-link card-link-back" href="{{ back_url }}">{% if sale %}{{ _("Retour à la vente") }}{% else %}{% if shell.sees_all %}{{ _("Ventes du jour") }}{% else %}{{ _("Mes ventes") }}{% endif %}{% endif %}</a></p>
+
+{% if sign_mode == "none" %}
+<section class="card" aria-labelledby="nosign-title">
+  <h2 class="card-title" id="nosign-title">{{ _("Aucun signe") }}</h2>
+  <p>{{ _("Aucun signe n'est lié à votre compte. Demandez au gérant de lier votre signe.") }}</p>
+</section>
+{% else %}
+
+<form class="form form-wide" method="post" action="{{ action }}">
+  {% include "_csrf.html" %}
+  {% if sale %}<input type="hidden" name="version_no" value="{{ f.version_no }}">{% endif %}
+
+  <section class="card" aria-labelledby="tickets-title">
+    <h2 class="card-title" id="tickets-title" tabindex="-1">{{ _("Billets") }}</h2>
+    <p class="help">{{ _("Une vente est un passager et tous ses billets (un trajet avec escale peut avoir deux billets pour un seul prix). Laissez une ligne vide pour l'ignorer.") }}</p>
+    {{ field_error(errors, "tickets") }}
+    {% for row in f.tickets %}
+    {% set i = loop.index0 %}
+    <fieldset class="ticket-row">
+      <legend>{{ _("Billet %(n)s", n=loop.index) }}</legend>
+      <div class="field">
+        <label for="ticket-{{ loop.index }}">{{ _("Numéro du billet (DOC NUMBER, 10 chiffres)") }}</label>
+        <input id="ticket-{{ loop.index }}" name="doc_number" type="text" inputmode="numeric" maxlength="24" autocomplete="off" value="{{ row.doc_number }}"{{ described(errors, "t" ~ i ~ ".doc_number") }}>
+        {{ field_error(errors, "t" ~ i ~ ".doc_number") }}
+      </div>
+      <div class="field">
+        <label for="airline_{{ i }}">{{ _("Compagnie (A/L)") }}</label>
+        <input id="airline_{{ i }}" name="airline" type="text" maxlength="3" autocomplete="off" value="{{ row.airline }}"{{ described(errors, "t" ~ i ~ ".airline") }}>
+        {{ field_error(errors, "t" ~ i ~ ".airline") }}
+      </div>
+      <div class="field">
+        <label for="total_doc_{{ i }}">{{ _("Coût (TOTAL DOC)") }}</label>
+        <input id="total_doc_{{ i }}" name="total_doc" type="text" inputmode="decimal" maxlength="24" autocomplete="off" value="{{ row.total_doc }}"{{ described(errors, "t" ~ i ~ ".total_doc") }}>
+        {{ field_error(errors, "t" ~ i ~ ".total_doc") }}
+      </div>
+      <div class="field">
+        <label for="pax_name_{{ i }}">{{ _("Passager (PAX NAME)") }}</label>
+        <input id="pax_name_{{ i }}" name="pax_name" type="text" maxlength="100" autocomplete="off" value="{{ row.pax_name }}"{{ described(errors, "t" ~ i ~ ".pax_name") }}>
+        {{ field_error(errors, "t" ~ i ~ ".pax_name") }}
+      </div>
+      <div class="field">
+        <label for="pax_type_{{ i }}">{{ _("Type de passager") }}</label>
+        <select id="pax_type_{{ i }}" name="pax_type"{{ described(errors, "t" ~ i ~ ".pax_type") }}>
+          {% for code in pax_types %}<option value="{{ code }}"{% if row.pax_type == code %} selected{% endif %}>{{ code }}</option>{% endfor %}
+        </select>
+        {{ field_error(errors, "t" ~ i ~ ".pax_type") }}
+      </div>
+      <div class="field">
+        <label for="rloc_{{ i }}">{{ _("Réservation (RLOC)") }}</label>
+        <input id="rloc_{{ i }}" name="rloc" type="text" maxlength="16" autocomplete="off" value="{{ row.rloc }}"{{ described(errors, "t" ~ i ~ ".rloc") }}>
+        {{ field_error(errors, "t" ~ i ~ ".rloc") }}
+      </div>
+      <div class="field">
+        <label for="trnc_{{ i }}">{{ _("Type de billet (TRNC)") }}</label>
+        <select id="trnc_{{ i }}" name="trnc"{{ described(errors, "t" ~ i ~ ".trnc") }}>
+          {% for code in ticket_types %}<option value="{{ code }}"{% if row.trnc == code %} selected{% endif %}>{{ code }}</option>{% endfor %}
+        </select>
+        {{ field_error(errors, "t" ~ i ~ ".trnc") }}
+      </div>
+    </fieldset>
+    {% endfor %}
+    {% if not can_add_row %}<p class="help">{{ _("Une vente ne peut pas avoir plus de %(max)s billets.", max=max_tickets) }}</p>{% endif %}
+  </section>
+
+  <section class="card sale-card" aria-labelledby="sale-title">
+    <h2 class="card-title" id="sale-title">{{ _("Vente") }}</h2>
+
+    {% if sign_mode == "fixed" %}
+    <input type="hidden" name="staff_sign" value="{{ f.staff_sign }}">
+    <p>{{ _("Signe") }} : <span class="mono">{{ f.staff_sign }}</span></p>
+    {% elif sign_mode == "select" %}
+    <div class="field">
+      <label for="staff_sign">{{ _("Signe") }}</label>
+      <select id="staff_sign" name="staff_sign"{{ described(errors, "staff_sign") }}>
+        {% for sign in signs %}<option value="{{ sign }}"{% if f.staff_sign == sign %} selected{% endif %}>{{ sign }}</option>{% endfor %}
+      </select>
+      {{ field_error(errors, "staff_sign") }}
+    </div>
+    {% else %}
+    <div class="field">
+      <label for="staff_sign">{{ _("Signe de l'agent") }}</label>
+      <input id="staff_sign" name="staff_sign" type="text" maxlength="32" list="known-signs" autocomplete="off" value="{{ f.staff_sign }}"{{ described(errors, "staff_sign") }}>
+      <datalist id="known-signs">{% for sign in signs %}<option value="{{ sign }}">{% endfor %}</datalist>
+      {{ field_error(errors, "staff_sign") }}
+    </div>
+    {% endif %}
+
+    {% if choose_day and not sale %}
+    <div class="field">
+      <label for="day">{{ _("Journée") }}</label>
+      <input id="day" name="day" type="date" max="{{ today.isoformat() }}" value="{{ f.day or today.isoformat() }}"{{ described(errors, "day") }}>
+      {{ field_error(errors, "day") }}
+    </div>
+    {% endif %}
+
+    <div class="field">
+      <label for="ag">{{ _("AG") }}</label>
+      <select id="ag" name="ag"{{ described(errors, "ag") }}>
+        <option value="direct"{% if f.ag == "direct" %} selected{% endif %}>{{ _("BRUGE (vente directe)") }}</option>
+        {% for partner in partners %}<option value="{{ partner.id }}"{% if f.ag == partner.id|string %} selected{% endif %}>{{ partner.name }}</option>{% endfor %}
+      </select>
+      {{ field_error(errors, "ag") }}
+    </div>
+
+    <div class="field field-pb">
+      <label for="pb">{{ _("P.B (prix Bruge, vente directe)") }}</label>
+      <input id="pb" name="pb" type="text" inputmode="decimal" maxlength="24" autocomplete="off" value="{{ f.pb }}" aria-describedby="pb-help{% if errors.get('pb') %} pb-error{% endif %}"{% if errors.get('pb') %} aria-invalid="true"{% endif %}>
+      {{ field_error(errors, "pb") }}
+    </div>
+    <p class="help" id="pb-help">{{ _("Pour une vente partenaire, le prix est calculé : coût + frais du partenaire.") }}</p>
+
+    <details class="field"{% if f.fee_override or f.fee_override_reason or errors.get("fee_override") or errors.get("fee_override_reason") %} open{% endif %}>
+      <summary>{{ _("Frais particuliers du partenaire (facultatif)") }}</summary>
+      <div class="field">
+        <label for="fee_override">{{ _("Frais par billet, à la place du tarif du partenaire") }}</label>
+        <input id="fee_override" name="fee_override" type="text" inputmode="decimal" maxlength="24" autocomplete="off" value="{{ f.fee_override }}"{{ described(errors, "fee_override") }}>
+        {{ field_error(errors, "fee_override") }}
+      </div>
+      <div class="field">
+        <label for="fee_override_reason">{{ _("Motif des frais particuliers") }}</label>
+        <input id="fee_override_reason" name="fee_override_reason" type="text" maxlength="500" autocomplete="off" value="{{ f.fee_override_reason }}"{{ described(errors, "fee_override_reason") }}>
+        {{ field_error(errors, "fee_override_reason") }}
+      </div>
+    </details>
+
+    <div class="field">
+      <label for="clt">{{ _("CLT (nom du client)") }}</label>
+      <input id="clt" name="clt" type="text" maxlength="120" autocomplete="off" value="{{ f.clt }}"{{ described(errors, "clt") }}>
+      {{ field_error(errors, "clt") }}
+    </div>
+    <div class="field">
+      <label for="ap">{{ _("AP (téléphone du client, facultatif)") }}</label>
+      <input id="ap" name="ap" type="tel" inputmode="tel" maxlength="64" autocomplete="off" value="{{ f.ap }}"{{ described(errors, "ap") }}>
+      {{ field_error(errors, "ap") }}
+    </div>
+    <div class="field field-check">
+      <input id="client_refused_phone" name="client_refused_phone" type="checkbox" value="1"{% if f.client_refused_phone %} checked{% endif %}{{ described(errors, "client_refused_phone") }}>
+      <label for="client_refused_phone">{{ _("Le client a refusé de donner son numéro") }}</label>
+      {{ field_error(errors, "client_refused_phone") }}
+    </div>
+
+    <div class="field">
+      <label for="payment_method">{{ _("Mode de paiement") }}</label>
+      <select id="payment_method" name="payment_method"{{ described(errors, "payment_method") }}>
+        <option value=""{% if not f.payment_method %} selected{% endif %}>{{ _("Choisir…") }}</option>
+        {% for value, label in payments %}<option value="{{ value }}"{% if f.payment_method == value %} selected{% endif %}>{{ label }}</option>{% endfor %}
+      </select>
+      {{ field_error(errors, "payment_method") }}
+    </div>
+
+    {% if sale %}
+    <div class="field">
+      <label for="reason">{% if needs_reason %}{{ _("Motif de la modification") }}{% else %}{{ _("Motif de la modification (facultatif)") }}{% endif %}</label>
+      <input id="reason" name="reason" type="text" maxlength="500" autocomplete="off" value="{{ f.reason }}"{% if needs_reason %} required{% endif %}{{ described(errors, "reason") }}>
+      {{ field_error(errors, "reason") }}
+    </div>
+    {% endif %}
+  </section>
+
+  <div class="actions">
+    <button class="btn btn-primary btn-lg" type="submit">{{ _("Vérifier la vente") }}</button>
+    {% if can_add_row %}<button class="btn" type="submit" name="add_row" value="1" formnovalidate formaction="{{ action }}#ticket-{{ f.tickets|length + 1 }}">{{ _("Ajouter un billet") }}</button>{% endif %}
+  </div>
+</form>
+{% endif %}
+{% endblock %}

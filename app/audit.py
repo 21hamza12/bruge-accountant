@@ -47,6 +47,11 @@ SIGN_LINKED = "staff_sign_linked"
 SIGN_UNLINKED = "staff_sign_unlinked"
 UPLOAD_SUCCEEDED = "upload_succeeded"
 UPLOAD_FAILED = "upload_failed"
+PARTNER_CREATED = "partner_created"
+PARTNER_UPDATED = "partner_updated"
+PARTNER_FEE_SET = "partner_fee_set"
+PARTNER_DEACTIVATED = "partner_deactivated"
+PARTNER_REACTIVATED = "partner_reactivated"
 
 _SECRET_KEY = re.compile(r"password|passwd|token|secret|hash|csrf|cookie|credential", re.IGNORECASE)
 

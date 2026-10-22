@@ -9,6 +9,8 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 from contextlib import contextmanager
+from datetime import date
+from decimal import Decimal
 from typing import Any
 
 import pytest
@@ -22,6 +24,8 @@ from app.models import (
     Agency,
     AmadeusLine,
     AuditEvent,
+    Partner,
+    PartnerFee,
     RateLimitBucket,
     StaffSignLink,
     TemporaryPassword,
@@ -52,6 +56,8 @@ SCOPED_MODELS: list[Any] = [
     TemporaryPassword,
     AuditEvent,
     AmadeusLine,
+    Partner,
+    PartnerFee,
 ]
 
 
@@ -192,6 +198,14 @@ def rows_for_agency_b(b: Tenant) -> dict[str, Any]:
             expires_at=NOW,
         ),
         "audit_events": AuditEvent(agency_id=b.agency_id, event_type="forged", details={}),
+        "partners": Partner(agency_id=b.agency_id, name="Forged", name_key="forged"),
+        "partner_fees": PartnerFee(
+            agency_id=b.agency_id,
+            partner_id=b.partner_id,
+            fee=Decimal("1"),
+            valid_from=date(2026, 1, 1),
+            set_by_user_id=b.user_id,
+        ),
         "uploads": Upload(
             agency_id=b.agency_id,
             filename="x.xlsx",
@@ -214,6 +228,8 @@ def rows_for_agency_b(b: Tenant) -> dict[str, Any]:
         "temporary_passwords",
         "audit_events",
         "uploads",
+        "partners",
+        "partner_fees",
     ],
 )
 def test_insert_for_another_agency_is_rejected(world: World, table: str) -> None:
@@ -447,6 +463,106 @@ def test_amadeus_lines_grants_are_select_and_insert_only(app_role_world: World) 
     assert privileges == {"SELECT", "INSERT"}
 
 
+# --- partners (migration 0007) -------------------------------------------------------
+
+
+def test_partner_rows_of_another_agency_cannot_be_updated_or_deleted(world: World) -> None:
+    db, a, b = world
+    with app_session(db) as s:
+        bind_tenant(s, a.agency_id)
+        other = update(Partner).where(Partner.id == b.partner_id).values(is_active=False)
+        assert affected(s.execute(other)) == 0
+        s.commit()
+    with app_session(db) as s:
+        bind_tenant(s, a.agency_id)
+        other_delete = delete(Partner).where(Partner.id == b.partner_id)
+        if db.mode == "app-role":  # no DELETE privilege at all
+            with pytest.raises(ProgrammingError, match="permission denied"):
+                s.execute(other_delete)
+        else:  # the owner: no policy row matches
+            assert affected(s.execute(other_delete)) == 0
+        s.rollback()
+    with app_session(db) as s:
+        bind_tenant(s, b.agency_id)
+        assert s.scalar(select(Partner.is_active).where(Partner.id == b.partner_id)) is True
+
+
+def test_a_partner_cannot_be_moved_to_another_agency(world: World) -> None:
+    db, a, b = world
+    with app_session(db) as s:
+        bind_tenant(s, a.agency_id)
+        with pytest.raises(DBAPIError) as info:
+            s.execute(update(Partner).values(agency_id=b.agency_id))
+        assert violates_rls(info.value)
+
+
+def test_a_fee_for_a_partner_of_another_agency_is_refused(world: World) -> None:
+    """Even with the right agency_id on the row, the composite foreign key refuses it."""
+    db, a, b = world
+    with app_session(db) as s:
+        bind_tenant(s, a.agency_id)
+        s.add(
+            PartnerFee(
+                agency_id=a.agency_id,
+                partner_id=b.partner_id,
+                fee=Decimal("1"),
+                valid_from=date(2026, 1, 1),
+                set_by_user_id=a.user_id,
+            )
+        )
+        with pytest.raises(DBAPIError):
+            s.commit()
+
+
+def test_partner_fees_are_append_only_for_the_tenant(world: World) -> None:
+    """tenant_read and tenant_insert only: no UPDATE or DELETE policy, so a fee entry cannot be
+    edited or removed, not even by the owner in single-role mode (the app role also lacks the
+    privileges)."""
+    db, a, _ = world
+    with app_session(db) as s:
+        bind_tenant(s, a.agency_id)
+        if db.mode == "app-role":
+            with pytest.raises(ProgrammingError, match="permission denied"):
+                s.execute(update(PartnerFee).values(fee=Decimal("1")))
+            s.rollback()
+            bind_tenant(s, a.agency_id)
+            with pytest.raises(ProgrammingError, match="permission denied"):
+                s.execute(delete(PartnerFee))
+            s.rollback()
+            bind_tenant(s, a.agency_id)
+        else:
+            assert affected(s.execute(update(PartnerFee).values(fee=Decimal("1")))) == 0
+            assert affected(s.execute(delete(PartnerFee))) == 0
+        s.rollback()
+        bind_tenant(s, a.agency_id)
+        assert s.scalars(select(PartnerFee.fee)).all() == [Decimal("500.00")]
+
+
+def test_partner_fees_can_be_inserted_for_the_bound_tenant(world: World) -> None:
+    db, a, _ = world
+    with app_session(db) as s:
+        bind_tenant(s, a.agency_id)
+        s.add(
+            PartnerFee(
+                agency_id=a.agency_id,
+                partner_id=a.partner_id,
+                fee=Decimal("300"),
+                valid_from=date(2026, 7, 16),
+                set_by_user_id=a.user_id,
+            )
+        )
+        s.commit()
+        assert count(s, PartnerFee) == 2
+
+
+def test_the_app_role_cannot_delete_partners(app_role_world: World) -> None:
+    db, a, _ = app_role_world
+    with app_session(db) as s:
+        bind_tenant(s, a.agency_id)
+        with pytest.raises(ProgrammingError, match="permission denied"):
+            s.execute(delete(Partner))
+
+
 # --- what the app role may not do (separate role only) -------------------------------
 
 
@@ -592,8 +708,11 @@ def test_the_exact_policies_installed(world: World) -> None:
             "staff_sign_links",
             "user_sessions",
             "temporary_passwords",
+            "partners",
         )
     } | {
+        ("partner_fees", "tenant_read", "SELECT"),
+        ("partner_fees", "tenant_insert", "INSERT"),
         ("users", "login_lookup", "SELECT"),
         ("user_sessions", "session_lookup", "SELECT"),
         ("agencies", "slug_lookup", "SELECT"),

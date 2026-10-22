@@ -40,6 +40,7 @@ from app.web.errors import (
 from app.web.middleware import build_middleware
 from app.web.routes import auth as auth_routes
 from app.web.routes import home as home_routes
+from app.web.routes import partners as partner_routes
 from app.web.routes import password as password_routes
 from app.web.routes import questions as questions_routes
 from app.web.routes import staff as staff_routes
@@ -141,6 +142,7 @@ def create_app(
     app.include_router(auth_routes.router)
     app.include_router(home_routes.router)
     app.include_router(password_routes.router)
+    app.include_router(partner_routes.router)
     app.include_router(staff_routes.router)
     app.include_router(upload_routes.router)
     app.include_router(questions_routes.router)

@@ -1,0 +1,94 @@
+{% extends "base.html" %}
+{% block title %}{{ partner.name }}{% endblock %}
+{% block content %}
+<p><a class="card-link card-link-back" href="/partners">{{ _("Retour aux partenaires") }}</a></p>
+{% if error %}<p class="error-box" id="form-error" role="alert" tabindex="-1" autofocus>{{ error }}</p>{% endif %}
+
+<section class="card" aria-labelledby="who-title">
+  <h2 class="card-title" id="who-title">{{ partner.name }}</h2>
+  <p>
+    {% if partner.is_active %}<span class="pill pill-green">{{ _("Actif") }}</span>{% else %}<span class="pill pill-neutral">{{ _("Désactivé") }}</span>{% endif %}
+    - {{ _("Frais actuels") }} :
+    {% if current_fee %}<strong class="num">{{ current_fee.fee | money_fr }}</strong> ({{ _("depuis le") }} {{ current_fee.valid_from | date_fr }}){% else %}<span class="muted">{{ _("aucun tarif en vigueur") }}</span>{% endif %}
+  </p>
+</section>
+
+{% if partner.is_active %}
+<section class="card" aria-labelledby="edit-title">
+  <h2 class="card-title" id="edit-title">{{ _("Coordonnées") }}</h2>
+  <form class="form" method="post" action="/partners/{{ partner.id }}">
+    {% include "_csrf.html" %}
+    <div class="field">
+      <label for="name">{{ _("Nom") }}</label>
+      <input id="name" name="name" type="text" required maxlength="120" value="{{ form.name if form.name is defined else partner.name }}"{% if error %} aria-describedby="form-error"{% endif %}>
+    </div>
+    <div class="field">
+      <label for="phone">{{ _("Numéro de téléphone (facultatif)") }}</label>
+      <input id="phone" name="phone" type="tel" inputmode="tel" maxlength="64" value="{{ form.phone if form.phone is defined else (partner.phone or '') }}"{% if error %} aria-describedby="form-error"{% endif %}>
+    </div>
+    <button class="btn btn-primary" type="submit">{{ _("Enregistrer") }}</button>
+  </form>
+</section>
+
+<section class="card" aria-labelledby="fee-title">
+  <h2 class="card-title" id="fee-title">{{ _("Nouveau tarif") }}</h2>
+  <form class="form" method="post" action="/partners/{{ partner.id }}/fees">
+    {% include "_csrf.html" %}
+    <div class="field">
+      <label for="fee">{{ _("Frais par billet") }}</label>
+      <input id="fee" name="fee" type="text" inputmode="decimal" required maxlength="64" value="{{ form.fee or '' }}"{% if error %} aria-describedby="form-error"{% endif %}>
+    </div>
+    <div class="field">
+      <label for="valid_from">{{ _("Applicable à partir du") }}</label>
+      <input id="valid_from" name="valid_from" type="date" required value="{{ form.valid_from if form.valid_from is defined else today.isoformat() }}"{% if error %} aria-describedby="form-error"{% endif %}>
+    </div>
+    <div class="field">
+      <label for="note">{{ _("Note (facultatif)") }}</label>
+      <input id="note" name="note" type="text" maxlength="500" value="{{ form.note or '' }}">
+    </div>
+    <button class="btn btn-primary" type="submit">{{ _("Enregistrer le tarif") }}</button>
+  </form>
+</section>
+{% endif %}
+
+<section class="card" aria-labelledby="history-title">
+  <h2 class="card-title" id="history-title">{{ _("Historique des frais") }}</h2>
+  {% if history %}
+  <div class="table-wrap" tabindex="0" role="region" aria-label="{{ _('Historique des frais (défilement horizontal)') }}">
+    <table class="table" aria-labelledby="history-title">
+      <thead>
+        <tr><th scope="col">{{ _("Applicable à partir du") }}</th><th scope="col">{{ _("Frais") }}</th><th scope="col">{{ _("Note") }}</th><th scope="col">{{ _("Saisi le") }}</th></tr>
+      </thead>
+      <tbody>
+      {% for entry in history %}
+        <tr>
+          <td>{{ entry.valid_from | date_fr }}</td>
+          <td class="num">{{ entry.fee | money_fr }}</td>
+          <td>{{ entry.note or "-" }}</td>
+          <td>{{ entry.created_at | datetime_fr }}</td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <p class="muted">{{ _("Aucun tarif enregistré.") }}</p>
+  {% endif %}
+</section>
+
+{% if partner.is_active %}
+<section class="card" aria-labelledby="off-title">
+  <h2 class="card-title" id="off-title">{{ _("Désactiver") }}</h2>
+  <p class="muted">{{ _("L'historique des frais est conservé.") }}</p>
+  <p><a class="btn btn-danger" href="/partners/{{ partner.id }}/deactivate">{{ _("Désactiver ce partenaire") }}</a></p>
+</section>
+{% else %}
+<section class="card" aria-labelledby="on-title">
+  <h2 class="card-title" id="on-title">{{ _("Réactiver") }}</h2>
+  <form method="post" action="/partners/{{ partner.id }}/reactivate">
+    {% include "_csrf.html" %}
+    <button class="btn btn-primary" type="submit">{{ _("Réactiver ce partenaire") }}</button>
+  </form>
+</section>
+{% endif %}
+{% endblock %}

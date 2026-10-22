@@ -33,6 +33,7 @@ ACTIVE_QUESTIONS = "questions"
 ACTIVE_UPLOADS = "uploads"
 ACTIVE_UPLOAD_NEW = "upload_new"
 ACTIVE_STAFF = "staff"
+ACTIVE_PARTNERS = "partners"
 ACTIVE_PROFILE = "profile"
 
 
@@ -49,6 +50,8 @@ class Shell:
     user: User
     sees_all: bool  # every sign of the agency (manager, accountant)
     can_manage_staff: bool
+    can_manage_partners: bool
+    bottom_bar_partners: bool  # five tabs fit 320px: only users without the staff tab get this one
     active: str
     latest_day: date | None
     badge: int
@@ -108,6 +111,9 @@ def build_shell(db: Session, auth: AuthContext, active: str) -> Shell:
         user=user,
         sees_all=sees_all,
         can_manage_staff=permissions.can_manage_staff(user),
+        can_manage_partners=permissions.can_manage_partners(user),
+        bottom_bar_partners=permissions.can_manage_partners(user)
+        and not permissions.can_manage_staff(user),
         active=active,
         latest_day=day,
         badge=sum(counts.values()),

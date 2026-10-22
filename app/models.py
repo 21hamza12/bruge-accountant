@@ -364,3 +364,79 @@ class RateLimitBucket(Base):
     key: Mapped[str] = mapped_column(String(200), primary_key=True)
     window_start: Mapped[datetime] = mapped_column(UTCDateTime, primary_key=True)
     count: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+
+
+class Partner(Base):
+    """A partner agency that buys tickets from this agency (AG = its name in the Amadeus report).
+
+    ``name_key`` is the name casefolded with whitespace collapsed: unique per agency, and never
+    ``bruge``, which means a direct sale. Deactivating keeps the row and its fee history.
+    """
+
+    __tablename__ = "partners"
+    __table_args__ = (
+        UniqueConstraint("agency_id", "id", name="uq_partners_agency_id_id"),
+        UniqueConstraint("agency_id", "name_key", name="uq_partners_agency_name_key"),
+        CheckConstraint("name_key <> 'bruge'", name="name_key_not_bruge"),
+        CheckConstraint("name_key <> ''", name="name_key_nonempty"),
+        # Same E.164 rule as users.phone; a partner may have no phone.
+        CheckConstraint(f"phone IS NULL OR ({PHONE_E164_CHECK})", name="phone_e164"),
+    )
+
+    id: Mapped[int] = mapped_column(BigIntType, primary_key=True)
+    agency_id: Mapped[int] = mapped_column(ForeignKey("agencies.id", ondelete="RESTRICT"))
+    name: Mapped[str] = mapped_column(String(120))
+    name_key: Mapped[str] = mapped_column(String(480))
+    phone: Mapped[str | None] = mapped_column(String(20))
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, server_default=true())
+    created_at: Mapped[datetime] = mapped_column(
+        UTCDateTime, default=_now, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        UTCDateTime, default=_now, onupdate=_now, server_default=func.now()
+    )
+
+
+class PartnerFee(Base):
+    """One entry of a partner's fee history. Append-only: a change of fee is a new row, and the
+    fee valid on a day is the row with the largest ``valid_from`` on or before it (ties: the
+    latest ``created_at``, then the highest id)."""
+
+    __tablename__ = "partner_fees"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["agency_id", "partner_id"],
+            ["partners.agency_id", "partners.id"],
+            name="fk_partner_fees_agency_partner",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["agency_id", "set_by_user_id"],
+            ["users.agency_id", "users.id"],
+            name="fk_partner_fees_agency_set_by",
+            ondelete="RESTRICT",
+        ),
+        CheckConstraint("fee >= 0", name="fee_nonneg"),
+    )
+
+    id: Mapped[int] = mapped_column(BigIntType, primary_key=True)
+    agency_id: Mapped[int] = mapped_column(ForeignKey("agencies.id", ondelete="RESTRICT"))
+    partner_id: Mapped[int] = mapped_column(BigIntType)
+    fee: Mapped[Decimal] = mapped_column(Numeric(14, 2))
+    valid_from: Mapped[date] = mapped_column(Date)
+    set_by_user_id: Mapped[int] = mapped_column(BigIntType)
+    note: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(
+        UTCDateTime, default=_now, server_default=func.now()
+    )
+
+
+# The fee lookup: the newest entry of one partner on or before a day (migration 0007).
+Index(
+    "ix_partner_fees_lookup",
+    PartnerFee.agency_id,
+    PartnerFee.partner_id,
+    PartnerFee.valid_from.desc(),
+    PartnerFee.created_at.desc(),
+    PartnerFee.id.desc(),
+)

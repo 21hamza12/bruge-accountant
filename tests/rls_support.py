@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
+from decimal import Decimal
 
 from sqlalchemy import Connection, text
 from sqlalchemy.orm import Session
@@ -11,6 +12,8 @@ from sqlalchemy.orm import Session
 from app.db import make_engine, make_session_factory
 from app.models import (
     AuditEvent,
+    Partner,
+    PartnerFee,
     StaffSignLink,
     TemporaryPassword,
     User,
@@ -33,6 +36,7 @@ class Tenant:
     phone: str
     token_hash: str
     user_id: int
+    partner_id: int = 0
 
 
 def seed_tenant(owner_url: str, slug: str, phone: str, token_hash: str, doc_base: int) -> Tenant:
@@ -65,10 +69,22 @@ def seed_tenant(owner_url: str, slug: str, phone: str, token_hash: str, doc_base
                 )
             )
             s.add(AuditEvent(agency_id=agency_id, event_type="seed", details={}))
+            partner = Partner(agency_id=agency_id, name="BADI", name_key="badi")
+            s.add(partner)
+            s.commit()
+            s.add(
+                PartnerFee(
+                    agency_id=agency_id,
+                    partner_id=partner.id,
+                    fee=Decimal("500"),
+                    valid_from=date(2026, 1, 1),
+                    set_by_user_id=user.id,
+                )
+            )
             s.commit()
             rows = [ticket_row(doc=f"{doc_base + n}") for n in range(2)]
             import_report(s, agency_id, parse_report(build_workbook(rows)), "seed.xlsx", SHA)
-            return Tenant(agency_id, slug, phone, token_hash, user.id)
+            return Tenant(agency_id, slug, phone, token_hash, user.id, partner.id)
     finally:
         engine.dispose()
 

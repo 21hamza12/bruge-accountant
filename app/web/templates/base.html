@@ -38,6 +38,11 @@
         <a class="nav-link" href="/uploads"{% if shell.active == "uploads" %} aria-current="page"{% endif %}>
           <span class="nav-label">{{ icon("upload") }}{{ _("Rapports") }}</span>
         </a>
+        {% if shell.can_manage_partners %}
+        <a class="nav-link" href="/partners"{% if shell.active == "partners" %} aria-current="page"{% endif %}>
+          <span class="nav-label">{{ icon("partners") }}{{ _("Partenaires") }}</span>
+        </a>
+        {% endif %}
         {% if shell.can_manage_staff %}
         <a class="nav-link" href="/staff"{% if shell.active == "staff" %} aria-current="page"{% endif %}>
           <span class="nav-label">{{ icon("team") }}{{ _("Équipe") }}</span>
@@ -116,6 +121,9 @@
     <a class="tab" href="/"{% if shell.active == "home" %} aria-current="page"{% endif %}>{{ icon("dashboard") }}<span class="tab-label">{{ _("Tableau de bord") }}</span></a>
     <a class="tab" href="/questions"{% if shell.active == "questions" %} aria-current="page"{% endif %}><span class="tab-badge">{{ icon("questions") }}{% if shell.badge %}<span class="badge">{{ shell.badge }}<span class="visually-hidden"> {{ _("en attente") }}</span></span>{% endif %}</span><span class="tab-label">{{ _("Questions") }}</span></a>
     <a class="tab" href="/uploads/new"{% if shell.active in ("upload_new", "uploads") %} aria-current="page"{% endif %}>{{ icon("upload") }}<span class="tab-label">{{ _("Envoyer un rapport") }}</span></a>
+    {% if shell.bottom_bar_partners %}
+    <a class="tab" href="/partners"{% if shell.active == "partners" %} aria-current="page"{% endif %}>{{ icon("partners") }}<span class="tab-label">{{ _("Partenaires") }}</span></a>
+    {% endif %}
     {% if shell.can_manage_staff %}
     <a class="tab" href="/staff"{% if shell.active == "staff" %} aria-current="page"{% endif %}>{{ icon("team") }}<span class="tab-label">{{ _("Équipe") }}</span></a>
     {% endif %}

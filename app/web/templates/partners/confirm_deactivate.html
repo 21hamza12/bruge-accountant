@@ -1,0 +1,19 @@
+{% extends "base.html" %}
+{% block title %}{{ _("Désactiver ce partenaire") }}{% endblock %}
+{% block content %}
+<p><a class="card-link card-link-back" href="/partners/{{ partner.id }}">{{ _("Retour au partenaire") }}</a></p>
+<section class="card" aria-labelledby="confirm-title">
+  <h2 class="card-title" id="confirm-title">{{ _("Désactiver ce partenaire ?") }}</h2>
+  <p>{{ partner.name }}</p>
+  <p class="muted">{{ _("L'historique des frais est conservé et le partenaire peut être réactivé.") }}</p>
+  {% if partner.is_active %}
+  <form method="post" action="/partners/{{ partner.id }}/deactivate">
+    {% include "_csrf.html" %}
+    <button class="btn btn-danger" type="submit">{{ _("Oui, désactiver") }}</button>
+    <a class="btn" href="/partners/{{ partner.id }}">{{ _("Annuler") }}</a>
+  </form>
+  {% else %}
+  <p class="muted">{{ _("Ce partenaire est déjà désactivé.") }}</p>
+  {% endif %}
+</section>
+{% endblock %}

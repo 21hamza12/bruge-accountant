@@ -44,6 +44,9 @@ GRANTS = {
     "audit_events": "SELECT, INSERT, DELETE",
     # Append-only snapshot of every upload (migration 0006): never updated, never deleted.
     "amadeus_lines": "SELECT, INSERT",
+    # Phase B3 (migration 0007). Partner fees are append-only: no UPDATE, no DELETE.
+    "partners": "SELECT, INSERT, UPDATE",
+    "partner_fees": "SELECT, INSERT",
 }
 # The tables migration 0003 grants on, frozen. 0003 passes this to ``apply_grants`` instead of
 # relying on GRANTS, which later phases extend: a fresh ``alembic upgrade head`` runs 0003 before
@@ -245,3 +248,13 @@ def revoke_grants(connection: Connection, role: str, tables: Iterable[str] | Non
     schema = _current_schema(connection)
     for statement in revoke_statements(role, schema, tables):
         connection.execute(DDL(statement))  # type: ignore[no-untyped-call]
+
+
+def revoke_table_grants(connection: Connection, role: str, tables: Iterable[str]) -> None:
+    """Take ``role``'s privileges on ``tables`` only. Unlike ``revoke_grants`` it leaves the
+    schema and the sequences alone: for a migration that is undone while the older tables (and
+    the role's access to them) stay."""
+    schema = _current_schema(connection)
+    who, where = quote_role(role), _quote(schema)
+    for name in tables:
+        connection.execute(DDL(f"REVOKE ALL ON {where}.{_quote(name)} FROM {who}"))  # type: ignore[no-untyped-call]

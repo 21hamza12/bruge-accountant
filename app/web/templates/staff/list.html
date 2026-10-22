@@ -25,6 +25,13 @@
   </div>
 </section>
 
+{% if shell.can_manage_partners %}
+<section class="card" aria-labelledby="partners-link-title">
+  <h2 class="card-title" id="partners-link-title">{{ _("Partenaires") }}</h2>
+  <p><a class="card-link card-link-next" href="/partners">{{ _("Partenaires et frais") }}</a></p>
+</section>
+{% endif %}
+
 <section class="card" aria-labelledby="add-title">
   <h2 class="card-title" id="add-title">{{ _("Ajouter un utilisateur") }}</h2>
   <form class="form" method="post" action="/staff">

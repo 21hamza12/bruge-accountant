@@ -39,7 +39,7 @@ jobs:
   postgres:
     name: Migrations and full suite (Postgres 16)
     runs-on: ubuntu-latest
-    timeout-minutes: 35  # full Postgres suite in both RLS modes; ~15 min today
+    timeout-minutes: 55  # full Postgres suite in both RLS modes; ~32 min at B8, split into parallel jobs if it nears 45
     services:
       postgres:
         image: postgres:16

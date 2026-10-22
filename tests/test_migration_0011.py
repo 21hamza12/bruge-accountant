@@ -173,6 +173,17 @@ def _scalar(url: str, sql: str) -> object:
         engine.dispose()
 
 
+def _scalar_for(w: W, sql: str) -> object:
+    """A scalar read as agency a's tenant (row-level security hides the rows from anybody else)."""
+    engine = make_engine(w.url)
+    try:
+        with make_session_factory(engine)() as s:
+            rebind_tenant(s, w.a)
+            return s.execute(text(sql)).scalar()
+    finally:
+        engine.dispose()
+
+
 def _tables(url: str) -> set[str]:
     engine = create_engine(url)
     try:
@@ -333,7 +344,7 @@ def test_the_valid_shapes_are_accepted(db_url: str) -> None:
         flag(w, doc_number="12AB", kind="bad_number", field="doc_number", sale_id=None),
         flag(w, status="superseded"),  # the same key again, no longer live
     )
-    assert _scalar(db_url, "SELECT count(*) FROM comparison_flags") == 6
+    assert _scalar_for(w, "SELECT count(*) FROM comparison_flags") == 6
 
 
 @pytest.mark.parametrize(
@@ -360,8 +371,7 @@ def test_a_run_by_the_system_has_no_user(db_url: str) -> None:
     w = _world(db_url)
     _add(w, w.a, _run(w.a, w.day_a, w.upload_a, None))
     assert (
-        _scalar(db_url, "SELECT count(*) FROM comparison_runs WHERE started_by_user_id IS NULL")
-        == 1
+        _scalar_for(w, "SELECT count(*) FROM comparison_runs WHERE started_by_user_id IS NULL") == 1
     )
 
 

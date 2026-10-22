@@ -52,7 +52,7 @@ order. Spec: [05-daily-comparison.md](05-daily-comparison.md); partners: [06](06
 | **B1** Roles | `accountant` role; permission functions; fix the 0003 grants trap | 0005: users role CHECK incl. accountant | yes |
 | **B2** Amadeus snapshot | append-only copy of every parsed line per upload; optional TAX/COMM/FP/CONFIRMED; synthetic 20 Oct fixture | 0006: `amadeus_lines` | yes (upload) |
 | **B3** Partners | partners + fee history; `fee_on(partner, day)`; pages for manager/accountant | 0007: `partners`, `partner_fees` | – |
-| **B4** Entries (domain) | report days, entries, append-only versions, P.B rules, edit rights | 0008: `report_days`, `day_events`, `entries`, `entry_versions` | yes |
+| **B4** Entries (domain) | report days; **sales** (one or more tickets, one P.B) and their tickets; append-only versions; P.B rules; edit rights | 0008: `report_days`, `day_events`, `sales`, `sale_tickets`, `sale_versions` | yes |
 | **B5** Entry form | form → read-back → confirm (server recomputes everything); duplicate → edit; history | – | **yes** |
 | **B6** Pasted text | `PastedTicketParser` interface + placeholder format + fixtures; fills the B5 form | – | **yes** |
 | **B7** Day page | app TJQ AVANT per day, totals, status | – | – |
@@ -83,6 +83,15 @@ order. Spec: [05-daily-comparison.md](05-daily-comparison.md); partners: [06](06
   `test_last_manager_cannot_become_accountant`; `test_migration_0005.py` (up/down on SQLite with
   rows, Postgres allows accountant, downgrade refused); `test_migrations_fresh_upgrade_head_with_app_role`;
   a guard that `role ==` comparisons appear only in `permissions.py` and `accounts.py`.
+
+## 3b. Change after approval: multi-ticket sales (22 Oct)
+
+The owner reported sales where **one RM price covers several ticket numbers** (layover on two
+airlines; family bookings). B4 therefore stores **sales**, not single-ticket entries: a sale has one
+or more tickets (`sale_tickets`, each ticket number in at most one sale per agency), one P.B, AG,
+CLT, AP and payment method, and append-only `sale_versions`. Comparison (B8) stays per ticket.
+The per-line P.B in the TJQ APRES (B10) follows the accountant's rule once known (see
+[05](05-daily-comparison.md) §2); default: full price on the first ticket, 0 on the others.
 
 ## 4. Approved defaults
 

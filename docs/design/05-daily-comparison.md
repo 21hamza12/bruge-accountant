@@ -40,6 +40,25 @@ missing is asked in the same chat. The image is discarded after reading (decisio
 A ticket number already sent is refused as a duplicate; the agent is offered "edit the existing
 one" instead.
 
+### One price for several tickets (a "sale")
+
+Some sales cover **several ticket numbers with one RM price**: for example a client with a layover
+in Tunis flying two airlines gets two tickets, and the RM line gives one price for both. A family
+on one booking may also have one price for everyone.
+
+- The unit an agent prices is a **sale**: one or more tickets, one P.B, one AG, one CLT/AP,
+  one payment method. A single ticket is simply a sale of one ticket.
+- The agent sends all the tickets of the sale together (several screenshots or one paste); the
+  read-back lists every ticket number and the one price.
+- **Cost of the sale** = Σ TOTAL DOC of its tickets; **profit** = P.B − that sum. A partner sale
+  with several tickets: P.B = Σ cost + the fee **per ticket** (to confirm with the accountant).
+- The comparison with Amadeus stays **per ticket** (each ticket number is still one Amadeus line).
+- A ticket belongs to at most one sale. Adding a forgotten ticket to a sale, or splitting a sale,
+  is an edit with history like any other.
+- **How P.B appears per line in the TJQ APRES is waiting on the accountant**: (a) full price on the
+  first ticket and 0 on the others, (b) split between them, or (c) another rule. The app will follow
+  her current practice; until confirmed, the export uses (a) and marks the sale's lines as linked.
+
 ## 3. The comparison
 
 Lines are matched on **DOC NUMBER**. For each pair:

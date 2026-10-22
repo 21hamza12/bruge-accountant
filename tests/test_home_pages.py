@@ -80,10 +80,12 @@ def test_the_staff_navigation_has_no_team_pages(env: Env) -> None:
         html = c.get("/").text
     assert 'href="/staff"' not in html
     tabbar = html.split('<nav class="tabbar"')[1].split("</nav>")[0]
-    for href in ("/", "/questions", "/uploads/new", "/password/change"):
+    # B5: staff get the two sales tabs; "Questions" stays in the sidebar and on their dashboard
+    for href in ("/", "/sales/new", "/sales", "/uploads/new", "/password/change"):
         assert f'href="{href}"' in tabbar, href
+    assert 'href="/questions"' not in tabbar
     assert "Compte" in tabbar and "Profil" not in tabbar
-    assert tabbar.count('class="tab"') == 4
+    assert tabbar.count('class="tab"') == 5  # five fit a 320px screen
 
 
 def test_the_questions_badge_counts_what_the_viewer_can_see(env: Env) -> None:

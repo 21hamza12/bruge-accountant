@@ -54,6 +54,13 @@ def can_enter_own_sales(user: User) -> bool:
     return user.role in _STAFF_ONLY
 
 
+def can_use_sales_screens(user: User) -> bool:
+    """The entry form, the list and the page of a sale: staff for their own signs, manager and
+    accountant for the whole agency (what each may do to a given sale is decided by app/sales.py).
+    A role that is not listed (an unknown value) gets none of it."""
+    return can_enter_own_sales(user) or can_edit_any_entry(user)
+
+
 def can_reissue_password_for(actor: User, target: User) -> bool:
     """``actor`` may issue a temporary password to ``target``: only a staff manager, and only for
     staff or an accountant (never for a manager, themselves included, nor an unknown role)."""

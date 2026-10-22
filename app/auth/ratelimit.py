@@ -56,6 +56,12 @@ LOGIN_IP = Limit("login_ip", 100, 15 * 60)
 # cannot use up the agency's budget.
 UPLOAD_AGENCY = Limit("upload_agency", 30, 3600)
 UPLOAD_USER = Limit("upload_user", 10, 3600)
+# Sale writes (create, edit, void): 300 an hour for each user. A busy agent enters well under a
+# hundred sales in a shift; the limit stops a script or a stuck client, not a person.
+SALE_WRITE_USER = Limit("sale_write_user", 300, 3600)
+# Read-backs (and the "add a ticket" re-renders): they write nothing but validate, price and look
+# up duplicates, so they get a looser budget of their own.
+SALE_PREVIEW_USER = Limit("sale_preview_user", 1000, 3600)
 # Guesses at the current password of a logged-in account (stolen-session brute force).
 PASSWORD_CHANGE_USER = Limit("password_change_user", 5, 15 * 60)
 

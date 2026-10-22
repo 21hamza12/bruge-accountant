@@ -16,6 +16,7 @@ from fastapi import HTTPException, Path, Query
 
 MAX_DB_ID = 2**63 - 1
 
+DbId = Annotated[int, Path(ge=1, le=MAX_DB_ID)]  # any BIGINT id in a path
 UserId = Annotated[int, Path(ge=1, le=MAX_DB_ID)]
 SignId = Annotated[int, Path(ge=1, le=MAX_DB_ID)]
 UploadId = Annotated[int, Path(ge=1, le=MAX_DB_ID)]

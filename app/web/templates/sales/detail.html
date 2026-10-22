@@ -1,0 +1,59 @@
+{% extends "base.html" %}
+{% from "sales/_parts.html" import ticket_table, status_pill %}
+{% from "_roles.html" import role_name %}
+{% block title %}{{ _("Vente %(id)s", id=s.id) }}{% endblock %}
+{% block content %}
+<p><a class="card-link card-link-back" href="/sales?date={{ s.day.isoformat() }}">{% if shell.sees_all %}{{ _("Ventes du jour") }}{% else %}{{ _("Mes ventes") }}{% endif %}</a></p>
+
+{% if error %}<p class="error-box" id="form-error" role="alert" tabindex="-1" autofocus>{{ error }}</p>{% endif %}
+{% if warnings %}
+<div class="notice" role="status">
+  <p><strong>{{ _("Attention") }}</strong></p>
+  <ul class="list-plain">{% for warning in warnings %}<li>{{ warning }}</li>{% endfor %}</ul>
+</div>
+{% endif %}
+
+<section class="card" aria-labelledby="sale-title">
+  <div class="card-head">
+    <h2 class="card-title" id="sale-title">{{ _("Vente %(id)s", id=s.id) }}</h2>
+    {{ status_pill(s.status) }}
+    {% if day_closed %}<span class="pill pill-neutral">{{ _("Journée clôturée") }}</span>{% endif %}
+  </div>
+  {{ ticket_table(s.tickets, _("Billets de la vente (défilement horizontal)")) }}
+  <dl class="kv">
+    <dt>{{ _("Journée") }}</dt><dd>{{ s.day | date_fr }}</dd>
+    <dt>{{ _("Signe") }}</dt><dd class="mono">{{ s.staff_sign }}</dd>
+    <dt>{{ _("AG") }}</dt><dd>{{ s.ag_label }}</dd>
+    {% if s.fee_applied is not none %}
+    <dt>{{ _("Frais du partenaire (par billet)") }}</dt><dd class="num">{{ s.fee_applied | money_fr }} {{ agency.currency }}{% if s.fee_override_reason %} · {{ _("tarif particulier") }} : {{ s.fee_override_reason }}{% endif %}</dd>
+    {% endif %}
+    <dt>{{ _("Coût total") }}</dt><dd class="num">{{ s.cost_total | money_fr }} {{ agency.currency }}</dd>
+    <dt>{{ _("P.B") }}</dt><dd class="num">{{ s.pb | money_fr }} {{ agency.currency }}</dd>
+    <dt>{{ _("Profit") }}</dt><dd class="num">{{ profit | money_fr }} {{ agency.currency }}</dd>
+    <dt>{{ _("Client") }}</dt><dd>{{ s.clt or "-" }}</dd>
+    <dt>{{ _("Téléphone") }}</dt><dd>{% if s.ap %}{{ s.ap }}{% elif s.client_refused_phone %}{{ _("Le client a refusé de donner son numéro") }}{% else %}-{% endif %}</dd>
+    <dt>{{ _("Paiement") }}</dt><dd>{{ payment }}</dd>
+  </dl>
+  {% if editable %}
+  <div class="actions">
+    <a class="btn btn-primary" href="/sales/{{ s.id }}/edit">{{ _("Modifier la vente") }}</a>
+    <a class="btn btn-danger" href="/sales/{{ s.id }}/void">{{ _("Annuler la vente") }}</a>
+  </div>
+  {% endif %}
+</section>
+
+<section class="card" aria-labelledby="history-title">
+  <h2 class="card-title" id="history-title">{{ _("Historique") }}</h2>
+  <ul class="history">
+    {% for item in versions %}
+    <li class="history-item">
+      <h3 class="history-title">{{ _("Version %(n)s", n=item.v.version_no) }}</h3>
+      <p class="muted">{{ item.v.created_at | datetime_fr }} · {{ item.name or role_name(item.role) }}{% if item.v.source != "form" %} · {{ item.v.source }}{% endif %}</p>
+      <ul class="list-plain">{% for change in item.changes %}<li>{{ change }}</li>{% endfor %}</ul>
+      {% if item.v.reason %}<p>{{ _("Motif") }} : {{ item.v.reason }}</p>{% endif %}
+      <p class="muted">{{ _("P.B") }} {{ item.v.pb | money_fr }} · {{ _("Coût") }} {{ item.v.cost_total | money_fr }} · {{ item.pay }}</p>
+    </li>
+    {% endfor %}
+  </ul>
+</section>
+{% endblock %}

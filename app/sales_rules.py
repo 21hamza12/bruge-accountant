@@ -49,7 +49,9 @@ MAX_NAME_LENGTH = 120
 MAX_PAX_NAME_LENGTH = 100
 ZERO = Decimal("0.00")
 
-_DOC_NUMBER = re.compile(r"[0-9]{8,15}", re.ASCII)
+_DIGITS = re.compile(r"[0-9]+", re.ASCII)
+TICKET_DIGITS = 10  # the number as Amadeus exports it (3940299438)
+PREFIXED_DIGITS = 3 + TICKET_DIGITS  # airline code + number (495-3940299438)
 _AIRLINE = re.compile(r"[A-Z0-9]{2,3}", re.ASCII)
 _RLOC = re.compile(r"[A-Z0-9]{4,16}", re.ASCII)
 
@@ -62,7 +64,8 @@ NO_TICKETS = "Ajoutez au moins un billet."
 BAD_TICKET = "Billet invalide."
 TOO_MANY_TICKETS = f"Une vente ne peut pas avoir plus de {MAX_TICKETS_PER_SALE} billets."
 DUPLICATE_IN_SALE = "Ce numéro de billet est déjà dans cette vente."
-BAD_DOC_NUMBER = "Le numéro de billet doit avoir de 8 à 15 chiffres."
+BAD_DOC_NUMBER = "Numéro du billet : 10 chiffres (ou compagnie + 10 chiffres)."
+BAD_DOC_PREFIX = "Le préfixe ne correspond pas à la compagnie (A/L)."
 BAD_AIRLINE = "Le code de la compagnie doit avoir 2 ou 3 caractères (lettres ou chiffres)."
 BAD_PAX_NAME = f"Le nom du passager est obligatoire ({MAX_PAX_NAME_LENGTH} caractères au plus)."
 BAD_PAX_TYPE = "Le type de passager doit être ADT, CHD ou INF."
@@ -88,6 +91,11 @@ def _below_cost(pb: Decimal, cost: Decimal) -> str:
         f"Le prix P.B ({money_fr(pb)} MRU) est inférieur au coût des billets "
         f"({money_fr(cost)} MRU)."
     )
+
+
+def below_cost_warning(pb: Decimal, cost: Decimal) -> str | None:
+    """The read-back warning for a price under the cost, or None."""
+    return _below_cost(pb, cost) if pb < cost else None
 
 
 # --- input and validated data ---------------------------------------------------------------
@@ -291,6 +299,26 @@ def _has_override(data: SaleInput) -> bool:
     return not (isinstance(data.fee_override, str) and not data.fee_override.strip())
 
 
+def ticket_number(raw: object, airline: str | None) -> tuple[str | None, str | None]:
+    """``(number, error)``: the 10 digits a ticket is stored and compared with, from what a person
+    typed. Spaces, "-" and "/" are ignored; the characters must be ASCII digits. Ten digits are
+    kept as they are; thirteen are the airline code plus the number: the first three must be the
+    ticket's A/L and the last ten are kept (``495-3940281465`` becomes ``3940281465``). Anything
+    else is refused. This is the one place that normalises a ticket number."""
+    if not isinstance(raw, str):
+        return None, BAD_DOC_NUMBER
+    compact = "".join(raw.replace("-", "").replace("/", "").split())
+    if _DIGITS.fullmatch(compact) is None:
+        return None, BAD_DOC_NUMBER
+    if len(compact) == TICKET_DIGITS:
+        return compact, None
+    if len(compact) == PREFIXED_DIGITS:
+        if airline is not None and compact[:3] == airline:
+            return compact[3:], None
+        return None, BAD_DOC_PREFIX
+    return None, BAD_DOC_NUMBER
+
+
 def _validate_ticket(raw: TicketInput, index: int, errs: list[FieldError]) -> TicketLine | None:
     prefix = f"tickets[{index}]."
     start = len(errs)
@@ -298,16 +326,12 @@ def _validate_ticket(raw: TicketInput, index: int, errs: list[FieldError]) -> Ti
     def bad(name: str, message: str) -> None:
         errs.append(FieldError(prefix + name, message))
 
-    doc = None
-    if isinstance(raw.doc_number, str):
-        compact = "".join(raw.doc_number.replace("-", "").split())
-        if _DOC_NUMBER.fullmatch(compact):
-            doc = compact
-    if doc is None:
-        bad("doc_number", BAD_DOC_NUMBER)
     airline = _code(raw.airline)
     if airline is None or _AIRLINE.fullmatch(airline) is None:
         bad("airline", BAD_AIRLINE)
+    doc, doc_error = ticket_number(raw.doc_number, airline)
+    if doc is None:
+        bad("doc_number", doc_error or BAD_DOC_NUMBER)
     cost, cost_error = _amount(raw.total_doc)
     if cost is None:
         bad("total_doc", cost_error or BAD_TEXT)
@@ -388,6 +412,8 @@ def _resolve_fee(
         errs.append(FieldError("partner_id", PARTNER_INACTIVE))
         return None
     if _has_override(data):
+        # Owner policy: staff may override the fee too, with a mandatory reason. Every override is
+        # visible (audit ``fee_override``, ``overrides_for_day``); B9 routes them to validation.
         amount, message = _amount(data.fee_override)
         reason, reason_error = _override_reason(data.fee_override_reason)
         if amount is None:

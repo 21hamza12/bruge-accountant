@@ -93,6 +93,20 @@ CLT, AP and payment method, and append-only `sale_versions`. Comparison (B8) sta
 Per-line P.B in the TJQ APRES (B10): full price on the first ticket, 0 on the others, lines
 marked as one sale (decision 21). Partner fee is charged per ticket (decision 22).
 
+## 3c. B5 as built (22 Oct)
+
+Routes (all `Depends(csrf_protect)`, `Cache-Control: no-store`, `can_use_sales_screens`): `GET/POST
+/sales/new` (form; POST redisplays the typed values), `POST /sales/preview` (read-back, writes
+nothing; `add_row` adds an empty ticket row, no JavaScript), `POST /sales` (confirm), `GET /sales`
+(day list, `?date=`, `?sign=` for manager/accountant), `GET /sales/{id}` (values and history, newest
+first), `GET/POST /sales/{id}/edit`, `POST /sales/{id}/preview-edit`, `POST /sales/{id}` (edit),
+`GET/POST /sales/{id}/void`. The read-back carries every posted value in hidden fields and trusts
+none: the confirm step validates and prices again (agency, sale id, partner P.B ignored). An edit
+carries `version_no`; a sale that moved on is "rechargez la page" (`expected_version` in
+`edit_sale`/`void_sale`). Sale writes share one limit per user: `ratelimit.SALE_WRITE_USER`, 300 an
+hour. Bottom bar: staff get "Saisir une vente" and "Mes ventes" in place of "Questions" (five tabs);
+manager and accountant keep their five and reach "Ventes du jour" from the sidebar and the dashboard.
+
 ## 4. Approved defaults
 
 1. Pasted text: placeholder labelled-lines format now; real parser in its own PR when samples arrive.

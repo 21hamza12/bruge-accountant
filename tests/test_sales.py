@@ -246,17 +246,50 @@ def test_a_negative_cost_is_refused() -> None:
 
 
 @pytest.mark.parametrize(
-    "doc", ["", "1234567", "1234567890123456", "39400000AB", "3940 0000x1", "٣٩٤٠٠٠٠٠٠١", None]
+    "doc",
+    [
+        "",
+        "1234567",
+        "123456789",  # 9
+        "12345678901",  # 11
+        "123456789012",  # 12
+        "12345678901234",  # 14
+        "1234567890123456",
+        "39400000AB",
+        "3940 0000x1",
+        "٣٩٤٠٠٠٠٠٠١",
+        None,
+    ],
 )
 def test_a_bad_ticket_number_is_refused(doc: Any) -> None:
-    assert "tickets[0].doc_number" in errors(direct(ticket(doc=doc)))
+    found = errors(direct(ticket(doc=doc)))
+    assert "tickets[0].doc_number" in found
+    assert "10 chiffres" in found["tickets[0].doc_number"]
 
 
-def test_ticket_numbers_may_be_typed_with_spaces_or_dashes() -> None:
-    v = ok(direct(ticket(doc=" 394-0000 001 ")))
-    assert v.tickets[0].doc_number == D1
-    assert ok(direct(ticket(doc="12345678"))).tickets[0].doc_number == "12345678"
-    assert ok(direct(ticket(doc="1" * 15))).tickets[0].doc_number == "1" * 15
+def test_ticket_numbers_may_be_typed_with_spaces_dashes_or_slashes() -> None:
+    assert ok(direct(ticket(doc=" 394-0000 001 "))).tickets[0].doc_number == D1
+    assert ok(direct(ticket(doc="394/0000/001"))).tickets[0].doc_number == D1
+
+
+def test_the_airline_prefix_is_cut_off_and_must_match_the_airline() -> None:
+    for typed in ("495-3940281465", "4953940281465", "495 3940281465", "495/3940281465"):
+        v = ok(direct(ticket(doc=typed, airline="495")))
+        assert v.tickets[0].doc_number == "3940281465", typed
+    assert ok(direct(ticket(doc="3940281465", airline="495"))).tickets[0].doc_number == "3940281465"
+    found = errors(direct(ticket(doc="495-3940281465", airline="199")))
+    assert found["tickets[0].doc_number"] == "Le préfixe ne correspond pas à la compagnie (A/L)."
+    # an airline that is not a 3-digit code cannot match a prefix either
+    assert (
+        "préfixe"
+        in errors(direct(ticket(doc="4953940281465", airline="TU")))["tickets[0].doc_number"]
+    )
+
+
+def test_the_prefixed_and_the_plain_form_of_a_number_are_the_same_ticket_in_a_sale() -> None:
+    both = (ticket("3940281465", airline="495"), ticket("495-3940281465", airline="495"))
+    found = errors(direct(*both))
+    assert "tickets[1].doc_number" in found
 
 
 def test_the_same_number_twice_in_one_sale_is_refused() -> None:
@@ -266,7 +299,7 @@ def test_the_same_number_twice_in_one_sale_is_refused() -> None:
 
 def test_a_sale_needs_at_least_one_ticket_and_at_most_the_cap() -> None:
     assert "tickets" in errors(SaleInput(tickets=(), ag_kind="direct", pb="1", clt="C"))
-    many = [ticket(f"{39400000000 + n}") for n in range(sales.MAX_TICKETS_PER_SALE + 1)]
+    many = [ticket(f"{3940000000 + n}") for n in range(sales.MAX_TICKETS_PER_SALE + 1)]
     assert "tickets" in errors(direct(*many))
     assert ok(direct(*many[:-1], pb="999999")).cost_total == Decimal("21368") * len(many[:-1])
 
@@ -1219,7 +1252,7 @@ def test_a_version_number_clash_is_a_clean_refusal(w: World) -> None:
 
     sales.after_duplicate_check = other_request_edits
     try:
-        with pytest.raises(SaleError, match="rechargez"):
+        with pytest.raises(sales.StaleSale, match="rechargez"):
             w.edit(w.staff, sale_id, direct(pb="25000"))
     finally:
         sales.after_duplicate_check = None
@@ -1735,3 +1768,63 @@ def test_a_failed_create_leaves_nothing_after_the_caller_rolls_back(w: World) ->
         w.create(w.staff, direct(ticket(D1), pb="-1"))
     w.db.rollback()
     assert w.count(Sale) == 0 and days.get_day(w.db, w.agency_id, TODAY) is None
+
+
+# --- B5 additions: the version the form was built on, and warnings on a stored sale ---------
+
+
+def test_an_edit_built_on_an_older_version_is_refused_as_stale(w: World) -> None:
+    sale = w.create(w.staff, direct(pb="24000")).sale
+    w.edit(w.staff, sale.id, direct(pb="25000"))  # version 2, made by somebody else's form
+    with pytest.raises(sales.StaleSale, match="rechargez"):
+        w.edit(w.staff, sale.id, direct(pb="26000"), expected_version=1)
+    assert [v.version_no for v in w.history(sale.id)] == [1, 2]
+    again = w.edit(w.staff, sale.id, direct(pb="26000"), expected_version=2)
+    assert again.sale.version_no == 3
+
+
+def test_a_void_built_on_an_older_version_is_refused_as_stale(w: World) -> None:
+    sale = w.create(w.staff, direct(pb="24000")).sale
+    w.edit(w.staff, sale.id, direct(pb="25000"))
+    with pytest.raises(sales.StaleSale, match="rechargez"):
+        w.void(w.staff, sale.id, expected_version=1)
+    assert sales.get_sale_for(w.db, w.staff, sale.id).status == "active"  # type: ignore[union-attr]
+    assert w.void(w.staff, sale.id, expected_version=2).status == "voided"
+
+
+def test_a_stored_direct_sale_below_cost_still_warns(w: World) -> None:
+    low = w.create(w.staff, direct(ticket(D1, "21368"), pb="20000")).sale
+    fine = w.create(w.staff, direct(ticket(D2, "1000"), pb="1500")).sale
+    assert len(sales.view_warnings(w.db, w.staff, low)) == 1
+    assert sales.view_warnings(w.db, w.staff, fine) == ()
+
+
+def test_a_manager_is_warned_about_a_sign_nobody_has(w: World) -> None:
+    mine = w.create(w.manager, direct(ticket(D1), staff_sign="0004SV")).sale
+    orphan = w.create(w.manager, direct(ticket(D2), staff_sign="0099ZZ")).sale
+    assert sales.view_warnings(w.db, w.manager, mine) == ()
+    assert "0099ZZ" in sales.view_warnings(w.db, w.manager, orphan)[0]
+
+
+def test_a_prefixed_number_is_stored_without_its_prefix_and_caught_as_a_duplicate(w: World) -> None:
+    first = w.create(w.staff, direct(ticket("495-3940281465", airline="495"))).sale
+    assert [t.doc_number for t in first.tickets] == ["3940281465"]
+    assert w.numbers() == {"3940281465"}
+    with pytest.raises(DuplicateTicket) as info:
+        w.create(w.staff, direct(ticket("3940281465", airline="495")))
+    assert info.value.sale_id == first.id and info.value.doc_number == "3940281465"
+    with pytest.raises(DuplicateTicket):
+        w.create(w.staff, direct(ticket("4953940281465", airline="495")))
+
+
+def test_the_typed_errors_the_pages_rely_on(w: World) -> None:
+    sale = w.create(w.staff, direct()).sale
+    with pytest.raises(sales.InvalidReason):
+        w.void(w.staff, sale.id, reason="abc")
+    with pytest.raises(sales.InvalidReason):
+        w.edit(w.manager, sale.id, direct(pb="25000", staff_sign="0004SV"), reason=None)
+    w.void(w.staff, sale.id)
+    with pytest.raises(sales.SaleVoided):
+        w.void(w.staff, sale.id)
+    with pytest.raises(sales.SaleVoided):
+        w.edit(w.staff, sale.id, direct(pb="26000"))

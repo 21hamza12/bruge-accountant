@@ -1,0 +1,53 @@
+{% extends "base.html" %}
+{% from "sales/_parts.html" import hidden_fields, ticket_table %}
+{% block title %}{{ _("Vérifier la vente") }}{% endblock %}
+{% block content %}
+<p class="muted">{{ _("Relisez la vente avec le client. Rien n'est enregistré tant que vous n'avez pas confirmé.") }}</p>
+
+{% if v.warnings or notes %}
+<div class="notice" role="status">
+  <p><strong>{{ _("Attention") }}</strong></p>
+  <ul class="list-plain">
+    {% for warning in v.warnings %}<li>{{ warning }}</li>{% endfor %}
+    {% for warning in notes %}<li>{{ warning }}</li>{% endfor %}
+  </ul>
+</div>
+{% endif %}
+
+<section class="card" aria-labelledby="readback-title">
+  <h2 class="card-title" id="readback-title">{{ _("Billets") }}</h2>
+  {{ ticket_table(v.tickets, _("Billets de la vente (défilement horizontal)")) }}
+</section>
+
+<section class="card" aria-labelledby="summary-title">
+  <h2 class="card-title" id="summary-title">{{ _("Vente") }}</h2>
+  <dl class="kv">
+    <dt>{{ _("Coût total") }}</dt><dd class="num">{{ v.cost_total | money_fr }} {{ agency.currency }}</dd>
+    <dt>{{ _("P.B") }}</dt><dd class="num">{{ v.pb | money_fr }} {{ agency.currency }}</dd>
+    <dt>{{ _("Profit") }}</dt><dd class="num">{{ profit | money_fr }} {{ agency.currency }}</dd>
+    <dt>{{ _("AG") }}</dt><dd>{{ v.ag_label }}</dd>
+    {% if v.fee_applied is not none %}
+    <dt>{{ _("Frais du partenaire (par billet)") }}</dt><dd class="num">{{ v.fee_applied | money_fr }} {{ agency.currency }}{% if v.fee_override_reason %} · {{ _("tarif particulier") }} : {{ v.fee_override_reason }}{% endif %}</dd>
+    {% endif %}
+    <dt>{{ _("Client") }}</dt><dd>{{ v.clt or "-" }}</dd>
+    <dt>{{ _("Téléphone") }}</dt><dd>{% if v.ap %}{{ v.ap }}{% elif v.client_refused_phone %}{{ _("Le client a refusé de donner son numéro") }}{% else %}-{% endif %}</dd>
+    <dt>{{ _("Paiement") }}</dt><dd>{{ payment }}</dd>
+    <dt>{{ _("Signe") }}</dt><dd class="mono">{{ sign or "-" }}</dd>
+    <dt>{{ _("Journée") }}</dt><dd>{{ day | date_fr }}</dd>
+    {% if sale and f.reason %}<dt>{{ _("Motif") }}</dt><dd>{{ f.reason }}</dd>{% endif %}
+  </dl>
+</section>
+
+<div class="actions">
+  <form class="inline-form" method="post" action="{{ confirm_action }}">
+    {% include "_csrf.html" %}
+    {{ hidden_fields(pairs) }}
+    <button class="btn btn-primary btn-lg" type="submit">{{ _("Confirmer la vente") }}</button>
+  </form>
+  <form class="inline-form" method="post" action="{{ back_action }}">
+    {% include "_csrf.html" %}
+    {{ hidden_fields(pairs) }}
+    <button class="btn btn-lg" type="submit">{{ _("Modifier") }}</button>
+  </form>
+</div>
+{% endblock %}

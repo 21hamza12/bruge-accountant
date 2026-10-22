@@ -34,6 +34,8 @@ ACTIVE_UPLOADS = "uploads"
 ACTIVE_UPLOAD_NEW = "upload_new"
 ACTIVE_STAFF = "staff"
 ACTIVE_PARTNERS = "partners"
+ACTIVE_SALE_NEW = "sale_new"
+ACTIVE_SALES = "sales"
 ACTIVE_PROFILE = "profile"
 
 
@@ -51,7 +53,12 @@ class Shell:
     sees_all: bool  # every sign of the agency (manager, accountant)
     can_manage_staff: bool
     can_manage_partners: bool
-    bottom_bar_partners: bool  # five tabs fit 320px: only users without the staff tab get this one
+    can_enter_sales: bool  # staff: "Saisir une vente" and "Mes ventes"
+    can_see_day_sales: bool  # manager, accountant: "Ventes du jour"
+    # Five tabs fit 320px, so the bottom bar differs by role (a test counts them per role):
+    bottom_bar_partners: bool  # only users without the staff tab get this one
+    bottom_bar_sales: bool  # the two sales tabs, for staff, in place of "Questions"
+    bottom_bar_questions: bool
     active: str
     latest_day: date | None
     badge: int
@@ -112,8 +119,12 @@ def build_shell(db: Session, auth: AuthContext, active: str) -> Shell:
         sees_all=sees_all,
         can_manage_staff=permissions.can_manage_staff(user),
         can_manage_partners=permissions.can_manage_partners(user),
+        can_enter_sales=permissions.can_enter_own_sales(user),
+        can_see_day_sales=permissions.can_edit_any_entry(user),
         bottom_bar_partners=permissions.can_manage_partners(user)
         and not permissions.can_manage_staff(user),
+        bottom_bar_sales=permissions.can_enter_own_sales(user),
+        bottom_bar_questions=not permissions.can_enter_own_sales(user),
         active=active,
         latest_day=day,
         badge=sum(counts.values()),

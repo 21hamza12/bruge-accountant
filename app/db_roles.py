@@ -58,6 +58,12 @@ GRANTS = {
     "sale_versions": "SELECT, INSERT",
     # Phase B10 (migration 0012): the stored TJQ APRES of each close, append-only.
     "day_exports": "SELECT, INSERT",
+    # Phase B8 (migration 0011). A run is append-only. A flag is never deleted: only its status
+    # (and the facts that follow the ticket) change, through ``app/flags.py``.
+    "comparison_runs": "SELECT, INSERT",
+    "comparison_flags": "SELECT, INSERT, UPDATE",
+    # Phase B6 (migration 0010). Alias proposals are decided in place: no DELETE.
+    "partner_aliases": "SELECT, INSERT, UPDATE",
 }
 # The tables migration 0003 grants on, frozen. 0003 passes this to ``apply_grants`` instead of
 # relying on GRANTS, which later phases extend: a fresh ``alembic upgrade head`` runs 0003 before

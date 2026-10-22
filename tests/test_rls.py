@@ -24,8 +24,11 @@ from app.models import (
     Agency,
     AmadeusLine,
     AuditEvent,
+    ComparisonFlag,
+    ComparisonRun,
     DayEvent,
     Partner,
+    PartnerAlias,
     PartnerFee,
     RateLimitBucket,
     ReportDay,
@@ -62,12 +65,15 @@ SCOPED_MODELS: list[Any] = [
     AuditEvent,
     AmadeusLine,
     Partner,
+    PartnerAlias,
     PartnerFee,
     ReportDay,
     DayEvent,
     Sale,
     SaleTicket,
     SaleVersion,
+    ComparisonRun,
+    ComparisonFlag,
 ]
 
 
@@ -236,6 +242,13 @@ def rows_for_agency_b(b: Tenant) -> dict[str, Any]:
             valid_from=date(2026, 1, 1),
             set_by_user_id=b.user_id,
         ),
+        "partner_aliases": PartnerAlias(
+            agency_id=b.agency_id,
+            partner_id=b.partner_id,
+            alias="Forged",
+            alias_key="forged",
+            proposed_by_user_id=b.user_id,
+        ),
         "report_days": ReportDay(agency_id=b.agency_id, day=date(2026, 10, 19), status="open"),
         "day_events": DayEvent(
             agency_id=b.agency_id,
@@ -256,6 +269,26 @@ def rows_for_agency_b(b: Tenant) -> dict[str, Any]:
             agency_id=b.agency_id, sale_id=b.sale_id, doc_number="3999999990", position=2
         ),
         "sale_versions": sale_version(b, version_no=2),
+        "comparison_runs": ComparisonRun(
+            agency_id=b.agency_id,
+            report_day_id=b.report_day_id,
+            upload_id=b.upload_id,
+            matched_count=0,
+            flag_count=0,
+            blocking_count=0,
+            cancelled_count=0,
+            move_count=0,
+            partner_missing_count=0,
+        ),
+        "comparison_flags": ComparisonFlag(
+            agency_id=b.agency_id,
+            report_day_id=b.report_day_id,
+            run_id=b.run_id,
+            doc_number="3999999998",
+            fingerprint="f" * 16,
+            kind="not_sent",
+            responsible_sign="0004SV",
+        ),
         "uploads": Upload(
             agency_id=b.agency_id,
             filename="x.xlsx",
@@ -280,11 +313,14 @@ def rows_for_agency_b(b: Tenant) -> dict[str, Any]:
         "uploads",
         "partners",
         "partner_fees",
+        "partner_aliases",
         "report_days",
         "day_events",
         "sales",
         "sale_tickets",
         "sale_versions",
+        "comparison_runs",
+        "comparison_flags",
     ],
 )
 def test_insert_for_another_agency_is_rejected(world: World, table: str) -> None:
@@ -618,6 +654,14 @@ def test_the_app_role_cannot_delete_partners(app_role_world: World) -> None:
             s.execute(delete(Partner))
 
 
+def test_the_app_role_cannot_delete_partner_aliases(app_role_world: World) -> None:
+    db, a, _ = app_role_world
+    with app_session(db) as s:
+        bind_tenant(s, a.agency_id)
+        with pytest.raises(ProgrammingError, match="permission denied"):
+            s.execute(delete(PartnerAlias))
+
+
 # --- report days and sales (migration 0008) -----------------------------------------
 
 
@@ -661,14 +705,21 @@ def test_the_tenant_may_edit_its_sale_and_delete_its_tickets(world: World) -> No
         assert count(s, SaleTicket) == 0
 
 
-@pytest.mark.parametrize("model", [DayEvent, SaleVersion], ids=lambda m: m.__tablename__)
+@pytest.mark.parametrize(
+    "model", [DayEvent, SaleVersion, ComparisonRun], ids=lambda m: m.__tablename__
+)
 def test_day_events_and_sale_versions_are_append_only_for_the_tenant(
     world: World, model: Any
 ) -> None:
     """tenant_read and tenant_insert only: no UPDATE or DELETE policy, so a row cannot be edited
     or removed, not even by the owner in single-role mode (the app role lacks the privileges)."""
     db, a, _ = world
-    change = {"reason": "edited"} if model is DayEvent else {"pb": Decimal("1")}
+    changes: dict[Any, dict[str, Any]] = {
+        DayEvent: {"reason": "edited"},
+        SaleVersion: {"pb": Decimal("1")},
+        ComparisonRun: {"matched_count": 9},
+    }
+    change = changes[model]
     with app_session(db) as s:
         bind_tenant(s, a.agency_id)
         before = count(s, model)
@@ -900,9 +951,11 @@ def test_the_exact_policies_installed(world: World) -> None:
             "user_sessions",
             "temporary_passwords",
             "partners",
+            "partner_aliases",
             "report_days",
             "sales",
             "sale_tickets",
+            "comparison_flags",
         )
     } | {
         ("partner_fees", "tenant_read", "SELECT"),
@@ -921,5 +974,7 @@ def test_the_exact_policies_installed(world: World) -> None:
         ("day_events", "tenant_insert", "INSERT"),
         ("sale_versions", "tenant_read", "SELECT"),
         ("sale_versions", "tenant_insert", "INSERT"),
+        ("comparison_runs", "tenant_read", "SELECT"),
+        ("comparison_runs", "tenant_insert", "INSERT"),
     }
     assert installed == expected

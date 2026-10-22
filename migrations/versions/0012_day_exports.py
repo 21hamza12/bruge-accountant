@@ -1,7 +1,7 @@
 """day_exports: the stored TJQ APRES workbook of each close
 
 Revision ID: 0012
-Revises: 0009
+Revises: 0011
 Create Date: 2026-10-22 18:00:00.000000
 
 EXPAND-ONLY: one new table, nothing existing is touched, so the previous release keeps working.
@@ -34,8 +34,7 @@ from app import db_roles
 from app.db_roles import ROLE_ENV_VAR
 
 revision: str = "0012"
-# TODO rebase onto 0011 (B8 wiring) before merge
-down_revision: str | None = "0009"
+down_revision: str | None = "0011"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 

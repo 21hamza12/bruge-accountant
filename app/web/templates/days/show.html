@@ -15,6 +15,30 @@
   {% if can_reopen %}<a class="btn" href="/days/{{ day.isoformat() }}/reopen">{{ _("Rouvrir la journée") }}</a>{% endif %}
 </div>
 
+{% if received %}
+<section class="card" aria-labelledby="comparison-title">
+  <h2 class="card-title" id="comparison-title">{{ _("Comparaison avec le rapport Amadeus") }}</h2>
+  {% if comparison %}
+  <dl class="kv">
+    {% if comparison.matched is not none %}<dt>{{ _("Billets identiques") }}</dt><dd class="num">{{ comparison.matched }}</dd>{% endif %}
+    <dt>{{ _("Écarts bloquants") }}</dt><dd class="num">{{ comparison.blocking }}</dd>
+    <dt>{{ _("Billets annulés") }}</dt><dd class="num">{{ comparison.cancelled }}</dd>
+    {% if comparison.moves is not none %}<dt>{{ _("Billets déplacés") }}</dt><dd class="num">{{ comparison.moves }}</dd>{% endif %}
+    <dt>{{ _("Billets partenaires absents du rapport") }}</dt><dd class="num">{{ comparison.partner_not_in_report }}</dd>
+  </dl>
+  {% else %}
+  <p class="muted">{{ _("Pas encore comparée.") }}</p>
+  {% endif %}
+  <p><a class="btn" href="/flags?date={{ day.isoformat() }}">{{ _("Voir les écarts") }}</a></p>
+  {% if can_run_comparison %}
+  <form class="inline-form" method="post" action="/flags/run?date={{ day.isoformat() }}">
+    {% include "_csrf.html" %}
+    <button class="btn btn-primary" type="submit">{{ _("Relancer la comparaison") }}</button>
+  </form>
+  {% endif %}
+</section>
+{% endif %}
+
 <section class="card" aria-labelledby="totals-title">
   <h2 class="card-title" id="totals-title">{{ _("Totaux du jour") }}</h2>
   <dl class="kv">

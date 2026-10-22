@@ -5,8 +5,9 @@ range`` and ``Current date``; row 5 the headers ``SEQ NO, A/L, DOC NUMBER, TOTAL
 TRNC, RLOC, P.B, AG, CLT, AP``; data from row 6, one line per ticket of the compared Amadeus line
 set, CANX lines removed, in SEQ order; a totals row under the table (after one blank row).
 
-* ``apres_rows`` is the data: the Amadeus line set of the day (the newest upload, through
-  ``repository.lines_upload_for``) with, per ticket, the P.B / AG / CLT / AP of the app sale that
+* ``apres_rows`` is the data: the Amadeus line set of the day (the upload the day was compared
+  with, else the newest upload for the date, through ``repository.lines_upload_for``) with, per
+  ticket, the P.B / AG / CLT / AP of the app sale that
   holds it. P.B follows decision 21 (``pb_per_line``: the full price on the sale's first ticket, 0
   on the others) and the lines of a multi-ticket sale carry a marker ("Vente #12 · 2 billets"). A
   line with no active app sale has empty P.B / AG / CLT / AP and is marked (B8 wiring / B9 turn it
@@ -175,6 +176,21 @@ def export_filename(day: date, *, draft: bool = False) -> str:
 # --- the data -----------------------------------------------------------------------------------
 
 
+def _line_set_upload(db: Session, agency_id: int, day: date) -> Upload | None:
+    """The upload whose lines are exported: the one the day was compared with, else the newest
+    upload for the date."""
+    report_day = days.get_day(db, agency_id, day)
+    if report_day is not None and report_day.compared_upload_id is not None:
+        compared = db.scalars(
+            select(Upload).where(
+                Upload.agency_id == agency_id, Upload.id == report_day.compared_upload_id
+            )
+        ).first()
+        if compared is not None:
+            return compared
+    return _latest_upload(db, agency_id, day)
+
+
 def _latest_upload(db: Session, agency_id: int, day: date) -> Upload | None:
     return db.scalars(
         select(Upload)
@@ -243,7 +259,7 @@ def apres_rows(db: Session, actor: User, report_day: date) -> ApresReport | None
     if not permissions.can_export_day(actor):
         raise PermissionError("export of the TJQ APRES is for manager and accountant")
     agency_id = actor.agency_id
-    upload = _latest_upload(db, agency_id, report_day)
+    upload = _line_set_upload(db, agency_id, report_day)
     if upload is None:
         return None
     holder = repository.lines_upload_for(db, agency_id, upload.id)

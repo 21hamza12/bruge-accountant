@@ -871,3 +871,20 @@ def test_downloads_have_a_light_per_user_limit(
     assert acc.get(f"/days/{D20}/apres.xlsx").status_code == 429
     assert acc.get(f"/days/{D20}/apres-preview.xlsx").status_code == 429
     assert env.manager_a().get(f"/days/{D20}/apres.xlsx").status_code == 200  # own budget
+
+
+def test_a_compared_day_exports_the_compared_upload_not_the_newest(w: World) -> None:
+    from app import days
+    from app.models import Upload
+
+    w.upload()
+    first = w.db.scalars(select(Upload).order_by(Upload.id)).first()
+    assert first is not None
+    w.upload(custom_report((DOC_A, "TKTT")))  # a newer upload for the same date
+    newest = export_apres.apres_rows(w.db, w.manager, DAY)
+    assert newest is not None and newest.ticket_count == 1
+    report_day = days.get_or_open_day(w.db, w.manager, DAY, now=NOW)
+    report_day.compared_upload_id = first.id
+    w.db.commit()
+    compared = export_apres.apres_rows(w.db, w.manager, DAY)
+    assert compared is not None and compared.ticket_count == 34

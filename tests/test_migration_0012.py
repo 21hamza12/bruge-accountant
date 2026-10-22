@@ -113,13 +113,12 @@ def _tables(url: str) -> set[str]:
 # --- chain and shape ------------------------------------------------------------------------
 
 
-def test_0012_is_in_the_chain_after_0009_for_now() -> None:
+def test_0012_follows_0011_and_is_the_single_head() -> None:
     script = ScriptDirectory.from_config(alembic_config("sqlite://"))
     revision = script.get_revision("0012")
     assert revision is not None
-    # TODO rebase onto 0011 (B8 wiring) before merge: then this becomes "0011".
-    assert revision.down_revision == "0009"
-    assert len(script.get_heads()) == 1
+    assert revision.down_revision == "0011"
+    assert script.get_heads() == ["0012"]
 
 
 def test_grants_are_append_only() -> None:
@@ -130,7 +129,7 @@ def test_up_and_down_on_sqlite(db_url: str) -> None:
     if _is_postgres(db_url):
         pytest.skip("SQLite objects; the Postgres tests are below")
     cfg = alembic_config(db_url)
-    migrate(db_url, revision="0009")
+    migrate(db_url, revision="0011")
     assert "day_exports" not in _tables(db_url)
     command.upgrade(cfg, "0012")
     assert "day_exports" in _tables(db_url)
@@ -144,10 +143,10 @@ def test_up_and_down_on_sqlite(db_url: str) -> None:
         assert uniques == {("agency_id", "report_day_id", "version")}
     finally:
         engine.dispose()
-    command.downgrade(cfg, "0009")
+    command.downgrade(cfg, "0011")
     assert "day_exports" not in _tables(db_url)
     assert not [n for n in _names(db_url, "trigger") if "day_exports" in n]
-    assert _scalar(db_url, "SELECT version_num FROM alembic_version") == "0009"
+    assert _scalar(db_url, "SELECT version_num FROM alembic_version") == "0011"
     command.upgrade(cfg, "head")
     assert "day_exports" in _tables(db_url)
 
@@ -339,7 +338,7 @@ def test_postgres_grants_select_and_insert_only_and_downgrade_revokes(pg_url: st
     migrate(pg_url, app_role=role)
     assert _privileges(pg_url, role, "day_exports") == {"SELECT", "INSERT"}
     with app_role_env(role):
-        command.downgrade(alembic_config(pg_url), "0009")
+        command.downgrade(alembic_config(pg_url), "0011")
     assert "day_exports" not in _tables(pg_url)
     assert _privileges(pg_url, role, "sales") == {"SELECT", "INSERT", "UPDATE"}  # untouched
     migrate(pg_url, app_role=role)

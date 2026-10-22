@@ -26,9 +26,41 @@
 </section>
 {% else %}
 
+{% if not sale %}
+<section class="card" aria-labelledby="paste-title">
+  <h2 class="card-title" id="paste-title">{{ _("Coller le texte Amadeus") }}</h2>
+  {% if paste_error %}<p class="error-box" id="paste-error" role="alert">{{ paste_error }}</p>{% endif %}
+  <form class="form form-wide" method="post" action="/sales/paste">
+    {% include "_csrf.html" %}
+    <div class="field">
+      <label for="pnr_text">{{ _("Texte de la réservation (copié depuis Amadeus)") }}</label>
+      <textarea id="pnr_text" name="pnr_text" rows="8" maxlength="16384" autocomplete="off" spellcheck="false" aria-describedby="pnr-help{% if paste_error %} paste-error{% endif %}"></textarea>
+    </div>
+    <p class="help" id="pnr-help">{{ _("Le texte n'est pas enregistré : il sert seulement à préremplir la vente (%(kb)s Ko au plus). Vous relisez tout avant de confirmer.", kb=paste_limit_kb) }}</p>
+    <button class="btn" type="submit">{{ _("Lire le texte") }}</button>
+  </form>
+</section>
+{% endif %}
+
+{% if f.notices %}
+<div class="notice" role="status">
+  <p><strong>{{ _("Lecture du texte Amadeus : à vérifier") }}</strong></p>
+  <ul class="list-plain">
+    {% for warning in f.notices %}<li>{{ warning }}</li>{% endfor %}
+  </ul>
+</div>
+{% endif %}
+
 <form class="form form-wide" method="post" action="{{ action }}">
   {% include "_csrf.html" %}
   {% if sale %}<input type="hidden" name="version_no" value="{{ f.version_no }}">{% endif %}
+  {% if ask %}
+  <input type="hidden" name="source" value="paste">
+  <input type="hidden" name="ag_proposed" value="{{ f.ag_proposed }}">
+  <input type="hidden" name="ag_text" value="{{ f.ag_text }}">
+  <input type="hidden" name="ag_match" value="{{ f.ag_match }}">
+  {% for warning in f.notices %}<input type="hidden" name="pnr_warning" value="{{ warning }}">{% endfor %}
+  {% endif %}
 
   <section class="card" aria-labelledby="tickets-title">
     <h2 class="card-title" id="tickets-title" tabindex="-1">{{ _("Billets") }}</h2>
@@ -113,6 +145,47 @@
     </div>
     {% endif %}
 
+    {% if ask %}
+    <fieldset class="field ask-agency{% if not ask.exact %} notice{% endif %}" id="ag" tabindex="-1"{{ described(errors, "ag") }}>
+      <legend>{{ _("Agence du texte collé") }}</legend>
+      <p>
+        {% if ask.text %}{{ _("Agence : %(text)s.", text=ask.text) }}{% else %}{{ _("Aucune agence dans le texte.") }}{% endif %}
+        {% if ask.kind == "partner" %}
+        {{ _("Reconnue comme partenaire %(name)s", name=ask.partner_name) }}{% if ask.fee is not none %} ({{ _("frais %(fee)s %(cur)s/billet", fee=ask.fee | money_fr, cur=agency.currency) }}){% else %} ({{ _("aucun tarif en vigueur") }}){% endif %}.
+        {{ _("C'est bien ce partenaire ?") }}
+        {% elif ask.kind == "direct" %}
+        {{ _("Reconnue comme vente directe BRUGE.") }} {{ _("C'est bien une vente directe ?") }}
+        {% elif ask.kind == "suggest" %}
+        {{ _("Aucun partenaire de ce nom. Vouliez-vous dire %(name)s", name=ask.partner_name) }}{% if ask.fee is not none %} ({{ _("frais %(fee)s %(cur)s/billet", fee=ask.fee | money_fr, cur=agency.currency) }}){% endif %} ?
+        {% else %}
+        {{ _("Aucun partenaire reconnu : choisissez le partenaire ou la vente directe.") }}
+        {% endif %}
+      </p>
+      {% if ask.reason %}<p class="help"><strong>{{ _("Attention") }}</strong> : {{ ask.reason }}.</p>{% endif %}
+      {{ field_error(errors, "ag") }}
+      {% if ask.kind != "none" %}
+      <div class="field field-check">
+        <input id="ag_answer_yes" name="ag_answer" type="radio" value="yes"{% if f.ag_answer == "yes" %} checked{% endif %}>
+        <label for="ag_answer_yes">{% if ask.kind == "direct" %}{{ _("Oui, vente directe BRUGE") }}{% else %}{{ _("Oui, %(name)s", name=ask.partner_name) }}{% endif %}</label>
+      </div>
+      {% endif %}
+      <div class="field field-check">
+        <input id="ag_answer_other" name="ag_answer" type="radio" value="other"{% if f.ag_answer == "other" %} checked{% endif %}>
+        <label for="ag_answer_other">{{ _("Non, choisir un autre partenaire") }}</label>
+      </div>
+      <div class="field">
+        <label for="ag_other">{{ _("Autre partenaire") }}</label>
+        <select id="ag_other" name="ag_other">
+          <option value=""{% if not f.ag_other %} selected{% endif %}>{{ _("Choisir…") }}</option>
+          {% for partner in partners %}<option value="{{ partner.id }}"{% if f.ag_other == partner.id|string %} selected{% endif %}>{{ partner.name }}</option>{% endfor %}
+        </select>
+      </div>
+      <div class="field field-check">
+        <input id="ag_answer_direct" name="ag_answer" type="radio" value="direct"{% if f.ag_answer == "direct" %} checked{% endif %}>
+        <label for="ag_answer_direct">{{ _("Vente directe BRUGE") }}</label>
+      </div>
+    </fieldset>
+    {% else %}
     <div class="field">
       <label for="ag">{{ _("AG") }}</label>
       <select id="ag" name="ag"{{ described(errors, "ag") }}>
@@ -121,6 +194,7 @@
       </select>
       {{ field_error(errors, "ag") }}
     </div>
+    {% endif %}
 
     <div class="field field-pb">
       <label for="pb">{{ _("P.B (prix Bruge, vente directe)") }}</label>

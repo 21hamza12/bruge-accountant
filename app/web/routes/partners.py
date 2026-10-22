@@ -8,15 +8,18 @@ Pages carry names and money, so they are ``Cache-Control: no-store``.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Request
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 from starlette.responses import RedirectResponse, Response
 
-from app import partners, permissions
+from app import partner_aliases, partners, permissions
 from app.clock import Clock
-from app.models import Partner
+from app.models import Partner, User
+from app.partner_aliases import AliasError, AliasNotFound
 from app.partners import PartnerError
 from app.web.csrf import csrf_protect
 from app.web.deps import (
@@ -27,7 +30,8 @@ from app.web.deps import (
     require_permission,
 )
 from app.web.pages import page
-from app.web.params import PartnerId
+from app.web.params import DbId, PartnerId, parse_db_id
+from app.web.sale_pages import throttle
 from app.web.shell import ACTIVE_PARTNERS, shell_context
 
 router = APIRouter(prefix="/partners", dependencies=[Depends(csrf_protect)])
@@ -45,12 +49,38 @@ def _list_page(
     form: dict[str, str] | None = None,
     status_code: int = 200,
 ) -> Response:
+    agency_id = auth.user.agency_id
+    rows = partners.list_partners(db, agency_id, today=clock().date())
+    names = {row.partner.id: row.partner.name for row in rows}
+    pending = partner_aliases.pending(db, agency_id)
+    proposers = {
+        u.id: (u.display_name or "").strip() or u.role
+        for u in db.scalars(
+            select(User).where(
+                User.agency_id == agency_id, User.id.in_({a.proposed_by_user_id for a in pending})
+            )
+        )
+    }
     return page(
         "partners/list.html",
         status_code=status_code,
         headers=NO_STORE,
         **shell_context(db, auth, ACTIVE_PARTNERS),
-        rows=partners.list_partners(db, auth.user.agency_id, today=clock().date()),
+        rows=rows,
+        aliases=[
+            {
+                "alias": a,
+                "partner_name": names.get(a.partner_id, "?"),
+                "by": proposers.get(a.proposed_by_user_id, ""),
+            }
+            for a in pending
+        ],
+        rejected=[
+            {"alias": a, "partner_name": names.get(a.partner_id, "?")}
+            for a in partner_aliases.rejected(db, agency_id)
+        ],
+        alias_cap=partner_aliases.at_cap(db, agency_id),
+        active_partners=[row.partner for row in rows if row.partner.is_active],
         error=error,
         form=form or {},
     )
@@ -75,6 +105,7 @@ def _detail_page(
         **shell_context(db, auth, ACTIVE_PARTNERS),
         partner=partner,
         history=partners.fee_history(db, agency_id, partner.id),
+        aliases=partner_aliases.approved_for(db, agency_id, partner.id),
         current_fee=partners.fee_on(db, agency_id, partner.id, today),
         today=today,
         error=error,
@@ -122,6 +153,116 @@ def partner_create(
             db, auth, clock, error=str(exc), form={"name": name, "phone": phone}, status_code=400
         )
     return _back(created.id)
+
+
+# --- aliases (names an agency is known by in the Amadeus text) --------------------------------
+# Declared before the ``/{partner_id}`` routes. Same rules as the rest of the page: a manager or
+# accountant, CSRF, an alias of another agency is a 404.
+
+
+def _alias_action(
+    request: Request,
+    db: Session,
+    auth: AuthContext,
+    clock: Clock,
+    run: Callable[[], None],
+    *,
+    back_to: str = "/partners",
+    error_page: Callable[[str], Response] | None = None,
+) -> Response:
+    throttle(db, request, auth, clock, write=True)  # the sale write budget, per user
+    try:
+        run()
+        db.commit()
+    except AliasNotFound:
+        db.rollback()
+        raise HTTPException(status_code=404) from None
+    except (AliasError, PartnerError) as exc:
+        db.rollback()
+        if error_page is not None:
+            return error_page(str(exc))
+        return _list_page(db, auth, clock, error=str(exc), status_code=400)
+    return RedirectResponse(back_to, status_code=303)
+
+
+def _simple(action: str) -> Callable[..., Response]:
+    """The route of an alias decision that needs nothing but the alias."""
+    do = getattr(partner_aliases, action)
+
+    def route(
+        request: Request,
+        alias_id: DbId,
+        db: Annotated[Session, Depends(get_session)],
+        clock: Annotated[Clock, Depends(get_clock)],
+        auth: Annotated[AuthContext, Depends(require_partner_admin)],
+    ) -> Response:
+        def run() -> None:
+            do(db, auth.user, alias_id, now=clock(), ip=client_ip(request))
+
+        return _alias_action(request, db, auth, clock, run)
+
+    route.__name__ = f"alias_{action}"
+    return route
+
+
+for _action in ("approve", "reject", "reactivate"):
+    router.add_api_route(f"/aliases/{{alias_id}}/{_action}", _simple(_action), methods=["POST"])
+
+
+@router.post("/aliases/{alias_id}/reassign")
+def alias_reassign(
+    request: Request,
+    alias_id: DbId,
+    db: Annotated[Session, Depends(get_session)],
+    clock: Annotated[Clock, Depends(get_clock)],
+    auth: Annotated[AuthContext, Depends(require_partner_admin)],
+    partner_id: Annotated[str, Form()] = "",
+) -> Response:
+    """Approve the alias for another partner than the one the agent chose."""
+
+    def run() -> None:
+        target = parse_db_id(partner_id)
+        if target is None:
+            raise AliasError(partner_aliases.PARTNER_NOT_FOUND)
+        partner_aliases.approve(
+            db, auth.user, alias_id, partner_id=target, now=clock(), ip=client_ip(request)
+        )
+
+    return _alias_action(request, db, auth, clock, run)
+
+
+@router.post("/aliases/{alias_id}/remove")
+def alias_remove(
+    request: Request,
+    alias_id: DbId,
+    db: Annotated[Session, Depends(get_session)],
+    clock: Annotated[Clock, Depends(get_clock)],
+    auth: Annotated[AuthContext, Depends(require_partner_admin)],
+    back: Annotated[str, Form()] = "",
+) -> Response:
+    """Take an approved alias out of use (it becomes rejected). Back to the partner's page, which
+    also shows a refusal."""
+
+    def run() -> None:
+        partner_aliases.remove(db, auth.user, alias_id, now=clock(), ip=client_ip(request))
+
+    origin = parse_db_id(back)
+    partner = partners.get_partner(db, auth.user.agency_id, origin) if origin else None
+
+    def error_page(message: str) -> Response:
+        if partner is None:
+            return _list_page(db, auth, clock, error=message, status_code=400)
+        return _detail_page(db, auth, clock, partner, error=message, status_code=400)
+
+    return _alias_action(
+        request,
+        db,
+        auth,
+        clock,
+        run,
+        back_to=f"/partners/{partner.id}" if partner else "/partners",
+        error_page=error_page,
+    )
 
 
 @router.get("/{partner_id}")

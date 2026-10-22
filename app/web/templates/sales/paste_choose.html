@@ -1,0 +1,39 @@
+{% extends "base.html" %}
+{% from "sales/_parts.html" import hidden_fields %}
+{% block title %}{{ _("Ventes lues dans le texte") }}{% endblock %}
+{% block content %}
+<p><a class="card-link card-link-back" href="/sales/new">{{ _("Retour à la saisie") }}</a></p>
+<p class="muted">{{ _("Ce texte contient %(n)s ventes (une par passager). Ouvrez-les une par une : rien n'est enregistré avant la confirmation.", n=items|length) }}</p>
+
+{% if reader_warnings %}
+<div class="notice" role="status">
+  <p><strong>{{ _("Lecture du texte Amadeus : à vérifier") }}</strong></p>
+  <ul class="list-plain">{% for warning in reader_warnings %}<li>{{ warning }}</li>{% endfor %}</ul>
+</div>
+{% endif %}
+
+{% for item in items %}
+{% set sale = item.sale %}
+<section class="card" aria-labelledby="proposal-{{ loop.index }}">
+  <h2 class="card-title" id="proposal-{{ loop.index }}">{{ _("Vente %(n)s", n=loop.index) }} : {{ sale.pax_name or _("passager non identifié") }}</h2>
+  <dl class="kv">
+    <dt>{{ _("Billets") }}</dt>
+    <dd>{% for t in sale.tickets %}<span class="mono">{{ t.doc_number }}</span> ({{ t.pax_type }}{% if t.total_doc is not none %}, {{ t.total_doc | money_fr }} {{ agency.currency }}{% else %}, {{ _("coût à saisir") }}{% endif %}){% if not loop.last %}, {% endif %}{% endfor %}</dd>
+    <dt>{{ _("Agence proposée") }}</dt>
+    <dd>{{ item.agency }}{% if sale.agency_text %} · {{ sale.agency_text }}{% endif %}</dd>
+    <dt>{{ _("P.B proposé") }}</dt>
+    <dd class="num">{% if sale.pb is not none %}{{ sale.pb | money_fr }} {{ agency.currency }}{% else %}-{% endif %}</dd>
+  </dl>
+  {% if sale.warnings %}
+  <div class="notice" role="status">
+    <ul class="list-plain">{% for warning in sale.warnings %}<li>{{ warning }}</li>{% endfor %}</ul>
+  </div>
+  {% endif %}
+  <form class="inline-form" method="post" action="/sales/new">
+    {% include "_csrf.html" %}
+    {{ hidden_fields(item.pairs) }}
+    <button class="btn btn-primary" type="submit">{{ _("Saisir cette vente") }}</button>
+  </form>
+</section>
+{% endfor %}
+{% endblock %}

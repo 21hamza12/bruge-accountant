@@ -56,6 +56,8 @@ GRANTS = {
     "sales": "SELECT, INSERT, UPDATE",
     "sale_tickets": "SELECT, INSERT, DELETE",
     "sale_versions": "SELECT, INSERT",
+    # Phase B6 (migration 0010). Alias proposals are decided in place: no DELETE.
+    "partner_aliases": "SELECT, INSERT, UPDATE",
 }
 # The tables migration 0003 grants on, frozen. 0003 passes this to ``apply_grants`` instead of
 # relying on GRANTS, which later phases extend: a fresh ``alembic upgrade head`` runs 0003 before

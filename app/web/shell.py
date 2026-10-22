@@ -23,7 +23,7 @@ from fastapi import HTTPException
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app import accounts, permissions
+from app import accounts, partner_aliases, permissions
 from app.models import Agency, User
 from app.repository import awaiting_counts_by_sign, latest_report_date, sign_owners
 from app.web.deps import AuthContext
@@ -63,6 +63,7 @@ class Shell:
     active: str
     latest_day: date | None
     badge: int
+    pending_aliases: int  # agency names waiting for a decision (who may manage partners)
     agents: tuple[AgentNav, ...]  # managers only
     owners: Mapping[str, str]  # managers only: sign to person
     my_signs: tuple[str, ...]  # staff only: the signs linked to them
@@ -114,6 +115,9 @@ def build_shell(db: Session, auth: AuthContext, active: str) -> Shell:
         if sees_all
         else ()
     )
+    pending = (
+        partner_aliases.pending_count(db, agency_id) if permissions.can_manage_partners(user) else 0
+    )
     return Shell(
         agency=agency,
         user=user,
@@ -129,6 +133,7 @@ def build_shell(db: Session, auth: AuthContext, active: str) -> Shell:
         active=active,
         latest_day=day,
         badge=sum(counts.values()),
+        pending_aliases=pending,
         agents=agents,
         owners=owners,
         my_signs=my_signs,

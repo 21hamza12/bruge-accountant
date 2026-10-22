@@ -29,7 +29,7 @@ from app.formatting import money
 from app.models import AG_DIRECT, AG_PARTNER, SaleVersion
 from app.sales import FieldError, SaleInput, SaleView, TicketInput
 from app.sales_rules import MAX_TICKETS_PER_SALE
-from app.web.params import MAX_DB_ID
+from app.web.params import parse_db_id
 
 CLIP = 1000
 TICKET_FIELDS = ("doc_number", "airline", "total_doc", "pax_name", "pax_type", "rloc", "trnc")
@@ -39,6 +39,18 @@ DEFAULT_TRNC = "TKTT"
 DIRECT = "direct"
 
 BAD_AG = "Choisissez BRUGE (vente directe) ou un partenaire."
+BAD_SOURCE = "Origine de la vente invalide."
+ASK_AGENCY = (
+    "Confirmez l'agence : répondez Oui, choisissez un autre partenaire ou la vente directe."
+)
+ASK_OTHER = "Choisissez le partenaire dans la liste."
+
+SOURCE_FORM = "form"
+SOURCE_PASTE = "paste"  # the form was prefilled from pasted Amadeus text (only labels history)
+SOURCES = (SOURCE_FORM, SOURCE_PASTE)
+ANSWER_YES, ANSWER_OTHER, ANSWER_DIRECT = "yes", "other", "direct"
+MAX_NOTICES = 12
+HIDDEN_CLIP = 120  # the agency text and the reader warnings carried in hidden fields
 BAD_DAY = "La date doit être au format AAAA-MM-JJ."
 BAD_VERSION = "Version de la vente invalide : rechargez la page."
 
@@ -54,7 +66,6 @@ PAYMENT_LABELS: tuple[tuple[str, str], ...] = (
 PAYMENT_NAME = dict(PAYMENT_LABELS)
 
 _ISO_DATE = re.compile(r"\d{4}-\d{2}-\d{2}", re.ASCII)
-_DIGITS = re.compile(r"[0-9]{1,19}", re.ASCII)
 _TRUE = frozenset({"1", "on", "true", "yes"})
 
 
@@ -89,6 +100,20 @@ class SaleForm:
     reason: str = ""
     version_no: str = ""
     add_row: bool = False  # the "Ajouter un billet" button was pressed
+    # Filled from pasted text (``source == "paste"``): the agency the agent must confirm. The AG of
+    # such a form is the answer: ``ag_answer`` yes (``ag_proposed``), other (``ag_other``) or
+    # direct. Display and labelling only: the service validates the resulting AG as any other.
+    source: str = SOURCE_FORM
+    ag_answer: str = ""
+    ag_proposed: str = ""  # "direct", a partner id, or "" (nothing to propose)
+    ag_other: str = ""
+    ag_text: str = ""  # the agency text of the booking (AP agency, else the FP hint)
+    ag_match: str = ""  # exact, packed, prefix, fp, close or none
+    notices: list[str] = field(default_factory=list)  # what the reader warned about
+
+    @property
+    def from_paste(self) -> bool:
+        return self.source == SOURCE_PASTE
 
     @property
     def hidden_pairs(self) -> list[tuple[str, str]]:
@@ -113,6 +138,18 @@ class SaleForm:
         )
         if self.client_refused_phone:
             pairs.append(("client_refused_phone", "1"))
+        if self.from_paste:
+            pairs.extend(
+                [
+                    ("source", self.source),
+                    ("ag_answer", self.ag_answer),
+                    ("ag_proposed", self.ag_proposed),
+                    ("ag_other", self.ag_other),
+                    ("ag_text", self.ag_text),
+                    ("ag_match", self.ag_match),
+                ]
+            )
+            pairs.extend(("pnr_warning", text) for text in self.notices)
         return pairs
 
 
@@ -131,8 +168,13 @@ def _text(value: object) -> str:
     return value[:CLIP] if isinstance(value, str) else ""
 
 
-def read(source: FormData) -> SaleForm:
-    """The form as posted: every value text, clipped; missing fields are empty."""
+def read(source: FormData, *, new_sale: bool = True) -> SaleForm:
+    """The form as posted: every value text, clipped; missing fields are empty.
+
+    ``source`` and the agency-question fields are **advisory**: they label a new sale's history
+    and decide what the agent is asked, never what is accepted (the service validates the AG as
+    any other). Only a new sale can come from a paste: with ``new_sale`` false (an edit) they
+    are ignored."""
     columns = {name: [_text(v) for v in source.getlist(name)] for name in TICKET_FIELDS}
     count = min(max((len(v) for v in columns.values()), default=0), MAX_TICKETS_PER_SALE + 1)
     rows: list[TicketForm] = []
@@ -146,7 +188,8 @@ def read(source: FormData) -> SaleForm:
     def one(name: str) -> str:
         return _text(source.get(name))
 
-    return SaleForm(
+    origin = (one("source").strip() or SOURCE_FORM) if new_sale else SOURCE_FORM
+    form = SaleForm(
         tickets=rows or [TicketForm()],
         ag=one("ag") or DIRECT,
         pb=one("pb"),
@@ -161,7 +204,40 @@ def read(source: FormData) -> SaleForm:
         reason=one("reason"),
         version_no=one("version_no"),
         add_row=bool(one("add_row")),
+        source=origin,
+        ag_answer=one("ag_answer").strip(),
+        ag_proposed=one("ag_proposed").strip(),
+        ag_other=one("ag_other").strip(),
+        ag_text=one("ag_text")[:HIDDEN_CLIP] if new_sale else "",
+        ag_match=one("ag_match").strip(),
+        notices=[_text(v)[:HIDDEN_CLIP] for v in source.getlist("pnr_warning")][:MAX_NOTICES]
+        if new_sale
+        else [],
     )
+    if form.from_paste:
+        form.ag = answered_ag(form)
+    return form
+
+
+def answered_ag(form: SaleForm) -> str:
+    """The ``ag`` value the agent's answer to the agency question stands for; "" when the
+    question is not answered (or answered "other" without a partner)."""
+    if form.ag_answer == ANSWER_YES:
+        return form.ag_proposed
+    if form.ag_answer == ANSWER_OTHER:
+        return form.ag_other
+    if form.ag_answer == ANSWER_DIRECT:
+        return DIRECT
+    return ""
+
+
+def _agency_problem(form: SaleForm) -> FieldError | None:
+    """A form from pasted text is not accepted until its agency question is answered."""
+    if answered_ag(form):
+        return None
+    if form.ag_answer == ANSWER_OTHER:
+        return FieldError("ag", ASK_OTHER)
+    return FieldError("ag", ASK_AGENCY)
 
 
 def with_extra_row(form: SaleForm) -> SaleForm:
@@ -177,8 +253,9 @@ def parse_ag(raw: str) -> tuple[str, int | None]:
     text = raw.strip()
     if text == DIRECT:
         return AG_DIRECT, None
-    if _DIGITS.fullmatch(text) and 1 <= int(text) <= MAX_DB_ID:
-        return AG_PARTNER, int(text)
+    partner_id = parse_db_id(text)
+    if partner_id is not None:
+        return AG_PARTNER, partner_id
     return "?", None
 
 
@@ -197,10 +274,7 @@ def parse_day(raw: str) -> tuple[date | None, FieldError | None]:
 
 def parse_version(raw: str) -> int | None:
     """The version number the form was built on, or None when it is missing or garbled."""
-    text = raw.strip()
-    if _DIGITS.fullmatch(text) and 1 <= int(text) <= MAX_DB_ID:
-        return int(text)
-    return None
+    return parse_db_id(raw)
 
 
 def to_input(form: SaleForm, *, choose_day: bool) -> Built:
@@ -222,6 +296,10 @@ def to_input(form: SaleForm, *, choose_day: bool) -> Built:
     kind, partner_id = parse_ag(form.ag)
     day: date | None = None
     problems: list[FieldError] = []
+    if form.source not in SOURCES:
+        problems.append(FieldError("source", BAD_SOURCE))
+    elif form.from_paste and (problem := _agency_problem(form)) is not None:
+        problems.append(problem)
     if choose_day:
         day, problem = parse_day(form.day)
         if problem is not None:
@@ -369,6 +447,7 @@ FIELD_LABELS = {
     "client_refused_phone": "Téléphone du client",
     "payment_method": "Mode de paiement",
     "reason": "Motif",
+    "source": "Origine",
 }
 TICKET_LABELS = {
     "doc_number": "Numéro du billet",

@@ -57,6 +57,7 @@
         {% if shell.can_manage_partners %}
         <a class="nav-link" href="/partners"{% if shell.active == "partners" %} aria-current="page"{% endif %}>
           <span class="nav-label">{{ icon("partners") }}{{ _("Partenaires") }}</span>
+          {% if shell.pending_aliases %}<span class="badge">{{ shell.pending_aliases }}<span class="visually-hidden"> {{ _("noms d'agence à valider") }}</span></span>{% endif %}
         </a>
         {% endif %}
         {% if shell.can_manage_staff %}
@@ -144,7 +145,7 @@
     {% endif %}
     <a class="tab" href="/uploads/new"{% if shell.active in ("upload_new", "uploads") %} aria-current="page"{% endif %}>{{ icon("upload") }}<span class="tab-label">{{ _("Envoyer un rapport") }}</span></a>
     {% if shell.bottom_bar_partners %}
-    <a class="tab" href="/partners"{% if shell.active == "partners" %} aria-current="page"{% endif %}>{{ icon("partners") }}<span class="tab-label">{{ _("Partenaires") }}</span></a>
+    <a class="tab" href="/partners"{% if shell.active == "partners" %} aria-current="page"{% endif %}><span class="tab-badge">{{ icon("partners") }}{% if shell.pending_aliases %}<span class="badge">{{ shell.pending_aliases }}<span class="visually-hidden"> {{ _("noms d'agence à valider") }}</span></span>{% endif %}</span><span class="tab-label">{{ _("Partenaires") }}</span></a>
     {% endif %}
     {% if shell.can_manage_staff %}
     <a class="tab" href="/staff"{% if shell.active == "staff" %} aria-current="page"{% endif %}>{{ icon("team") }}<span class="tab-label">{{ _("Équipe") }}</span></a>

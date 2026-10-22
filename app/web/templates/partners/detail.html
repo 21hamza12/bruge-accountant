@@ -51,6 +51,26 @@
 </section>
 {% endif %}
 
+<section class="card" aria-labelledby="aliases-title">
+  <h2 class="card-title" id="aliases-title">{{ _("Autres noms reconnus") }}</h2>
+  {% if aliases %}
+  <ul class="list-plain">
+    {% for a in aliases %}
+    <li>
+      {{ a.alias }}
+      <form class="inline-form" method="post" action="/partners/aliases/{{ a.id }}/remove">
+        {% include "_csrf.html" %}
+        <input type="hidden" name="back" value="{{ partner.id }}">
+        <button class="btn btn-danger" type="submit">{{ _("Retirer") }}<span class="visually-hidden"> {{ a.alias }}</span></button>
+      </form>
+    </li>
+    {% endfor %}
+  </ul>
+  {% else %}
+  <p class="muted">{{ _("Aucun autre nom validé. Le nom du partenaire est toujours reconnu.") }}</p>
+  {% endif %}
+</section>
+
 <section class="card" aria-labelledby="history-title">
   <h2 class="card-title" id="history-title">{{ _("Historique des frais") }}</h2>
   {% if history %}

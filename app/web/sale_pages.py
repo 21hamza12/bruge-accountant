@@ -11,6 +11,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import date
+from decimal import Decimal
 from typing import Annotated
 
 from fastapi import Depends, HTTPException, Request
@@ -24,6 +25,7 @@ from app.auth import ratelimit
 from app.clock import Clock
 from app.errors import UserError
 from app.models import DAY_CLOSED, PAX_TYPES, SALE_VOIDED, TICKET_TYPES, Partner, SaleVersion, User
+from app.parsing.pnr import MAX_TEXT_BYTES
 from app.repository import sign_owners
 from app.sales import (
     DuplicateTicket,
@@ -47,6 +49,7 @@ from app.web.deps import (
     require_permission,
 )
 from app.web.pages import page
+from app.web.params import parse_db_id
 from app.web.sale_forms import SaleForm
 from app.web.shell import ACTIVE_SALE_NEW, ACTIVE_SALES, shell_context
 
@@ -209,7 +212,7 @@ def _partner_options(db: Session, agency_id: int, today: date, keep: int | None)
     ]
 
 
-def _sign_choice(db: Session, user: User) -> tuple[str, list[str]]:
+def sign_choice(db: Session, user: User) -> tuple[str, list[str]]:
     """How the form asks for the sign: ``free`` (manager, accountant: any sign, with the known ones
     suggested), ``select`` (staff with several), ``fixed`` (staff with one), ``none``."""
     own = sales.visible_signs(db, user)
@@ -234,6 +237,66 @@ def _duplicate_rows(form: SaleForm, duplicate: DuplicateTicket) -> list[int]:
     return found
 
 
+# --- the agency question of a sale that came from pasted text ---------------------------------
+
+
+@dataclass(frozen=True)
+class AgencyAsk:
+    """What the agent is asked about the agency of a pasted booking. ``kind``: ``direct`` (read as
+    BRUGE), ``partner`` (read as a partner), ``suggest`` (a close name: a suggestion only) or
+    ``none`` (nothing recognised). ``exact`` is false for anything but an exact match: the block
+    then has the warning style and says why (``reason``)."""
+
+    text: str
+    kind: str
+    partner_name: str
+    fee: Decimal | None
+    exact: bool
+    reason: str
+
+
+def _reason(match: str, text: str) -> str:
+    if match == "prefix":
+        return f"déduit de « {text} »"
+    if match == "packed":
+        return "nom proche (espaces ou tirets différents)"
+    if match == "fp":
+        return "déduit de l'indication de paiement"
+    if match == "close":
+        return "nom proche : ce n'est qu'une suggestion"
+    return ""
+
+
+def agency_ask(db: Session, agency_id: int, today: date, form: SaleForm) -> AgencyAsk:
+    """The question block of ``form`` (a form from pasted text). The partner is looked up in the
+    agency (an id of another agency finds nothing); the posted values only decide what is asked."""
+    text, match, proposed = form.ag_text.strip(), form.ag_match, form.ag_proposed
+    exact = match == "exact"
+    if proposed == sale_forms.DIRECT:
+        return AgencyAsk(text, "direct", "", None, exact, _reason(match, text))
+    partner = None
+    proposed_id = parse_db_id(proposed)
+    if proposed_id is not None:
+        partner = partners.get_partner(db, agency_id, proposed_id)
+        if partner is not None and not partner.is_active:
+            partner = None
+    if partner is None:
+        return AgencyAsk(text, "none", "", None, False, "")
+    fee = partners.fee_on(db, agency_id, partner.id, today)
+    kind = "suggest" if match == "close" else "partner"
+    return AgencyAsk(
+        text, kind, partner.name, fee.fee if fee else None, exact, _reason(match, text)
+    )
+
+
+def _answer_text(form: SaleForm, result: ValidatedSale) -> str:
+    if form.ag_answer == sale_forms.ANSWER_YES:
+        return "Oui, c'est bien cette agence."
+    if form.ag_answer == sale_forms.ANSWER_DIRECT:
+        return "Vente directe BRUGE."
+    return f"Autre partenaire choisi : {result.ag_label}."
+
+
 # --- page builders ----------------------------------------------------------------------------
 
 
@@ -248,6 +311,7 @@ def form_page(
     problems: Sequence[FieldError] = (),
     rows: Sequence[int] = (),
     status_code: int = 200,
+    paste_error: str = "",
 ) -> Response:
     """The entry form (``sale`` None) or the edit form of ``sale``, filled with ``form``.
 
@@ -258,7 +322,7 @@ def form_page(
     the failure's unless ``status_code`` says otherwise."""
     user = auth.user
     today = clock().date()
-    mode, signs = _sign_choice(db, user)
+    mode, signs = sign_choice(db, user)
     errors = dict(failure.errors) if failure else {}
     errors.update(sale_forms.error_map(problems, rows))
     if failure and failure.duplicate is not None:
@@ -267,6 +331,7 @@ def form_page(
     if mode == "fixed" and not form.staff_sign:
         form.staff_sign = signs[0]
     keep = sale.partner_id if sale is not None else None
+    ask = agency_ask(db, user.agency_id, today, form) if form.from_paste and sale is None else None
     return page(
         "sales/form.html",
         status_code=failure.status if failure and status_code == 200 else status_code,
@@ -279,6 +344,9 @@ def form_page(
         errors=errors,
         summary=sale_forms.error_summary(errors),
         banner=failure.message if failure else "",
+        paste_error=paste_error,
+        ask=ask,
+        paste_limit_kb=MAX_TEXT_BYTES // 1024,
         duplicate=failure.duplicate if failure else None,
         partners=_partner_options(db, user.agency_id, today, keep),
         payments=sale_forms.PAYMENT_LABELS,
@@ -309,7 +377,7 @@ def readback_page(
     """The read-back of a validated sale: what will be stored, priced by the server. Its two forms
     (confirm, and back to the form) carry the posted values in hidden fields, nothing computed."""
     user = auth.user
-    _, signs = _sign_choice(db, user)
+    _, signs = sign_choice(db, user)
     chosen = form.staff_sign.strip().upper()
     if sale is not None:
         sign = chosen or sale.staff_sign
@@ -321,6 +389,11 @@ def readback_page(
     if day is None:
         day = sale_forms.parse_day(form.day)[0] if permissions.can_edit_any_entry(user) else None
     notes = list(sales.sign_warnings(db, user, sign)) if sign else []
+    ask = (
+        agency_ask(db, user.agency_id, clock().date(), form)
+        if form.from_paste and sale is None
+        else None
+    )
     if result.partner_id is not None and form.pb.strip():
         notes.append(IGNORED_PRICE)  # a typed price on a partner sale is not silently dropped
     return page(
@@ -331,6 +404,8 @@ def readback_page(
         sale=sale,
         v=result,
         notes=notes,
+        ask=ask,
+        answer=_answer_text(form, result) if ask is not None else "",
         profit=sales.sale_profit(result),
         sign=sign,
         day=day or clock().date(),
@@ -338,6 +413,22 @@ def readback_page(
         pairs=form.hidden_pairs,
         confirm_action="/sales" if sale is None else f"/sales/{sale.id}",
         back_action="/sales/new" if sale is None else f"/sales/{sale.id}/edit",
+    )
+
+
+def choose_page(
+    db: Session,
+    auth: AuthContext,
+    items: Sequence[dict[str, object]],
+    reader_warnings: Sequence[str],
+) -> Response:
+    """Several passengers in one pasted booking: one proposed sale each, to open prefilled."""
+    return page(
+        "sales/paste_choose.html",
+        headers=NO_STORE,
+        **shell_context(db, auth, ACTIVE_SALE_NEW),
+        items=items,
+        reader_warnings=list(reader_warnings),
     )
 
 

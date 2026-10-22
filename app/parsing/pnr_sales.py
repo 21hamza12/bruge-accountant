@@ -51,6 +51,13 @@ TRNC_EMD = "EMDS"
 
 AgKind = Literal["direct", "partner"]  # the values of app.models.AG_DIRECT / AG_PARTNER
 MatchRule = Literal["exact", "packed", "prefix"]
+# How the suggested AG was found: a ``MatchRule`` on the AP agency, ``fp`` (from the payment hint),
+# ``none`` (nothing recognised: ``ProposedSale.suggested_partner_id`` may hold a close name).
+AgencyMatch = Literal["exact", "packed", "prefix", "fp", "none"]
+STOP_WORDS = frozenset({"et", "de", "du", "des", "la", "le", "les", "of", "and", "the", "da", "do"})
+MIN_FUZZY_LENGTH = 5  # shorter keys are never guessed
+SHORT_KEY_MAX = 11  # up to here one mistake is allowed, from 12 characters two
+MIN_INITIALS_WORDS = 3  # initials stand for a name of at least this many words
 _DIRECT: AgKind = "direct"
 _PARTNER: AgKind = "partner"
 _DIRECT_KEY = "bruge"
@@ -94,6 +101,9 @@ class ProposedSale:
     ap: str | None
     staff_sign: str | None
     warnings: tuple[str, ...]
+    agency_text: str | None = None  # the AP agency (else the FP hint) the suggestion came from
+    agency_match: AgencyMatch = "none"
+    suggested_partner_id: int | None = None  # a close name for an unknown AP agency: never chosen
 
 
 class PartnerMatch(NamedTuple):
@@ -129,10 +139,10 @@ def find_partners(name: str, partners: Sequence[tuple[int, str]]) -> PartnerMatc
         for pid, pname in partners
         if isinstance(pname, str) and (k := normalise_key(pname))
     ]
-    exact = tuple(pid for pid, k in keyed if k == key)
+    exact = tuple(dict.fromkeys(pid for pid, k in keyed if k == key))
     if exact:
         return PartnerMatch(exact, "exact")
-    same_packed = tuple(pid for pid, k in keyed if k.replace(" ", "") == packed)
+    same_packed = tuple(dict.fromkeys(pid for pid, k in keyed if k.replace(" ", "") == packed))
     if same_packed:
         return PartnerMatch(same_packed, "packed")
     prefixed = []
@@ -144,7 +154,95 @@ def find_partners(name: str, partners: Sequence[tuple[int, str]]) -> PartnerMatc
             short, long_words = other, key.split()
         if len(short) >= MIN_PREFIX and _word_prefix(short, long_words):
             prefixed.append(pid)
-    return PartnerMatch(tuple(prefixed), "prefix" if prefixed else None)
+    return PartnerMatch(tuple(dict.fromkeys(prefixed)), "prefix" if prefixed else None)
+
+
+# --- close names (typos, initials): suggestions only -----------------------------------------
+
+
+def damerau_levenshtein(a: str, b: str) -> int:
+    """Edit distance counting an insertion, a deletion, a substitution and the swap of two
+    neighbouring letters as one step (the optimal string alignment variant)."""
+    rows = [list(range(len(b) + 1))]
+    for i in range(1, len(a) + 1):
+        row = [i] + [0] * len(b)
+        for j in range(1, len(b) + 1):
+            cost = 0 if a[i - 1] == b[j - 1] else 1
+            row[j] = min(rows[i - 1][j] + 1, row[j - 1] + 1, rows[i - 1][j - 1] + cost)
+            if i > 1 and j > 1 and a[i - 1] == b[j - 2] and a[i - 2] == b[j - 1]:
+                row[j] = min(row[j], rows[i - 2][j - 2] + 1)
+        rows.append(row)
+    return rows[-1][-1]
+
+
+def _allowed_distance(key: str) -> int:
+    length = len(key.replace(" ", ""))
+    if length < MIN_FUZZY_LENGTH:
+        return -1
+    return 1 if length <= SHORT_KEY_MAX else 2
+
+
+def _abbreviates(short: list[str], full: list[str]) -> bool:
+    """Whether the words of ``short`` stand for those of ``full``, in order: each is the word
+    itself or the initials of two or more consecutive words (``WG TOURISM`` for ``WORLD GATE
+    TOURISM``). At least one word must be initials."""
+
+    def walk(i: int, j: int, used_initials: bool) -> bool:
+        if i == len(short):
+            return j == len(full) and used_initials
+        if j == len(full):
+            return False
+        if short[i] == full[j] and walk(i + 1, j + 1, used_initials):
+            return True
+        for end in range(j + 2, len(full) + 1):
+            if short[i] == "".join(w[0] for w in full[j:end]) and walk(i + 1, end, True):
+                return True
+        return False
+
+    return walk(0, 0, False)
+
+
+def suggest_close(name: str, candidates: Sequence[tuple[int, str]]) -> int | None:
+    """The one partner whose name (or alias) ``name`` is probably a typo or an abbreviation of,
+    else None. Keys of 5 to 11 characters allow one mistake, 12 or more two, shorter ones none;
+    initials are tried as well. When two partners are equally close there is no suggestion: the
+    agent picks. Several names of one partner are one candidate."""
+    key = normalise_key(name) if isinstance(name, str) else ""
+    if not key:
+        return None
+    allowed = _allowed_distance(key)
+    words = [w for w in key.split() if w not in STOP_WORDS] or key.split()
+    packed = key.replace(" ", "")
+    best: dict[int, int] = {}
+    for pid, candidate in candidates:
+        other = normalise_key(candidate) if isinstance(candidate, str) else ""
+        if not other:
+            continue
+        found: int | None = None
+        if allowed >= 0:
+            distance = min(
+                damerau_levenshtein(key, other),
+                damerau_levenshtein(packed, other.replace(" ", "")),
+            )
+            if distance <= allowed:
+                found = distance
+        full = [w for w in other.split() if w not in STOP_WORDS] or other.split()
+        # initials are guessed only for a name of three words or more and a key of five
+        # characters or more (the same floor as a typo): "GT" or "WGT" suggest nothing
+        if (
+            found is None
+            and allowed >= 0
+            and len(full) >= MIN_INITIALS_WORDS
+            and _abbreviates(words, full)
+        ):
+            found = 1
+        if found is not None and found < best.get(pid, 99):
+            best[pid] = found
+    if not best:
+        return None
+    nearest = min(best.values())
+    winners = [pid for pid, distance in best.items() if distance == nearest]
+    return winners[0] if len(winners) == 1 else None
 
 
 def _is_direct(name: str) -> bool:
@@ -156,35 +254,44 @@ class _Agency:
     ag_kind: AgKind | None
     partner_id: int | None
     warnings: tuple[str, ...]
+    text: str | None = None
+    match: AgencyMatch = "none"
+    suggested: int | None = None
 
 
-def _suggest_agency(reading: PnrReading, partners: Sequence[tuple[int, str]]) -> _Agency:
+def _suggest_agency(
+    reading: PnrReading, partners: Sequence[tuple[int, str]], known: Sequence[tuple[int, str]]
+) -> _Agency:
+    """``partners`` are the registered names (for the warnings), ``known`` the names plus the
+    approved aliases (for the matching)."""
     names = {pid: n for pid, n in partners if isinstance(n, str)}
     ap, fp = reading.ap_agency, reading.fp_hint
 
     def deduced(pid: int) -> str:
-        return f"partenaire déduit de « {names[pid]} » : vérifier"
+        return f"partenaire déduit de « {names.get(pid, '?')} » : vérifier"
 
     unknown: tuple[str, ...] = ()
+    close: int | None = None
     if ap:
         if _is_direct(ap):
-            return _Agency(_DIRECT, None, ())
-        found = find_partners(ap, partners)
-        if len(found.ids) == 1:
+            return _Agency(_DIRECT, None, (), ap, "exact")
+        found = find_partners(ap, known)
+        if len(found.ids) == 1 and found.rule is not None:
             note = (deduced(found.ids[0]),) if found.rule == "prefix" else ()
-            return _Agency(_PARTNER, found.ids[0], note)
+            return _Agency(_PARTNER, found.ids[0], note, ap, found.rule)
         if found.ids:
-            return _Agency(None, None, (f"agence ambiguë : {ap[:MAX_AGENCY_ECHO]}",))
+            return _Agency(None, None, (f"agence ambiguë : {ap[:MAX_AGENCY_ECHO]}",), ap)
         unknown = (f"agence inconnue : {ap[:MAX_AGENCY_ECHO]}",)
+        close = suggest_close(ap, known)
     if fp:
         if _is_direct(fp):
-            return _Agency(_DIRECT, None, (*unknown, W_DIRECT_FROM_FP))
-        found = find_partners(fp, partners)
+            return _Agency(_DIRECT, None, (*unknown, W_DIRECT_FROM_FP), fp, "fp")
+        found = find_partners(fp, known)
         if len(found.ids) == 1:
-            return _Agency(_PARTNER, found.ids[0], (*unknown, deduced(found.ids[0])))
+            return _Agency(_PARTNER, found.ids[0], (*unknown, deduced(found.ids[0])), fp, "fp")
         if found.ids and not unknown:
-            return _Agency(None, None, (W_FP_AMBIGUOUS,))
-    return _Agency(None, None, unknown or (W_NO_AGENCY,))
+            return _Agency(None, None, (W_FP_AMBIGUOUS,), fp)
+    return _Agency(None, None, unknown or (W_NO_AGENCY,), ap or fp, "none", close)
 
 
 def _suggest_client(
@@ -221,10 +328,16 @@ def _ticket_row(
     )
 
 
-def proposed_sales(reading: PnrReading, partners: Sequence[tuple[int, str]]) -> list[ProposedSale]:
-    """One proposed sale per passenger that has tickets (see the module docstring)."""
-    agency = _suggest_agency(reading, partners)
-    client = _suggest_client(reading, partners, agency.partner_id)
+def proposed_sales(
+    reading: PnrReading,
+    partners: Sequence[tuple[int, str]],
+    aliases: Sequence[tuple[int, str]] = (),
+) -> list[ProposedSale]:
+    """One proposed sale per passenger that has tickets (see the module docstring). ``aliases``
+    are the approved ``(partner id, alias)`` pairs: they match like the partners' own names."""
+    known = [*partners, *aliases]
+    agency = _suggest_agency(reading, partners, known)
+    client = _suggest_client(reading, known, agency.partner_id)
     phone = reading.ap_phones[0] if reading.ap_phones else None
     direct = agency.ag_kind == _DIRECT
 
@@ -260,6 +373,9 @@ def proposed_sales(reading: PnrReading, partners: Sequence[tuple[int, str]]) -> 
             ap=phone,
             staff_sign=reading.agent_sign,
             warnings=tuple(dict.fromkeys(warnings)),
+            agency_text=agency.text,
+            agency_match=agency.match,
+            suggested_partner_id=agency.suggested,
         )
 
     infant_tickets: dict[int | None, list[TicketLine]] = {}

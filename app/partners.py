@@ -152,6 +152,17 @@ def get_partner(db: Session, agency_id: int, partner_id: int) -> Partner | None:
     ).one_or_none()
 
 
+def list_active(db: Session, agency_id: int) -> list[Partner]:
+    """The agency's active partners by name (what a sale can name; no fee lookup)."""
+    return list(
+        db.scalars(
+            select(Partner)
+            .where(Partner.agency_id == agency_id, Partner.is_active.is_(True))
+            .order_by(Partner.name_key, Partner.id)
+        )
+    )
+
+
 def _newest_first(statement: Select[PartnerFee]) -> Select[PartnerFee]:
     return statement.order_by(*_NEWEST)
 

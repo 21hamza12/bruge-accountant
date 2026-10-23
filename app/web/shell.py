@@ -20,10 +20,10 @@ from datetime import date
 from typing import Any
 
 from fastapi import HTTPException
-from sqlalchemy import select
+from sqlalchemy import literal, select
 from sqlalchemy.orm import Session
 
-from app import accounts, approvals, partner_aliases, permissions
+from app import accounts, approvals, flags, partner_aliases, permissions
 from app.models import Agency, User
 from app.repository import awaiting_counts_by_sign, latest_report_date, sign_owners
 from app.web.deps import AuthContext
@@ -120,9 +120,20 @@ def build_shell(db: Session, auth: AuthContext, active: str) -> Shell:
         if sees_all
         else ()
     )
-    pending = (
-        partner_aliases.pending_count(db, agency_id) if permissions.can_manage_partners(user) else 0
-    )
+    # Every sidebar badge in one SELECT (each a scalar subquery; 0 when the role has no badge).
+    visible = None if sees_all else my_signs
+    zero = literal(0)
+    flag_badge, validate_badge, pending = db.execute(
+        select(
+            flags.open_blocking_query(agency_id, visible) if visible is None or visible else zero,
+            approvals.to_validate_query(agency_id)
+            if permissions.can_validate_money(user)
+            else zero,
+            partner_aliases.pending_count_query(agency_id)
+            if permissions.can_manage_partners(user)
+            else zero,
+        )
+    ).one()
     return Shell(
         agency=agency,
         user=user,
@@ -138,10 +149,10 @@ def build_shell(db: Session, auth: AuthContext, active: str) -> Shell:
         active=active,
         latest_day=day,
         badge=sum(counts.values()),
-        flag_badge=approvals.to_answer_count(db, user),
+        flag_badge=int(flag_badge or 0),
         can_validate=permissions.can_validate_money(user),
-        validate_badge=approvals.to_validate_count(db, user),
-        pending_aliases=pending,
+        validate_badge=int(validate_badge or 0),
+        pending_aliases=int(pending or 0),
         agents=agents,
         owners=owners,
         my_signs=my_signs,

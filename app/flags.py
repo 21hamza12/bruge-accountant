@@ -42,7 +42,7 @@ from collections.abc import Collection
 from dataclasses import dataclass, field, replace
 from datetime import date, datetime
 
-from sqlalchemy import Select, and_, func, select
+from sqlalchemy import ScalarSelect, Select, and_, func, select
 from sqlalchemy.orm import Session
 
 from app import audit, days, permissions, repository, sales
@@ -562,23 +562,29 @@ def flags_for_me(db: Session, actor: User) -> list[ComparisonFlag]:
     )
 
 
-def open_blocking_count(db: Session, actor: User) -> int:
-    """How many open blocking flags the actor may see (the sidebar badge)."""
-    signs = _visible(db, actor)
-    if signs is not None and not signs:
-        return 0
+def open_blocking_query(agency_id: int, signs: Collection[str] | None) -> ScalarSelect[int]:
+    """COUNT of open blocking flags of an agency, limited to ``signs`` unless None (as a scalar
+    subquery, so the page shell can fetch every sidebar badge in one SELECT)."""
     query = (
         select(func.count())
         .select_from(ComparisonFlag)
         .where(
-            ComparisonFlag.agency_id == actor.agency_id,
+            ComparisonFlag.agency_id == agency_id,
             ComparisonFlag.status == FLAG_OPEN,
             ComparisonFlag.blocking.is_(True),
         )
     )
     if signs is not None:
-        query = query.where(ComparisonFlag.responsible_sign.in_(signs))
-    return db.scalar(query) or 0
+        query = query.where(ComparisonFlag.responsible_sign.in_([norm_sign(s) for s in signs]))
+    return query.scalar_subquery()
+
+
+def open_blocking_count(db: Session, actor: User) -> int:
+    """How many open blocking flags the actor may see (the sidebar badge)."""
+    signs = _visible(db, actor)
+    if signs is not None and not signs:
+        return 0
+    return int(db.scalar(select(open_blocking_query(actor.agency_id, signs))) or 0)
 
 
 def latest_run(db: Session, actor: User, day: ReportDay) -> ComparisonRun | None:

@@ -21,7 +21,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import func, select
+from sqlalchemy import ScalarSelect, func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -126,15 +126,18 @@ def at_cap(db: Session, agency_id: int) -> bool:
     return pending_count(db, agency_id) >= MAX_PENDING
 
 
-def pending_count(db: Session, agency_id: int) -> int:
-    return int(
-        db.scalar(
-            select(func.count())
-            .select_from(PartnerAlias)
-            .where(PartnerAlias.agency_id == agency_id, PartnerAlias.status == ALIAS_PENDING)
-        )
-        or 0
+def pending_count_query(agency_id: int) -> ScalarSelect[int]:
+    """COUNT of pending aliases of an agency, as a scalar subquery (sidebar badge)."""
+    return (
+        select(func.count())
+        .select_from(PartnerAlias)
+        .where(PartnerAlias.agency_id == agency_id, PartnerAlias.status == ALIAS_PENDING)
+        .scalar_subquery()
     )
+
+
+def pending_count(db: Session, agency_id: int) -> int:
+    return int(db.scalar(select(pending_count_query(agency_id))) or 0)
 
 
 # --- proposing ----------------------------------------------------------------------------------

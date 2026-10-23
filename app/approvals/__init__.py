@@ -60,6 +60,7 @@ from app.approvals.gate import (
 from app.approvals.overrides import (
     pending_override_count,
     to_validate_count,
+    to_validate_query,
     validate_override,
     validation_queue,
 )
@@ -98,6 +99,7 @@ __all__ = [
     "require_can_close",
     "to_answer_count",
     "to_validate_count",
+    "to_validate_query",
     "validate_flag",
     "validate_override",
     "validation_queue",

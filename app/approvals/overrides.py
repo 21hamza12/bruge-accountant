@@ -13,7 +13,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import Select, and_, exists, func, select
+from sqlalchemy import ColumnElement, Select, and_, exists, func, select
 from sqlalchemy.orm import Session, aliased
 
 from app import audit, days, flags, permissions, sales
@@ -141,23 +141,28 @@ def pending_override_count(db: Session, validator: User, report_day: ReportDay) 
     return count_unapproved(db, validator.agency_id, day_id=report_day.id)
 
 
+def to_validate_query(agency_id: int) -> ColumnElement[int]:
+    """Answered flags plus unapproved fee overrides on days not closed, as one SQL expression made
+    of two scalar subqueries (the page shell fetches every sidebar badge in one SELECT)."""
+    answered = (
+        select(func.count())
+        .select_from(ComparisonFlag)
+        .where(ComparisonFlag.agency_id == agency_id, ComparisonFlag.status == FLAG_ANSWERED)
+        .scalar_subquery()
+    )
+    overrides = (
+        select(func.count())
+        .select_from(_unapproved(agency_id, day_id=None, open_days=True).subquery())
+        .scalar_subquery()
+    )
+    return answered + overrides
+
+
 def to_validate_count(db: Session, actor: User) -> int:
-    """What waits for the actor as a validator: answered flags, and fee overrides on days not
-    closed (0 for anybody who may not validate). Two counts, nothing loaded."""
+    """What waits for the actor as a validator (0 for anybody who may not validate)."""
     if not permissions.can_validate_money(actor):
         return 0
-    answered = (
-        db.scalar(
-            select(func.count())
-            .select_from(ComparisonFlag)
-            .where(
-                ComparisonFlag.agency_id == actor.agency_id,
-                ComparisonFlag.status == FLAG_ANSWERED,
-            )
-        )
-        or 0
-    )
-    return answered + count_unapproved(db, actor.agency_id, open_days=True)
+    return int(db.scalar(select(to_validate_query(actor.agency_id))) or 0)
 
 
 def _wrote_the_fee(db: Session, validator: User, view: SaleView) -> bool:

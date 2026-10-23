@@ -6,7 +6,7 @@ import logging
 import re
 from datetime import timedelta
 
-import httpx
+import httpx2 as httpx
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import select

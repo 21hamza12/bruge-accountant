@@ -12,7 +12,7 @@ from html import unescape
 from html.parser import HTMLParser
 from typing import Any
 
-import httpx
+import httpx2 as httpx
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import select, update
@@ -1093,6 +1093,7 @@ def test_manager_can_void_any_sale_with_a_reason(env: Env) -> None:
 
 ALL_POSTS = [
     "/sales/paste",
+    "/sales/screenshot",
     "/sales/preview",
     "/sales/new",
     "/sales",
@@ -1111,28 +1112,36 @@ def test_the_post_list_below_is_every_post_route_of_the_sale_pages() -> None:
     from app.web.routes import sales as sales_routes
 
     found: set[str] = set()
-    for router in (sale_entry.router, sales_routes.router):
+    for router in (sale_entry.router, sales_routes.router, sale_entry.screenshot_router):
         for r in router.routes:
             if isinstance(r, APIRoute) and "POST" in (r.methods or set()):
                 found.add(r.path.replace("{sale_id}", "{id}"))
-        # the CSRF check is on each router, so it covers every route, present and future
-        assert any(d.dependency is csrf_protect for d in router.dependencies)
+        # the CSRF check is on each router, so it covers every route, present and future; the
+        # screenshot router is the one exception: its route checks Origin and the token itself,
+        # after login and before it reads the body (tests/test_sale_screenshot.py)
+        if router is not sale_entry.screenshot_router:
+            assert any(d.dependency is csrf_protect for d in router.dependencies)
     assert found == set(ALL_POSTS)
 
 
 @pytest.mark.parametrize("path", ALL_POSTS)
 def test_every_post_without_the_csrf_token_is_a_403(env: Env, path: str) -> None:
-    c = env.staff_a()
+    from app.ai.fake import FakeTranscribeClient
+
+    env.factory.app.state.ai_client = FakeTranscribeClient()  # type: ignore[attr-defined]
+    c = env.staff_a()  # (the screenshot route is a 404 while the feature is off)
     sale_id = enter(c, tk(D1))
     before = counts(env)[:3]
     url = path.format(id=sale_id)
-    no_token = c.post(url, data=form(version_no="1", reason="essai sans jeton"))
+    # the screenshot route reads only a few small fields (a sale form is "too many")
+    fields = {"reason": "essai"} if path == "/sales/screenshot" else form(version_no="1")
+    no_token = c.post(url, data={**fields, "reason": "essai sans jeton"})
     assert no_token.status_code == 403, url
-    wrong = c.post(url, data={**form(version_no="1"), "csrf_token": "x" * 40})
+    wrong = c.post(url, data={**fields, "csrf_token": "x" * 40})
     assert wrong.status_code == 403
     foreign = c.post(
         url,
-        data={**form(version_no="1"), "csrf_token": csrf_for(c, "/sales/new")},
+        data={**fields, "csrf_token": csrf_for(c, "/sales/new")},
         headers={"Origin": "https://evil.example"},
     )
     assert foreign.status_code == 403

@@ -24,20 +24,38 @@
 from __future__ import annotations
 
 import logging
+from contextlib import aclosing
 from datetime import UTC, datetime, timedelta
+from typing import Annotated
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.orm import Session
+from starlette.concurrency import run_in_threadpool
+from starlette.datastructures import FormData, UploadFile
+from starlette.formparsers import MultiPartException, MultiPartParser
 from starlette.responses import Response
 
 from app import partner_aliases, partners, permissions, sales
+from app.ai.images import MAX_IMAGE_BYTES
+from app.ai.screenshots import (
+    MAX_IMAGES,
+    NO_IMAGE,
+    TOO_MANY,
+    ScreenshotError,
+    read_screenshots,
+)
+from app.ai.screenshots import NOTHING as SCREENSHOT_NOTHING
+from app.auth import ratelimit
+from app.clock import Clock
 from app.errors import UserError
 from app.models import User
 from app.parsing.pnr_sales import ProposedSale
 from app.sales import DuplicateTicket, SaleView
+from app.settings import Settings
 from app.web import sale_forms, sale_paste
-from app.web.csrf import csrf_protect
-from app.web.deps import client_ip
+from app.web.csrf import CSRF_FIELD, CSRF_HEADER, csrf_protect, verify_origin, verify_token
+from app.web.deps import AuthContext, client_ip, get_settings
+from app.web.middleware import SCREENSHOT_BODY_BYTES
 from app.web.params import DbId
 from app.web.sale_forms import SaleForm
 from app.web.sale_pages import (
@@ -56,6 +74,7 @@ from app.web.sale_pages import (
     numbers_of,
     readback_page,
     reason_problem,
+    screenshot_available,
     sign_choice,
     stale_or_garbled,
     throttle,
@@ -63,6 +82,15 @@ from app.web.sale_pages import (
 
 log = logging.getLogger(__name__)
 router = APIRouter(prefix="/sales", dependencies=[Depends(csrf_protect)])
+# The screenshot route has no router-level ``csrf_protect`` (it would parse the body before the
+# gates); it checks Origin and the token itself. Included before ``router`` and ``sales``.
+screenshot_router = APIRouter(prefix="/sales")
+SCREENSHOT_MAX_FIELDS = 4  # the CSRF token, and room for a browser's extras
+SCREENSHOT_MAX_FIELD_BYTES = 16 * 1024  # a field is a token; files are not limited by this
+UNREADABLE = (
+    f"L'envoi n'a pas pu être lu : {MAX_IMAGES} images au plus, 8 Mo chacune. "
+    "Réessayez ou collez le texte Amadeus."
+)
 
 DOUBLE_SUBMIT_WINDOW = timedelta(seconds=120)
 
@@ -109,8 +137,23 @@ def sale_paste_text(request: Request, db: Db, clock: Now, auth: Auth, posted: Po
     if error:
         return form_page(db, auth, clock, SaleForm(), paste_error=error, status_code=400)
     result = sale_paste.read_paste(db, auth.user.agency_id, raw if isinstance(raw, str) else "")
+    return _read_outcome(db, auth, clock, result, screenshot=False)
+
+
+def _read_outcome(
+    db: Session,
+    auth: AuthContext,
+    clock: Clock,
+    result: sale_paste.PasteResult,
+    *,
+    screenshot: bool,
+) -> Response:
+    """What a reading leads to, whether the text was pasted or came from an image: nothing
+    readable (a message on the form), one passenger (the prefilled form) or several (the list)."""
     if not result.proposals:
         message = " ".join([result.error, *result.reader_warnings])
+        if screenshot:
+            return form_page(db, auth, clock, SaleForm(), screenshot_error=message, status_code=400)
         return form_page(db, auth, clock, SaleForm(), paste_error=message, status_code=400)
     mode, signs = sign_choice(db, auth.user)
     for proposal in result.proposals:
@@ -123,6 +166,149 @@ def sale_paste_text(request: Request, db: Db, clock: Now, auth: Auth, posted: Po
         for p in result.proposals
     ]
     return choose_page(db, auth, items, result.reader_warnings)
+
+
+# --- screenshot -------------------------------------------------------------------------------
+
+
+class _InMemoryParser(MultiPartParser):
+    """The multipart parser with files kept in memory, never in a temporary file. Used ONLY by the
+    screenshot route, after login, Origin, CSRF header and rate limit; the body is capped by
+    ``SCREENSHOT_BODY_BYTES`` before it gets here, so nothing can grow past it."""
+
+    spool_max_size = SCREENSHOT_BODY_BYTES
+
+
+async def _read_images(request: Request) -> tuple[FormData, list[UploadFile]]:
+    """Parse the multipart body: at most ``MAX_IMAGES + 1`` files (one more than allowed proves
+    "too many") and a few small fields (the CSRF token). Raises ``MultiPartException``."""
+    if not request.headers.get("content-type", "").lower().startswith("multipart/form-data"):
+        # no file can come this way (a form with only the token): Starlette's urlencoded parser,
+        # fields in memory and bounded
+        form = await request.form(
+            max_fields=SCREENSHOT_MAX_FIELDS, max_part_size=SCREENSHOT_MAX_FIELD_BYTES
+        )
+        return form, []
+    async with aclosing(request.stream()) as stream:
+        parser = _InMemoryParser(
+            request.headers,
+            stream,
+            max_files=MAX_IMAGES + 1,
+            max_fields=SCREENSHOT_MAX_FIELDS,
+            max_part_size=SCREENSHOT_MAX_FIELD_BYTES,
+        )
+        form = await parser.parse()
+    files = [f for f in form.getlist("images") if isinstance(f, UploadFile) and f.filename]
+    return form, files
+
+
+@screenshot_router.post("/screenshot")
+async def sale_screenshot(
+    request: Request,
+    db: Db,
+    clock: Now,
+    auth: Auth,
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> Response:
+    """Read the screenshots of a booking (up to 4 images, the pages) and show what they propose,
+    exactly as a paste does. The images are read into memory (never a temporary file), cleaned and
+    sent once to the AI, and dropped; nothing of them or of the transcript is stored, logged or
+    audited.
+
+    Like ``POST /uploads`` this route declares no body parameter and is NOT under the router's
+    ``csrf_protect`` (which would parse the body first). The body (up to 33 MB) is read only after:
+
+    1. login and permission (the dependencies; the 404 when the feature is off for the agency),
+    2. the Origin check,
+    3. the CSRF token when it came as the ``X-CSRF-Token`` header (a plain form cannot set one),
+    4. ONE hit on the hourly limit (``SCREENSHOT_USER``), counted and committed.
+
+    Then the body is parsed, the CSRF form field is checked when there was no header (a wrong
+    token gives the hit back), and each image beyond the first counts one more hit, so the limit
+    is per image with a minimum of one for a request that sends none or too many."""
+    if not await run_in_threadpool(screenshot_available, db, auth.user):
+        raise HTTPException(status_code=404)  # no key, AI switched off, or the agency's switch
+    await verify_origin(request, db, settings, clock, auth)
+    header_token = request.headers.get(CSRF_HEADER)
+    if header_token:
+        await verify_token(request, db, clock, auth, header_token)
+    await run_in_threadpool(_hit, db, request, auth, clock)
+    form: FormData | None = None
+    try:
+        try:
+            form, files = await _read_images(request)
+        except MultiPartException:  # too many files, a field too big, a broken body
+            return await run_in_threadpool(_screenshot_refused, db, auth, clock, UNREADABLE)
+        if not header_token:
+            token = form.get(CSRF_FIELD)
+            try:
+                await verify_token(
+                    request, db, clock, auth, token if isinstance(token, str) else None
+                )
+            except HTTPException:
+                await run_in_threadpool(_unhit, db, auth, clock)
+                raise
+        if len(files) > MAX_IMAGES:
+            return await run_in_threadpool(_screenshot_refused, db, auth, clock, TOO_MANY)
+        blobs = [await f.read(MAX_IMAGE_BYTES + 1) for f in files]  # one byte over proves "too big"
+    finally:
+        if form is not None:
+            await form.close()
+    return await run_in_threadpool(_screenshot_outcome, request, db, clock, auth, settings, blobs)
+
+
+def _hit(db: Session, request: Request, auth: AuthContext, clock: Clock) -> None:
+    throttle(db, request, auth, clock, write=False, limit=ratelimit.SCREENSHOT_USER)
+
+
+def _unhit(db: Session, auth: AuthContext, clock: Clock) -> None:
+    """Give back the hit of a request whose CSRF token turned out wrong."""
+    ratelimit.refund(db, ratelimit.SCREENSHOT_USER, str(auth.user.id), clock())
+    db.commit()
+
+
+def _screenshot_refused(db: Session, auth: AuthContext, clock: Clock, message: str) -> Response:
+    return form_page(db, auth, clock, SaleForm(), screenshot_error=message, status_code=400)
+
+
+def _screenshot_outcome(
+    request: Request,
+    db: Session,
+    clock: Clock,
+    auth: AuthContext,
+    settings: Settings,
+    blobs: list[bytes],
+) -> Response:
+    if not blobs:
+        return _screenshot_refused(db, auth, clock, NO_IMAGE)
+    for _ in blobs[1:]:  # the first image was counted with the request
+        throttle(db, request, auth, clock, write=False, limit=ratelimit.SCREENSHOT_USER)
+    try:
+        read = read_screenshots(
+            db,
+            client=request.app.state.ai_client,
+            settings=settings,
+            user=auth.user,
+            now=clock(),
+            images=blobs,
+        )
+    except ScreenshotError as exc:
+        return form_page(
+            db, auth, clock, SaleForm(), screenshot_error=exc.message, status_code=exc.status
+        )
+    finally:
+        blobs.clear()  # drop the bytes
+    error = sale_paste.check_text(read.text)
+    if error:
+        return _screenshot_refused(db, auth, clock, error)
+    result = sale_paste.read_paste(
+        db,
+        auth.user.agency_id,
+        read.text,
+        source=sale_forms.SOURCE_SCREENSHOT,
+        nothing=SCREENSHOT_NOTHING,
+    )
+    return _read_outcome(db, auth, clock, result, screenshot=True)
 
 
 def _agency_label(sale: ProposedSale, names: dict[int, str]) -> str:
@@ -307,4 +493,4 @@ def sale_update(
     return go_to(view.id)
 
 
-__all__ = ["router"]
+__all__ = ["router", "screenshot_router"]

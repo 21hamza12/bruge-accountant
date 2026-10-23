@@ -153,6 +153,9 @@ class JsonFormatter(logging.Formatter):
         return json.dumps(doc, default=_type_name, ensure_ascii=False)
 
 
+QUIET_LIBRARIES = ("PIL", "anthropic", "httpcore", "httpcore2")
+
+
 def configure_logging(level: int = logging.INFO) -> None:
     """JSON lines on stdout. Safe to call repeatedly; uvicorn's access log is turned off
     because it prints the raw URL (query string included)."""
@@ -166,6 +169,10 @@ def configure_logging(level: int = logging.INFO) -> None:
     root.addHandler(handler)
     root.setLevel(level)
     logging.getLogger("uvicorn.access").disabled = True
+    # At DEBUG these print what they handle: Pillow the EXIF tags of an image (GPS, camera), the
+    # Anthropic SDK and httpcore the request body (a base64 screenshot). Never below WARNING.
+    for name in QUIET_LIBRARIES:
+        logging.getLogger(name).setLevel(logging.WARNING)
 
 
 def _route_label(scope: Scope) -> str:

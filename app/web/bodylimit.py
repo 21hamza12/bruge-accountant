@@ -13,9 +13,16 @@ dependency (CSRF reading a form, a route parsing an upload) ever sees more than
 
 It applies to every HTTP request, anonymous ones too: the login form is bounded like any other.
 The response carries ``Connection: close`` so the server does not wait for the unread body.
+
+``path_limits`` gives a path (exact match) a limit of its own. It is for the one route that
+legitimately takes a bigger body from a logged-in user (the screenshot upload); every other path,
+anonymous ones included, keeps ``max_bytes``. A route with a bigger limit must not read the body
+before its cheap gates (login, Origin, CSRF header, rate limit).
 """
 
 from __future__ import annotations
+
+from collections.abc import Mapping
 
 from starlette.datastructures import Headers
 from starlette.exceptions import HTTPException as StarletteHTTPException
@@ -36,21 +43,25 @@ class BodyTooLarge(StarletteHTTPException):
 
 
 class RequestBodyLimitMiddleware:
-    def __init__(self, app: ASGIApp, max_bytes: int) -> None:
+    def __init__(
+        self, app: ASGIApp, max_bytes: int, path_limits: Mapping[str, int] | None = None
+    ) -> None:
         self.app = app
         self.max_bytes = max_bytes
+        self.path_limits = dict(path_limits or {})
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] != "http":
             await self.app(scope, receive, send)
             return
 
+        limit = self.path_limits.get(scope["path"], self.max_bytes)
         declared = Headers(scope=scope).get("content-length")
         if declared is not None:
             if not (declared.isascii() and declared.isdigit()):
                 await error_response(400, new_reference())(scope, receive, send)
                 return
-            if int(declared) > self.max_bytes:
+            if int(declared) > limit:
                 await self._too_large(scope, receive, send)
                 return
 
@@ -61,7 +72,7 @@ class RequestBodyLimitMiddleware:
             message = await receive()
             if message["type"] == "http.request":
                 received += len(message.get("body", b""))
-                if received > self.max_bytes:
+                if received > limit:
                     raise BodyTooLarge
             return message
 

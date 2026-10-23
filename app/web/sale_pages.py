@@ -21,6 +21,7 @@ from starlette.datastructures import FormData
 from starlette.responses import RedirectResponse, Response
 
 from app import audit, days, partners, permissions, reasons, sales
+from app.ai import budget as ai_budget
 from app.auth import ratelimit
 from app.clock import Clock
 from app.errors import UserError
@@ -130,6 +131,13 @@ def reason_problem(user: User, raw: str) -> FieldError | None:
     except reasons.ReasonError as exc:
         return FieldError("reason", str(exc))
     return None
+
+
+def screenshot_available(db: Session, user: User) -> bool:
+    """The screenshot button exists: the app has a client (a key, AI not switched off: see
+    ``create_app``) and the agency has not been switched off with ``ai-budget --disable``. With no
+    client this costs no query."""
+    return bool(db.info.get("ai_client")) and ai_budget.agency_enabled(db, user.agency_id)
 
 
 # --- rate limits ------------------------------------------------------------------------------
@@ -312,6 +320,7 @@ def form_page(
     rows: Sequence[int] = (),
     status_code: int = 200,
     paste_error: str = "",
+    screenshot_error: str = "",
 ) -> Response:
     """The entry form (``sale`` None) or the edit form of ``sale``, filled with ``form``.
 
@@ -345,6 +354,8 @@ def form_page(
         summary=sale_forms.error_summary(errors),
         banner=failure.message if failure else "",
         paste_error=paste_error,
+        screenshot_error=screenshot_error,
+        screenshot_enabled=sale is None and screenshot_available(db, user),
         ask=ask,
         paste_limit_kb=MAX_TEXT_BYTES // 1024,
         duplicate=failure.duplicate if failure else None,

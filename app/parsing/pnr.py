@@ -13,7 +13,11 @@ Rules:
   elements deduplicated by their number (first wins); screens of another PNR are ignored (warning).
 * Elements start with a number in the first three columns (`` 9 FA ...``). An indented line (three
   spaces or more) continues the element above and is joined **without** a space, because Amadeus
-  breaks lines at a fixed width, even in the middle of a number. The ``*`` line and its
+  breaks lines at a fixed width, even in the middle of a number; so does a line indented three
+  spaces or more that looks like an element number. With ``transcript=True`` (text a model read off
+  an image, whose indentation may be lost) any other line (not an element number, ``RP/``, header
+  or prompt) continues the element too, unless it is prose (a lowercase word of three letters or
+  more). Markdown code fences end the element. The ``*`` line and its
   continuation are consumed and ignored. Prompt lines (``>``, ``)>``, ``>|``) end an element.
 * Passengers: ``1.SURNAME/FIRST(CHD)`` and ``(INFSURNAME/FIRST)``. An infant is a separate
   ``INF`` passenger placed right after its adult; its ``number`` is the **adult's number** (that is
@@ -65,6 +69,7 @@ _MONTHS = {
 }
 
 _ELEMENT_RE = re.compile(r"(\d{1,3}) +(\S.*)", re.ASCII)
+_LOWER_WORD_RE = re.compile(r"[a-z]{3,}", re.ASCII)
 _PAX_LINE_RE = re.compile(r"\d{1,2}\.\S", re.ASCII)
 _PAX_SPLIT_RE = re.compile(r"(?:^|\s)(\d{1,2})\.(?=\S)", re.ASCII)
 _PAX_CHD_RE = re.compile(r"\((?:CHD|C\d{1,2})\b")
@@ -212,15 +217,15 @@ def _indent_and_text(line: str) -> tuple[int, str]:
     return len(cleaned) - len(text), text
 
 
-def _split_screens(lines: list[str]) -> list[_Screen]:
+def _split_screens(lines: list[str], *, transcript: bool = False) -> list[_Screen]:
     screens = [_Screen()]
     current: list[str] | None = None
     separator = ""
     for raw in lines:
         indent, text = _indent_and_text(raw)
         screen = screens[-1]
-        if not text or text.startswith((">", ")>", "---")):
-            current = None
+        if not text or text.startswith((">", ")>", "---", "```", "~~~")):
+            current = None  # blank, prompt, header or Markdown fence: ends the element
         elif text.startswith("RP/") and indent < 3:
             screens.append(_Screen(rp=text))
             current = None
@@ -239,11 +244,20 @@ def _split_screens(lines: list[str]) -> list[_Screen]:
         elif indent <= 2 and text.startswith("*"):
             current = []
             separator = " "
-        elif indent >= 3 and current is not None:
+        elif current is not None and (indent >= 3 or (transcript and not _is_prose(text))):
+            # Indented as Amadeus wraps (3 or more), a line always continues the element above,
+            # lowercase e-mails and remarks included. Only in a transcript (the indentation may be
+            # lost) does a line at column 0-2 continue it too, unless it is prose.
             current.append(separator + text)
         else:
             current = None
     return screens
+
+
+def _is_prose(text: str) -> bool:
+    """A line of ordinary sentences (a model's "Here is the text:"), not terminal output: Amadeus
+    prints capitals, so a lowercase word of three letters or more is not part of a screen."""
+    return _LOWER_WORD_RE.search(text) is not None
 
 
 def _pax_chunks(text: str) -> list[tuple[int, str]]:
@@ -482,8 +496,12 @@ def _parse_ap(text: str) -> tuple[str | None, str | None]:
 # --- the reader ---------------------------------------------------------------------------------
 
 
-def parse_pnr_text(text: str) -> PnrReading:
-    """Read pasted PNR text. Never raises; problems are warnings in the result."""
+def parse_pnr_text(text: str, *, transcript: bool = False) -> PnrReading:
+    """Read pasted PNR text. Never raises; problems are warnings in the result.
+
+    ``transcript`` is True for text a model read off an image, whose indentation may be lost: a
+    line that is not an element, header or prompt then continues the element above whatever its
+    indentation. For typed or pasted text it is False and only an indented line continues."""
     if not isinstance(text, str):
         return _empty(W_NO_TEXT)
     if len(text) > MAX_TEXT_BYTES or len(text.encode("utf-8", "replace")) > MAX_TEXT_BYTES:
@@ -495,7 +513,7 @@ def parse_pnr_text(text: str) -> PnrReading:
         return _empty(W_NO_TEXT)
 
     warnings: list[str] = []
-    screens = _split_screens(lines)
+    screens = _split_screens(lines, transcript=transcript)
     with_rp = [s for s in screens if s.rp]
     office = sign = rloc = None
     created: date | None = None

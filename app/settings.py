@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+from decimal import Decimal
 from typing import Annotated, Any, Literal
 
 from pydantic import Field, SecretStr, ValidationInfo, field_validator, model_validator
@@ -109,6 +110,16 @@ class Settings(BaseSettings):
     # X-Forwarded-* is ignored entirely, which is the safe default; render.yaml sets 1.
     trusted_proxy_hops: int = Field(default=0, ge=0, le=10)
     sentry_dsn: SecretStr | None = None
+    # AI (phase D, docs/design/11-screenshots.md). Without a key the feature is hidden. AI_ENABLED
+    # unset means "on when there is a key"; true without a key is a mistake, refused in production.
+    anthropic_api_key: SecretStr | None = None
+    ai_enabled: bool | None = None
+    ai_screenshot_model: str = "claude-haiku-5-5"
+    ai_fallback_model: str = "claude-sonnet-5-5"
+    # Default monthly budget of an agency in USD (its own limit: ``python -m app ai-budget``).
+    ai_monthly_budget_usd: Decimal = Field(default=Decimal(5), ge=0, le=100000)
+    ai_timeout_s: float = Field(default=30.0, ge=1, le=120)  # one API call
+    ai_max_retries: int = Field(default=1, ge=0, le=4)  # on 429 / 5xx / network errors only
     render_git_commit: str | None = None
     # Render sets RENDER=true on its services. Seeing it outside production means a deploy
     # forgot ENV=production, so refuse to start rather than run with development defaults.
@@ -126,6 +137,8 @@ class Settings(BaseSettings):
             raise ValueError("CORS_ALLOWED_ORIGINS must not contain '*'")
         if self.render and self.env != "production":
             raise ValueError("RENDER is set but ENV is not production; set ENV=production")
+        if self.ai_enabled and not self.has_ai_key and self.env == "production":
+            raise ValueError("AI_ENABLED is true but ANTHROPIC_API_KEY is not set")
         if self.env != "production":
             if not self.allowed_hosts:
                 self.allowed_hosts = list(DEV_ALLOWED_HOSTS)
@@ -144,6 +157,16 @@ class Settings(BaseSettings):
         if any(not origin.lower().startswith("https://") for origin in self.cors_allowed_origins):
             raise ValueError("CORS_ALLOWED_ORIGINS entries must be https:// origins in production")
         return self
+
+    @property
+    def has_ai_key(self) -> bool:
+        key = self.anthropic_api_key
+        return key is not None and bool(key.get_secret_value().strip())
+
+    @property
+    def ai_active(self) -> bool:
+        """The AI features exist at all: a key, and not switched off with AI_ENABLED=false."""
+        return self.has_ai_key and self.ai_enabled is not False
 
     @property
     def is_production(self) -> bool:

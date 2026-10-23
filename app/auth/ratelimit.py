@@ -68,6 +68,8 @@ COMPARISON_RUN_USER = Limit("comparison_run_user", 30, 3600)
 DAY_ACTION_USER = Limit("day_action_user", 60, 3600)
 # Downloads of the TJQ APRES (stored or draft): a light budget.
 EXPORT_USER = Limit("export_user", 120, 3600)
+# Screenshots read by the AI: 60 images an hour for each user (each image counts once).
+SCREENSHOT_USER = Limit("screenshot_user", 60, 3600)
 # Guesses at the current password of a logged-in account (stolen-session brute force).
 PASSWORD_CHANGE_USER = Limit("password_change_user", 5, 15 * 60)
 

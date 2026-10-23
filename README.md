@@ -64,7 +64,11 @@ set), `ALLOWED_HOSTS`, `CORS_ALLOWED_ORIGINS`, `COOKIE_SECURE`, `TRUSTED_PROXY_H
 `MAX_REQUEST_BYTES` (default 10 MB + 64 KB), `PARSE_TIMEOUT_S` (default 30, at least 5),
 `PARSE_MEMORY_MB` (default 768, Linux only), `PARSE_CONCURRENCY` (parses at once, default 2),
 `PARSE_QUEUE_WAIT_S` (how long a parse waits for a free slot before the 503, default 5),
-`SENTRY_DSN`.
+`SENTRY_DSN`. Screenshots (phase D, `docs/design/11-screenshots.md`): `ANTHROPIC_API_KEY` (absent = the
+feature is hidden), `AI_ENABLED` (default: on when there is a key; `true` without a key is refused in
+production), `AI_SCREENSHOT_MODEL` (`claude-haiku-5-5`), `AI_FALLBACK_MODEL` (`claude-sonnet-5-5`),
+`AI_MONTHLY_BUDGET_USD` (default 5, per agency; `python -m app ai-budget <slug> --usd N [--disable]`
+changes one agency), `AI_TIMEOUT_S` (30) and `AI_MAX_RETRIES` (1).
 List variables take `a,b` or a JSON array (`["a","b"]`). `TRUSTED_PROXY_HOPS` defaults to 0 (the
 `X-Forwarded-*` headers are ignored); on Render it is 1. A wildcard CORS origin is refused in every
 environment. In production the app also refuses to start without an explicit non-SQLite

@@ -73,6 +73,7 @@ FLAG_VALIDATED = "flag_validated"
 FLAG_REJECTED = "flag_rejected"
 OVERRIDE_VALIDATED = "override_validated"
 PARTNER_LIST_ACKNOWLEDGED = "partner_list_acknowledged"
+AI_BUDGET_SET = "ai_budget_set"  # the operator changed an agency's AI budget (the CLI)
 
 _SECRET_KEY = re.compile(r"password|passwd|token|secret|hash|csrf|cookie|credential", re.IGNORECASE)
 

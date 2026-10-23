@@ -72,6 +72,18 @@ def _add(url: str, agency: int, *rows: Any) -> None:
         engine.dispose()
 
 
+def _tenant_scalar(url: str, agency: int, sql: str) -> object:
+    """Read through a tenant-bound session: on Postgres the owner sees no row of a FORCE RLS
+    table without an agency."""
+    engine = make_engine(url)
+    try:
+        with make_session_factory(engine)() as s:
+            rebind_tenant(s, agency)
+            return s.execute(text(sql)).scalar()
+    finally:
+        engine.dispose()
+
+
 def test_0016_follows_0015_and_is_the_head() -> None:
     script = ScriptDirectory.from_config(alembic_config("sqlite://"))
     revision = script.get_revision("0016")
@@ -87,7 +99,8 @@ def test_a_chat_row_is_refused_before_and_accepted_after(db_url: str) -> None:
         _add(db_url, t.agency_id, usage(t))
     migrate(db_url, revision="0016")
     _add(db_url, t.agency_id, usage(t), usage(t, purpose="screenshot"))
-    assert _scalar(db_url, "SELECT count(*) FROM ai_usage WHERE purpose = 'chat'") == 1
+    sql = "SELECT count(*) FROM ai_usage WHERE purpose = 'chat'"
+    assert _tenant_scalar(db_url, t.agency_id, sql) == 1
 
 
 def test_a_purpose_that_is_neither_is_still_refused(db_url: str) -> None:
@@ -100,9 +113,11 @@ def test_a_purpose_that_is_neither_is_still_refused(db_url: str) -> None:
 def test_the_rows_and_the_other_checks_survive_the_rebuild(db_url: str) -> None:
     migrate(db_url, revision="0015")
     t = _tenant(db_url)
-    before = _scalar(db_url, "SELECT sum(cost_micro_usd) FROM ai_usage")
+    total = "SELECT sum(cost_micro_usd) FROM ai_usage"
+    before = _tenant_scalar(db_url, t.agency_id, total)
+    assert before  # the seeded tenant has usage rows
     migrate(db_url, revision="0016")
-    assert _scalar(db_url, "SELECT sum(cost_micro_usd) FROM ai_usage") == before
+    assert _tenant_scalar(db_url, t.agency_id, total) == before
     for bad in ({"outcome": "weird"}, {"input_tokens": -1}, {"cost_micro_usd": -1}):
         with pytest.raises(IntegrityError):
             _add(db_url, t.agency_id, usage(t, **bad))
@@ -177,7 +192,8 @@ def test_the_downgrade_refuses_while_a_chat_row_exists(db_url: str) -> None:
     with pytest.raises(RuntimeError, match="Nothing was changed"):
         command.downgrade(cfg, "0015")
     assert _scalar(db_url, "SELECT version_num FROM alembic_version") == "0016"
-    assert _scalar(db_url, "SELECT count(*) FROM ai_usage WHERE purpose = 'chat'") == 1
+    sql = "SELECT count(*) FROM ai_usage WHERE purpose = 'chat'"
+    assert _tenant_scalar(db_url, t.agency_id, sql) == 1
     assert {"trg_ai_usage_no_update", "trg_ai_usage_no_delete"} <= _names(db_url, "trigger")
 
 

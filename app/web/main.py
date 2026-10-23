@@ -39,6 +39,7 @@ from app.web.errors import (
 )
 from app.web.middleware import build_middleware
 from app.web.routes import auth as auth_routes
+from app.web.routes import chat as chat_routes
 from app.web.routes import days as day_routes
 from app.web.routes import flag_actions as flag_action_routes
 from app.web.routes import flags as flag_routes
@@ -156,6 +157,7 @@ def create_app(
     app.include_router(flag_action_routes.router)
     app.include_router(upload_routes.router)
     app.include_router(questions_routes.router)
+    app.include_router(chat_routes.router)
     app.mount("/static", StaticAssets(directory=TEMPLATES_DIR.parent / "static"), name="static")
 
     @app.get("/sw.js", include_in_schema=False)

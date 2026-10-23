@@ -31,6 +31,11 @@
         <a class="nav-link" href="/"{% if shell.active == "home" %} aria-current="page"{% endif %}>
           <span class="nav-label">{{ icon("dashboard") }}{{ _("Tableau de bord") }}</span>
         </a>
+        {% if shell.can_chat %}
+        <a class="nav-link" href="/chat"{% if shell.active == "chat" %} aria-current="page"{% endif %}>
+          <span class="nav-label">{{ icon("chat") }}{{ _("Discussion") }}</span>
+        </a>
+        {% endif %}
         {% if shell.can_enter_sales %}
         <a class="nav-link" href="/sales/new"{% if shell.active == "sale_new" %} aria-current="page"{% endif %}>
           <span class="nav-label">{{ icon("ticket") }}{{ _("Saisir une vente") }}</span>

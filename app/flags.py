@@ -81,6 +81,10 @@ from app.tenancy import bind_tenant
 
 log = logging.getLogger("app.flags")
 
+# The row type that code outside this module reads (the chat lists flags; only this module and
+# the merge write them, which a code guard checks by looking for the model's name).
+StoredFlag = ComparisonFlag
+
 __all__ = [
     "Counts",
     "DaySummary",
@@ -96,6 +100,8 @@ __all__ = [
     "open_blocking_count",
     "run_comparison",
     "run_for_upload",
+    "StoredFlag",
+    "flags_within",
 ]
 
 MSG_NO_REPORT = "Aucun rapport Amadeus n'a été envoyé pour cette journée."
@@ -547,16 +553,26 @@ def visible_flag_ids(db: Session, actor: User, flag_ids: Collection[int]) -> set
     return set(db.scalars(query))
 
 
-def flags_for_me(db: Session, actor: User) -> list[ComparisonFlag]:
+def flags_for_me(db: Session, actor: User, *, doc: str | None = None) -> list[ComparisonFlag]:
     """The flags still waiting for somebody (open or answered), on any day, that the actor may
-    see: a staff member's own signs, everything for manager and accountant."""
-    signs = _visible(db, actor)
+    see: a staff member's own signs, everything for manager and accountant. ``doc`` keeps one
+    ticket's flags (the filter is in the query)."""
+    return flags_within(db, actor, sales.visible_signs(db, actor), doc=doc)
+
+
+def flags_within(
+    db: Session, actor: User, visible: Collection[str] | None, *, doc: str | None = None
+) -> list[ComparisonFlag]:
+    """``flags_for_me`` for a caller that already read ``sales.visible_signs`` (``visible``)."""
+    signs = None if visible is None else [norm_sign(s) for s in visible]
     if signs is not None and not signs:
         return []
     query = select(ComparisonFlag).where(
         ComparisonFlag.agency_id == actor.agency_id,
         ComparisonFlag.status.in_((FLAG_OPEN, FLAG_ANSWERED)),
     )
+    if doc is not None:
+        query = query.where(ComparisonFlag.doc_number == doc)
     return list(
         db.scalars(_scoped(query, signs).order_by(ComparisonFlag.report_day_id, ComparisonFlag.id))
     )

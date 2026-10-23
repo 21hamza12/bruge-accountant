@@ -5,6 +5,7 @@
 {% block heading %}{{ _("Bonjour, %(name)s", name=shell.user.display_name or shell.user.phone) }}{% endblock %}
 {% block content %}
 <div class="home-narrow">
+{% if shell.can_chat %}<p class="chat-entry"><a class="card-link" href="/chat">{{ icon("chat", small=true) }}{{ _("Discussion") }}</a></p>{% endif %}
 {% if not shell.my_signs %}
   <section class="card empty">
     <h2 class="empty-title">{{ _("Aucun code agent") }}</h2>

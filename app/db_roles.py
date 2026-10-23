@@ -67,6 +67,8 @@ GRANTS = {
     # Phase B9 (migration 0013). Decisions and acknowledgements are append-only.
     "flag_decisions": "SELECT, INSERT",
     "day_acknowledgements": "SELECT, INSERT",
+    # Phase E (migration 0015). The chat is append-only: no UPDATE, no DELETE.
+    "chat_messages": "SELECT, INSERT",
 }
 # The tables migration 0003 grants on, frozen. 0003 passes this to ``apply_grants`` instead of
 # relying on GRANTS, which later phases extend: a fresh ``alembic upgrade head`` runs 0003 before

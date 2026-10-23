@@ -77,6 +77,13 @@ def can_answer_flags(user: User) -> bool:
     return can_use_sales_screens(user)
 
 
+def can_use_chat(user: User) -> bool:
+    """The in-app chat: whoever may use the sales screens, or sees every sign (manager,
+    accountant). What each lookup shows is decided per tool (``app/chat/tools.py``), with the
+    same rules as the screens. A role that is not listed (an unknown value) gets none of it."""
+    return can_use_sales_screens(user) or sees_all_signs(user)
+
+
 def can_reissue_password_for(actor: User, target: User) -> bool:
     """``actor`` may issue a temporary password to ``target``: only a staff manager, and only for
     staff or an accountant (never for a manager, themselves included, nor an unknown role)."""

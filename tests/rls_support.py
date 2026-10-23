@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session
 from app.db import make_engine, make_session_factory
 from app.models import (
     AuditEvent,
+    ChatMessage,
     ComparisonFlag,
     ComparisonRun,
     DayAcknowledgement,
@@ -85,6 +86,7 @@ def seed_tenant(owner_url: str, slug: str, phone: str, token_hash: str, doc_base
                 )
             )
             s.add(AuditEvent(agency_id=agency_id, event_type="seed", details={}))
+            s.add(ChatMessage(agency_id=agency_id, user_id=user.id, role="user", text="aide"))
             partner = Partner(agency_id=agency_id, name="BADI", name_key="badi")
             s.add(partner)
             s.commit()

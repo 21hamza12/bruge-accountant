@@ -1,8 +1,13 @@
 name: CI
 
 on:
+  # Pull requests are tested once; branch pushes are not tested again (that doubled the
+  # minutes). main is tested after each merge. Documentation-only changes skip the suite.
   push:
+    branches: [main]
+    paths-ignore: ["docs/**", "**/*.md"]
   pull_request:
+    paths-ignore: ["docs/**", "**/*.md"]
 
 permissions:
   contents: read

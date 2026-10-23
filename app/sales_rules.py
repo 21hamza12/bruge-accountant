@@ -22,6 +22,7 @@ Rules (docs/design/05-daily-comparison.md section 2; decisions 4, 13, 21, 22):
 
 from __future__ import annotations
 
+import hashlib
 import re
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
@@ -215,6 +216,7 @@ class SaleView:
     partner_fee_id: int | None
     fee_applied: Decimal | None
     fee_override_reason: str | None
+    override_digest: str | None
     pb: Decimal
     cost_total: Decimal
     clt: str | None
@@ -585,6 +587,23 @@ def ticket_rows(views: Iterable[SaleView]) -> list[TicketRow]:
 
 
 # --- the stored form of the tickets ---------------------------------------------------------
+
+
+def override_digest(
+    partner_id: int | None,
+    fee_applied: Decimal | None,
+    reason: str | None,
+    tickets: Iterable[TicketLine],
+) -> str | None:
+    """What a validator approves on a one-off partner fee: the partner, the fee, its reason and
+    the tickets with their costs (16 hex digits). None when the sale has no override. A change of
+    any of them is another digest, so an approval never covers it."""
+    if reason is None or fee_applied is None:
+        return None
+    fee = format(fee_applied.normalize(), "f")
+    docs = "|".join(f"{t.doc_number}:{format(t.total_doc.normalize(), 'f')}" for t in tickets)
+    text = f"{partner_id}\x1f{fee}\x1f{reason}\x1f{docs}"
+    return hashlib.sha256(text.encode()).hexdigest()[:16]
 
 
 def ticket_json(line: TicketLine) -> dict[str, Any]:

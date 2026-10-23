@@ -77,9 +77,13 @@ KNOWN_KINDS: Final = frozenset(
 
 TRNC_CANX: Final = "CANX"
 DOC_DIGITS: Final = 10
-# Fields whose correction moves money or the ticket itself: the accountant or manager validates
-# (decision 18). A name, PNR, pax type, sign or airline fix needs the agent only.
-NEEDS_VALIDATION_FIELDS: Final = frozenset({"total_doc", "trnc", "doc_number"})
+# Fields whose correction moves money, the ticket itself, its attribution or its fare class: the
+# accountant or manager validates (decision 18, widened after the B9 review: the sign decides whose
+# sale it is and the passenger type decides the fare). A name, PNR or airline fix needs the agent
+# only.
+NEEDS_VALIDATION_FIELDS: Final = frozenset(
+    {"total_doc", "trnc", "doc_number", "pax_type", "staff_sign"}
+)
 
 _NO_VALUE = ""
 

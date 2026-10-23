@@ -13,6 +13,12 @@ Rebased onto 0012 (B10, ``day_exports``): nothing here depends on it, the chain 
   (``validated``, ``rejected``) on a comparison flag, with who, when, the reason and the old and
   new value. A reason of 5 characters or more is required for ``mine_right``, ``rejected`` and
   ``void_entry`` (CHECK). The stage must match the choice (CHECK).
+* ``flag_decisions.sale_version_no``: the version of the sale an agent answered on.
+* ``sale_versions.override_digest`` (nullable, added here): a short hash of the one-off fee, its
+  reason, the partner and the tickets with their costs, written by ``app/sales.py`` from now on.
+  The approvals compare it with ``day_acknowledgements.digest`` in SQL. Versions written before
+  this migration keep NULL (the table is append-only, nothing is backfilled): they show as waiting
+  for validation, which is the safe side.
 * ``day_acknowledgements``: append-only. ``partner_list``: somebody who may validate money has
   seen the partner tickets that are not in the Amadeus report (the run and a digest of the list).
   ``override``: a one-off partner fee was approved (the sale, its version and a digest of the fee
@@ -92,6 +98,7 @@ def _create_tables() -> None:
         sa.Column("reason", sa.Text(), nullable=True),
         sa.Column("old_value", sa.Text(), nullable=True),
         sa.Column("new_value", sa.Text(), nullable=True),
+        sa.Column("sale_version_no", sa.Integer(), nullable=True),
         sa.Column("actor_user_id", BIGINT_ID, nullable=False),
         _created_at(),
         sa.CheckConstraint("stage IN ('agent', 'validator')", name=op.f("ck_flag_decisions_stage")),
@@ -176,6 +183,9 @@ def upgrade() -> None:
             bind, os.environ.get(ROLE_ENV_VAR, ""), must_exist=True
         )  # fail before any DDL on a bad name
     _create_tables()
+    op.add_column(
+        "sale_versions", sa.Column("override_digest", sa.String(length=16), nullable=True)
+    )
     if bind.dialect.name != "postgresql":
         for name, (table, verb) in SQLITE_TRIGGERS.items():
             op.execute(
@@ -223,6 +233,7 @@ def downgrade() -> None:
     ):
         op.drop_index(index, table_name="day_acknowledgements")
     op.drop_table("day_acknowledgements")
+    op.drop_column("sale_versions", "override_digest")
     op.drop_index("ix_flag_decisions_agency_actor", table_name="flag_decisions")
     op.drop_index("ix_flag_decisions_agency_flag", table_name="flag_decisions")
     op.drop_table("flag_decisions")

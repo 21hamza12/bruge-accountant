@@ -83,6 +83,7 @@ from app.sales_rules import (
     below_cost_warning,
     day_totals,
     lines_from_json,
+    override_digest,
     pb_per_line,
     sale_cost,
     sale_profit,
@@ -361,6 +362,7 @@ def _view(head: Sale, version: SaleVersion, day: date) -> SaleView:
         partner_fee_id=version.partner_fee_id,
         fee_applied=version.fee_applied,
         fee_override_reason=version.fee_override_reason,
+        override_digest=version.override_digest,
         pb=version.pb,
         cost_total=version.cost_total,
         clt=version.clt,
@@ -784,6 +786,13 @@ def _new_version(
         partner_fee_id=sale.partner_fee_id,
         fee_applied=sale.fee_applied,
         fee_override_reason=sale.fee_override_reason,
+        override_digest=(
+            None
+            if voided
+            else override_digest(
+                sale.partner_id, sale.fee_applied, sale.fee_override_reason, sale.tickets
+            )
+        ),
         pb=sale.pb,
         cost_total=sale.cost_total,
         clt=sale.clt,
@@ -1083,13 +1092,12 @@ def void_sale(
     now: datetime | None = None,
     ip: str | None = None,
     expected_version: int | None = None,
-    any_day: bool = False,
 ) -> SaleView:
     """Cancel a sale (a new version marked void). The reason is mandatory for everybody. The
     sale leaves the day's totals, its ticket numbers become free, its history stays.
-    ``expected_version`` and ``any_day`` as for ``edit_sale``."""
+    ``expected_version`` as for ``edit_sale``."""
     moment = now or utc_now()
-    head, _ = _access(db, actor, sale_id, moment.date(), lock=True, any_day=any_day)
+    head, _ = _access(db, actor, sale_id, moment.date(), lock=True)
     _check_expected(head, expected_version)
     try:
         clean = required_reason(reason)

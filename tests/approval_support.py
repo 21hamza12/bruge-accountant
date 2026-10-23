@@ -40,6 +40,8 @@ def diff_world(
             "total_doc": w.cost_of(target) + 100,
             "pax_name": OTHER_NAME,
             "rloc": "AAAAAA",
+            "pax_type": "CHD",
+            "staff_sign": target.staff_sign,
         }[field]
     for line in lines:
         if line.trnc != "TKTT":

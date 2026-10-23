@@ -26,7 +26,9 @@ from app.models import (
     AuditEvent,
     ComparisonFlag,
     ComparisonRun,
+    DayAcknowledgement,
     DayEvent,
+    FlagDecision,
     Partner,
     PartnerAlias,
     PartnerFee,
@@ -74,6 +76,8 @@ SCOPED_MODELS: list[Any] = [
     SaleVersion,
     ComparisonRun,
     ComparisonFlag,
+    FlagDecision,
+    DayAcknowledgement,
 ]
 
 
@@ -289,6 +293,21 @@ def rows_for_agency_b(b: Tenant) -> dict[str, Any]:
             kind="not_sent",
             responsible_sign="0004SV",
         ),
+        "flag_decisions": FlagDecision(
+            agency_id=b.agency_id,
+            flag_id=b.flag_id,
+            stage="agent",
+            choice="acknowledged",
+            actor_user_id=b.user_id,
+        ),
+        "day_acknowledgements": DayAcknowledgement(
+            agency_id=b.agency_id,
+            report_day_id=b.report_day_id,
+            kind="partner_list",
+            run_id=b.run_id,
+            digest="d" * 16,
+            actor_user_id=b.user_id,
+        ),
         "uploads": Upload(
             agency_id=b.agency_id,
             filename="x.xlsx",
@@ -321,6 +340,8 @@ def rows_for_agency_b(b: Tenant) -> dict[str, Any]:
         "sale_versions",
         "comparison_runs",
         "comparison_flags",
+        "flag_decisions",
+        "day_acknowledgements",
     ],
 )
 def test_insert_for_another_agency_is_rejected(world: World, table: str) -> None:
@@ -978,5 +999,9 @@ def test_the_exact_policies_installed(world: World) -> None:
         ("day_exports", "tenant_insert", "INSERT"),
         ("comparison_runs", "tenant_read", "SELECT"),
         ("comparison_runs", "tenant_insert", "INSERT"),
+        ("flag_decisions", "tenant_read", "SELECT"),
+        ("flag_decisions", "tenant_insert", "INSERT"),
+        ("day_acknowledgements", "tenant_read", "SELECT"),
+        ("day_acknowledgements", "tenant_insert", "INSERT"),
     }
     assert installed == expected

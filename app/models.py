@@ -719,6 +719,10 @@ class SaleVersion(Base):
     partner_fee_id: Mapped[int | None] = mapped_column(BigIntType)
     fee_applied: Mapped[Decimal | None] = mapped_column(Numeric(14, 2))
     fee_override_reason: Mapped[str | None] = mapped_column(Text)
+    # A short hash of what a validator approves on a one-off fee (partner, fee, reason and the
+    # tickets with their costs); NULL for a version without an override and for versions written
+    # before migration 0013. ``sales_rules.override_digest`` makes it.
+    override_digest: Mapped[str | None] = mapped_column(String(16))
     pb: Mapped[Decimal] = mapped_column(Numeric(14, 2))
     cost_total: Mapped[Decimal] = mapped_column(Numeric(14, 2))
     clt: Mapped[str | None] = mapped_column(Text)
@@ -1045,6 +1049,8 @@ class FlagDecision(Base):
     reason: Mapped[str | None] = mapped_column(Text)
     old_value: Mapped[str | None] = mapped_column(Text)
     new_value: Mapped[str | None] = mapped_column(Text)
+    # The version of the sale the agent looked at: a validator applies the answer only to that one.
+    sale_version_no: Mapped[int | None] = mapped_column(Integer)
     actor_user_id: Mapped[int] = mapped_column(BigIntType)
     created_at: Mapped[datetime] = mapped_column(
         UTCDateTime, default=_now, server_default=func.now()

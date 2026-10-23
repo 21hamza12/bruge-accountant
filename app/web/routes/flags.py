@@ -69,7 +69,7 @@ STATUS_LABELS = {"open": "Ouvert", "answered": "Répondu", "resolved": "Résolu"
 CHOICE_LABELS = {
     "amadeus_right": "Amadeus a raison",
     "mine_right": "Ma valeur est juste",
-    "void_entry": "Vente annulée",
+    "void_entry": "Annulation de la vente",
     "acknowledged": "En attente du prochain rapport",
     "validated": "Validé",
     "rejected": "Rejeté",
@@ -217,7 +217,12 @@ def list_page(
         and summary.partner_not_in_report
         and report_day is not None
         and report_day.status != DAY_CLOSED
-        and not approvals.partner_list_seen(db, user, report_day)
+        and not approvals.partner_list_seen(db, user, report_day, summary.partner_not_in_report)
+    )
+    partner_digest = (
+        approvals.partner_list(db, user, report_day, summary.partner_not_in_report).digest
+        if partner_open and summary is not None and report_day is not None
+        else ""
     )
     return page(
         "flags/list.html",
@@ -229,6 +234,7 @@ def list_page(
         summary=summary,
         rows=rows,
         partner_open=partner_open,
+        partner_digest=partner_digest,
         has_report=upload is not None,
         can_run=permissions.can_run_comparison(auth.user),
         error=error,

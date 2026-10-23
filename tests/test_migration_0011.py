@@ -209,6 +209,8 @@ def test_0011_follows_0010() -> None:
     script = ScriptDirectory.from_config(alembic_config("sqlite://"))
     revision = script.get_revision("0011")
     assert revision is not None and revision.down_revision == "0010"
+    successor = script.get_revision("0012")
+    assert successor is not None and successor.down_revision == "0011"
 
 
 def test_grants_follow_the_design() -> None:

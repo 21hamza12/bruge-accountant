@@ -19,7 +19,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app import approvals, export_apres, partners, permissions, sales
+from app import export_apres, partners, permissions, sales
 from app.auth import ratelimit
 from app.export_apres import ApresLine, ApresReport
 from app.ingest import ingest_report
@@ -161,13 +161,6 @@ class World:
             made[lines[i].doc_number] = self.sell(lines[i], partner=(i % 7 == 3))
             i += 1
         return made
-
-
-@pytest.fixture(autouse=True)
-def gate_open(monkeypatch: pytest.MonkeyPatch) -> None:
-    """These tests are about storing the export; the close gate (B9) is switched off here and
-    tested for real in tests/test_close_gate.py and tests/test_approval_pages.py."""
-    monkeypatch.setattr(approvals, "can_close", lambda *args, **kwargs: [])
 
 
 @pytest.fixture
@@ -407,6 +400,22 @@ def test_corrections_render_highlighted_cells_with_comments() -> None:
     no_formulas(ws)
 
 
+def test_a_correction_is_found_for_a_line_with_a_prefixed_number() -> None:
+    """The report may list ``4953940281465``; corrections are keyed by the 10-digit number."""
+    line = ApresLine(
+        seq_no="000001", airline="495", doc_number="4953940281465", total_doc=Decimal("10.50"),
+        pax_name="SYNTH/PAX", staff_sign="0004SV", trnc="TKTT", rloc="ABCDEF",
+        pb=Decimal("12"), ag="BRUGE", clt="Client", ap="", sale_id=1, ticket_count=1,
+    )  # fmt: skip
+    report = export_apres.make_report(
+        day=DAY, agy_no="", range_raw="20OCT", current_date="21-OCT-2026", lines=[line]
+    )
+    corrections = {("3940281465", "TOTAL DOC"): ("10", "10.50", "Comptable A")}
+    ws = open_book(export_apres.build_apres_xlsx(report, corrections=corrections))
+    cell = ws.cell(row=FIRST_ROW, column=4)
+    assert cell.comment is not None and "Comptable A" in cell.comment.text
+
+
 def test_by_default_there_are_no_corrections() -> None:
     assert export_apres.NO_CORRECTIONS == {}
     report = hostile_report("x")
@@ -418,6 +427,7 @@ def test_by_default_there_are_no_corrections() -> None:
 # --- the stored export at close -----------------------------------------------------------------
 
 
+@pytest.mark.usefixtures("gate_open")
 def test_closing_through_the_service_stores_version_1_then_2(w: World) -> None:
     w.upload()
     w.sell_all()
@@ -438,6 +448,7 @@ def test_closing_through_the_service_stores_version_1_then_2(w: World) -> None:
     assert export_apres.get_export(w.db, w.agency_id, report_day.id, 3) is None
 
 
+@pytest.mark.usefixtures("gate_open")
 def test_closing_without_a_report_stores_nothing(w: World) -> None:
     from app import days
 
@@ -447,6 +458,7 @@ def test_closing_without_a_report_stores_nothing(w: World) -> None:
     assert w.db.scalars(select(DayExport)).all() == []
 
 
+@pytest.mark.usefixtures("gate_open")
 def test_the_export_of_another_agency_cannot_be_read(w: World) -> None:
     w.upload()
     w.sell_all()
@@ -512,7 +524,7 @@ def exports(env: Env) -> list[DayExport]:
 
 
 @pytest.fixture
-def closed_day(env: Env) -> Iterator[tuple[Env, TestClient]]:
+def closed_day(env: Env, gate_open: None) -> Iterator[tuple[Env, TestClient]]:
     upload_20oct(env)
     acc = accountant(env)
     sell_line(acc, 0)
@@ -653,6 +665,7 @@ def test_the_preview_needs_a_report_and_an_open_day(closed_day: tuple[Env, TestC
     assert acc.get("/days/2026-10-17/apres-preview.xlsx").status_code == 404  # no report
 
 
+@pytest.mark.usefixtures("gate_open")
 def test_closing_a_day_without_a_report_stores_nothing_and_says_so(env: Env) -> None:
     m = env.manager_a()
     enter(m, tk(), staff_sign=SIGN, day="2026-10-18", pb="24000")
@@ -663,6 +676,7 @@ def test_closing_a_day_without_a_report_stores_nothing_and_says_so(env: Env) -> 
     assert m.get("/days/2026-10-18/apres.xlsx").status_code == 404
 
 
+@pytest.mark.usefixtures("gate_open")
 def test_the_day_page_buttons(env: Env) -> None:
     upload_20oct(env)
     m, acc = env.manager_a(), accountant(env)
@@ -686,6 +700,7 @@ def test_closing_twice_does_not_store_a_second_version(closed_day: tuple[Env, Te
     assert [e.version for e in exports(env)] == [1]
 
 
+@pytest.mark.usefixtures("gate_open")
 def test_a_failed_export_rolls_the_close_back(env: Env, monkeypatch: pytest.MonkeyPatch) -> None:
     upload_20oct(env)
     acc = accountant(env)

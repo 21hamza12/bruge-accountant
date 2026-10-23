@@ -24,9 +24,17 @@
     {% endfor %}
   </ul>
   {% if gate.stale %}<p class="muted">{{ _("La comparaison sera relancée à la clôture : des ventes ou le rapport ont changé depuis.") }}</p>{% endif %}
+  {% if gate.partner_tickets %}
+  <h3 class="card-subtitle">{{ _("Billets partenaires absents du rapport") }}</h3>
+  <ul class="list-plain">
+    {% for t in gate.partner_tickets %}<li><span class="mono">{{ t.doc_number }}</span> · {{ t.pax_name }} · <span class="mono">{{ t.staff_sign }}</span> · {{ t.total_doc | money_fr }} {{ agency.currency }}</li>
+    {% endfor %}
+  </ul>
+  {% endif %}
   {% if can_acknowledge %}
   <form class="inline-form" method="post" action="/days/{{ day.isoformat() }}/partner-list">
     {% include "_csrf.html" %}
+    <input type="hidden" name="digest" value="{{ gate.partner_digest }}">
     <button class="btn btn-primary" type="submit">{{ _("J'ai vu la liste") }}</button>
   </form>
   {% endif %}

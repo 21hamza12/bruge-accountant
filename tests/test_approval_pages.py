@@ -9,14 +9,18 @@ from __future__ import annotations
 
 import html
 import re
+from collections.abc import Iterator
+from contextlib import contextmanager
 from typing import Any
 
 import pytest
 from sqlalchemy import select
+from sqlalchemy.orm import Session
 
 from app import audit
 from app.auth import ratelimit
 from app.models import AuditEvent, ComparisonFlag, FlagDecision, Sale, User
+from app.tenancy import rebind_tenant
 from tests.fixtures import synthetic_20oct as fx
 from tests.flag_support import FlagWeb
 from tests.web_support import PASSWORD_S, WebDb, add_user, csrf_for, owner_session
@@ -35,8 +39,17 @@ def world(web_db: WebDb) -> FlagWeb:
     return FlagWeb(web_db)
 
 
-def accountant(world: FlagWeb) -> Any:
+@contextmanager
+def tenant_session(world: FlagWeb) -> Iterator[Session]:
+    """A session of the owner bound to agency A: under row-level security an unbound session sees
+    no row at all, so every read of a table with a policy goes through this."""
     with owner_session(world.db.owner_url) as s:
+        rebind_tenant(s, world.seeded.agency_a)
+        yield s
+
+
+def accountant(world: FlagWeb) -> Any:
+    with tenant_session(world) as s:
         known = s.scalars(select(User.id).where(User.phone == ACCOUNTANT_PHONE)).first()
     if known is None:
         add_user(
@@ -72,7 +85,7 @@ def status_of(world: FlagWeb, flag_id: int) -> str:
 
 
 def decisions(world: FlagWeb) -> list[FlagDecision]:
-    with owner_session(world.db.owner_url) as s:
+    with tenant_session(world) as s:
         rows = list(s.scalars(select(FlagDecision).order_by(FlagDecision.id)))
         s.expunge_all()
         return rows
@@ -83,7 +96,7 @@ def post(c: Any, path: str, back: str, **data: str) -> Any:
 
 
 def audit_types(world: FlagWeb) -> list[str]:
-    with owner_session(world.db.owner_url) as s:
+    with tenant_session(world) as s:
         return [e.event_type for e in s.scalars(select(AuditEvent).order_by(AuditEvent.id))]
 
 
@@ -159,7 +172,11 @@ def test_not_in_amadeus_offers_cancel_or_wait(world: FlagWeb) -> None:
             choice="void_entry", reason="Saisie par erreur, billet jamais émis",
         )  # fmt: skip
         assert done.status_code == 303
-    with owner_session(world.db.owner_url) as s:
+        assert status_of(world, flag.id) == "answered"  # the agent alone cannot void
+    with accountant(world) as a:
+        approved = post(a, f"/flags/{flag.id}/validate", "/flags/validate", decision="approve")
+        assert approved.status_code == 303
+    with tenant_session(world) as s:
         sale = s.scalars(select(Sale).order_by(Sale.id.desc())).first()
         assert sale is not None and sale.status == "voided"
     assert [f for f in world.flags_rows() if f.status in ("open", "answered", "resolved")] == []
@@ -233,7 +250,7 @@ def test_amadeus_right_on_a_name_changes_the_sale_and_clears_the_flag(world: Fla
     # a sale whose passenger name differs from the report
     from app.models import SaleVersion
 
-    with owner_session(world.db.owner_url) as s:
+    with tenant_session(world) as s:
         from app.tenancy import rebind_tenant
 
         rebind_tenant(s, world.seeded.agency_a)
@@ -284,7 +301,7 @@ def test_amadeus_right_on_a_name_changes_the_sale_and_clears_the_flag(world: Fla
         done = post(c, f"/flags/{flag.id}/answer", f"/flags?date={DAY}", choice="amadeus_right")
         assert done.status_code == 303
     assert [f for f in world.flags_rows() if f.status in ("open", "answered", "resolved")] == []
-    with owner_session(world.db.owner_url) as s:
+    with tenant_session(world) as s:
         count = len(list(s.scalars(select(SaleVersion).where(SaleVersion.sale_id == flag.sale_id))))
     assert count == versions_before + 1
 
@@ -429,7 +446,7 @@ def test_fee_overrides_are_listed_and_validated_or_rejected(world: FlagWeb) -> N
 
     world.link_staff("0004SV")
     world.sell_report()
-    with owner_session(world.db.owner_url) as s:
+    with tenant_session(world) as s:
         rebind_tenant(s, world.seeded.agency_a)
         manager = s.get(User, world.seeded.manager_a)
         assert manager is not None
@@ -476,7 +493,7 @@ def test_fee_overrides_are_listed_and_validated_or_rejected(world: FlagWeb) -> N
         )  # fmt: skip
         assert rejected.status_code == 303
         assert "Remise accordée" not in a.get("/flags/validate").text
-    with owner_session(world.db.owner_url) as s:
+    with tenant_session(world) as s:
         rebind_tenant(s, world.seeded.agency_a)
         manager = s.get(User, world.seeded.manager_a)
         assert manager is not None
@@ -504,7 +521,8 @@ def test_closing_is_refused_with_the_reasons_then_allowed_when_clear(world: Flag
         refused = post(a, f"/days/{DAY}/close", f"/days/{DAY}")
         assert refused.status_code == 409
         assert "La journée ne peut pas être clôturée" in refused.text
-        assert "1 écart bloquant reste à traiter." in refused.text
+        box = re.search(r'id="form-error"[^>]*>([^<]*)<', refused.text)
+        assert box is not None and "1 écart bloquant reste à traiter." in box.group(1)
         assert world.flags_rows()  # the day is still open
     with world.staff() as c:
         post(
@@ -531,7 +549,7 @@ def test_the_partner_list_must_be_seen_before_closing(world: FlagWeb) -> None:
     from tests.flag_support import NOW
 
     world.sell_report()
-    with owner_session(world.db.owner_url) as s:
+    with tenant_session(world) as s:
         rebind_tenant(s, world.seeded.agency_a)
         manager = s.get(User, world.seeded.manager_a)
         assert manager is not None
@@ -564,10 +582,18 @@ def test_the_partner_list_must_be_seen_before_closing(world: FlagWeb) -> None:
         assert f'action="/days/{DAY}/partner-list"' in page.text
         blocked = post(c, f"/days/{DAY}/close", f"/days/{DAY}")
         assert blocked.status_code == 409 and "J'ai vu la liste" in html.unescape(blocked.text)
-        seen = post(c, f"/days/{DAY}/partner-list", f"/days/{DAY}")
+        digest = re.search(r'name="digest" value="([0-9a-f]+)"', page.text)
+        assert digest is not None
+        assert "SYNTH" in page.text  # the listed ticket is shown on the card
+        own = post(c, f"/days/{DAY}/partner-list", f"/days/{DAY}", digest=digest.group(1))
+        assert own.status_code == 403  # the manager wrote the listed sale
+    with accountant(world) as a:
+        stale = post(a, f"/days/{DAY}/partner-list", f"/days/{DAY}", digest="0" * 16)
+        assert stale.status_code == 400 and "La liste a changé" in stale.text
+        seen = post(a, f"/days/{DAY}/partner-list", f"/days/{DAY}", digest=digest.group(1))
         assert seen.status_code == 303
-        assert "J'ai vu la liste" not in html.unescape(c.get(f"/days/{DAY}").text)
-        closed = post(c, f"/days/{DAY}/close", f"/days/{DAY}")
+        assert "J'ai vu la liste" not in html.unescape(a.get(f"/days/{DAY}").text)
+        closed = post(a, f"/days/{DAY}/close", f"/days/{DAY}")
         assert closed.status_code == 303
     assert "partner_list_acknowledged" in audit_types(world)
 
@@ -607,7 +633,7 @@ def test_a_sale_changed_after_the_comparison_is_compared_again_at_the_close(worl
     world.sell_report()
     with world.manager() as c:
         world.upload(c)
-    with owner_session(world.db.owner_url) as s:
+    with tenant_session(world) as s:
         rebind_tenant(s, world.seeded.agency_a)
         manager = s.get(User, world.seeded.manager_a)
         assert manager is not None
@@ -718,3 +744,24 @@ def test_the_sidebar_link_and_badge_are_for_validators(world: FlagWeb) -> None:
     assert 'href="/flags/validate"' in home.text
     match = re.search(r'href="/flags/validate".*?<span class="badge">(\d+)', home.text, re.DOTALL)
     assert match and match.group(1) == "1"
+
+
+def test_the_day_page_does_not_compare_again_but_the_confirmation_does(
+    world: FlagWeb, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from app import flags
+
+    setup_diff(world, OWN[0])
+    calls: list[int] = []
+    real = flags.is_current
+
+    def spy(*args: Any, **kwargs: Any) -> bool:
+        calls.append(1)
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(flags, "is_current", spy)
+    with world.manager() as c:
+        assert c.get(f"/days/{DAY}").status_code == 200
+        assert calls == []  # a view of the day never runs the staleness comparison
+        assert c.get(f"/days/{DAY}/close").status_code == 200
+        assert calls != []

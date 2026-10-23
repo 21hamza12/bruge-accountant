@@ -187,6 +187,17 @@ def _scalar(url: str, sql: str) -> object:
         engine.dispose()
 
 
+def _scalar_for(w: W, sql: str) -> object:
+    """A scalar read as agency a's tenant (row-level security hides the rows from anybody else)."""
+    engine = make_engine(w.url)
+    try:
+        with make_session_factory(engine)() as s:
+            rebind_tenant(s, w.a)
+            return s.execute(text(sql)).scalar()
+    finally:
+        engine.dispose()
+
+
 def _names(url: str, kind: str) -> list[str]:
     engine = create_engine(url)
     try:
@@ -239,6 +250,8 @@ def test_up_and_down_on_sqlite(db_url: str) -> None:
     engine = create_engine(db_url)
     try:
         insp = inspect(engine)
+        assert "override_digest" in {c["name"] for c in insp.get_columns("sale_versions")}
+        assert "sale_version_no" in {c["name"] for c in insp.get_columns("flag_decisions")}
         indexes = {i["name"]: i["column_names"] for i in insp.get_indexes("flag_decisions")}
         assert indexes["ix_flag_decisions_agency_flag"] == ["agency_id", "flag_id", "id"]
     finally:
@@ -340,7 +353,7 @@ def test_the_valid_decisions_are_accepted(db_url: str) -> None:
         decision(w, stage="validator", choice="validated", reason=None),
         decision(w, stage="validator", choice="rejected", reason="Justificatif manquant"),
     )
-    assert _scalar(db_url, "SELECT count(*) FROM flag_decisions") == 6
+    assert _scalar_for(w, "SELECT count(*) FROM flag_decisions") == 6
 
 
 @pytest.mark.parametrize(
@@ -372,7 +385,7 @@ def test_the_valid_acknowledgements_are_accepted(db_url: str) -> None:
         ack(w),
         ack(w, kind="override", run_id=None, sale_id=w.sale_a, version_no=1),
     )
-    assert _scalar(db_url, "SELECT count(*) FROM day_acknowledgements") == 2
+    assert _scalar_for(w, "SELECT count(*) FROM day_acknowledgements") == 2
 
 
 def test_nothing_can_point_into_another_agency(db_url: str) -> None:
@@ -413,7 +426,7 @@ def test_both_tables_are_append_only_on_sqlite(db_url: str) -> None:
                 s.rollback()
     finally:
         engine.dispose()
-    assert _scalar(db_url, "SELECT reason FROM flag_decisions") == "Tarif négocié"
+    assert _scalar_for(w, "SELECT reason FROM flag_decisions") == "Tarif négocié"
 
 
 def test_the_flag_a_decision_names_cannot_be_deleted(db_url: str) -> None:

@@ -118,7 +118,8 @@ def test_0012_follows_0011() -> None:
     revision = script.get_revision("0012")
     assert revision is not None
     assert revision.down_revision == "0011"
-    assert script.get_heads() == ["0013"]  # B9's 0013 follows it
+    successor = script.get_revision("0013")
+    assert successor is not None and successor.down_revision == "0012"
 
 
 def test_grants_are_append_only() -> None:

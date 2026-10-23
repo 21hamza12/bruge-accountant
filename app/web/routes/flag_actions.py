@@ -60,6 +60,15 @@ def _text(posted: Posted, name: str) -> str:
     return raw[:MAX_REASON] if isinstance(raw, str) else ""
 
 
+def _settle(db: Session, exc: UserError) -> None:
+    """End the transaction of a refused action: keep the new comparison when the situation changed
+    (it was run again), drop everything else."""
+    if isinstance(exc, approvals.SituationChanged):
+        db.commit()
+    else:
+        db.rollback()
+
+
 def _status_of(exc: UserError) -> int:
     """The HTTP status of a refused action; a thing that is not the user's is a 404."""
     if isinstance(exc, approvals.ApprovalNotFound | sales.SaleNotFound):
@@ -91,7 +100,7 @@ def flag_answer(
         )
         db.commit()
     except UserError as exc:
-        db.rollback()
+        _settle(db, exc)
         status = _status_of(exc)
         return list_page(
             db,
@@ -247,7 +256,7 @@ def flag_validate(
     if approve is None:
         return validate_page(db, auth, error=BAD_DECISION, status_code=400)
     try:
-        approvals.validate_flag(
+        result = approvals.validate_flag(
             db,
             auth.user,
             flag_id,
@@ -258,8 +267,10 @@ def flag_validate(
         )
         db.commit()
     except UserError as exc:
-        db.rollback()
+        _settle(db, exc)
         return validate_page(db, auth, error=str(exc), status_code=_status_of(exc))
+    if approve and result.status == "open":  # the sale moved on: back to the agent
+        return validate_page(db, auth, error=approvals.SALE_MOVED_ON, status_code=409)
     return RedirectResponse("/flags/validate", status_code=303)
 
 

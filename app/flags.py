@@ -90,6 +90,7 @@ __all__ = [
     "flags_for_day",
     "flags_for_me",
     "is_current",
+    "visible_flag_ids",
     "latest_run",
     "latest_upload_for_day",
     "open_blocking_count",
@@ -529,6 +530,21 @@ def flag_for(db: Session, actor: User, flag_id: int) -> ComparisonFlag | None:
     if signs is not None and row.responsible_sign not in signs:
         return None
     return row
+
+
+def visible_flag_ids(db: Session, actor: User, flag_ids: Collection[int]) -> set[int]:
+    """Which of these flags the actor may see (in the actor's agency, and for staff on their own
+    signs), in one query."""
+    wanted = list(dict.fromkeys(flag_ids))
+    signs = _visible(db, actor)
+    if not wanted or (signs is not None and not signs):
+        return set()
+    query = select(ComparisonFlag.id).where(
+        ComparisonFlag.agency_id == actor.agency_id, ComparisonFlag.id.in_(wanted)
+    )
+    if signs is not None:
+        query = query.where(ComparisonFlag.responsible_sign.in_(signs))
+    return set(db.scalars(query))
 
 
 def flags_for_me(db: Session, actor: User) -> list[ComparisonFlag]:

@@ -362,6 +362,8 @@ def build_apres_xlsx(report: ApresReport, *, corrections: Corrections = NO_CORRE
         head.alignment = Alignment(horizontal="center")
     for n, line in enumerate(report.lines):
         row = FIRST_ROW + n
+        # corrections are keyed by the normalised number (a 13-digit line is found too)
+        key_doc = normalise_doc(line.doc_number, line.airline) or line.doc_number
         _text(ws, row, _COL_SEQ, line.seq_no)
         _text(ws, row, 2, line.airline)
         _text(ws, row, _COL_DOC, line.doc_number)
@@ -383,7 +385,7 @@ def build_apres_xlsx(report: ApresReport, *, corrections: Corrections = NO_CORRE
             _fill_row(ws, row, _FILL_GROUP)
             _note(ws, row, _COL_SEQ, line.marker)
         for col, title in enumerate(HEADERS, start=1):
-            change = corrections.get((line.doc_number, title))
+            change = corrections.get((key_doc, title))
             if change is not None:
                 _corrected(ws, row, col, change)
     total_row = FIRST_ROW + len(report.lines) + 1

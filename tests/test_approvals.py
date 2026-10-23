@@ -7,16 +7,18 @@ who answered.
 
 from __future__ import annotations
 
+from collections.abc import Callable
+from dataclasses import replace
 from decimal import Decimal
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import event, select
 from sqlalchemy.orm import Session
 
 from app import approvals, days, sales
 from app.db import make_engine, make_session_factory
 from app.models import AuditEvent, ComparisonFlag, User
-from app.sales import SaleInput
+from app.sales import SaleInput, SaleView
 from app.tenancy import rebind_tenant
 from tests.approval_support import (
     OTHER_NAME,
@@ -29,7 +31,7 @@ from tests.approval_support import (
     status_of,
     validate,
 )
-from tests.flag_support import NOW, FlagWorld
+from tests.flag_support import D19, D20, NOW, FlagWorld
 
 
 @pytest.fixture
@@ -260,14 +262,35 @@ def not_in_amadeus(w: FlagWorld) -> tuple[ComparisonFlag, int]:
     return flag, sale.id
 
 
-def test_void_entry_voids_the_sale_and_clears_the_flag(w: FlagWorld) -> None:
+def test_void_entry_waits_for_a_validator_who_voids_the_sale(w: FlagWorld) -> None:
     flag, sale_id = not_in_amadeus(w)
     result = answer(w, w.staff, flag.id, "void_entry", "Saisie par erreur, billet jamais émis")
-    assert result.applied
-    assert sale_of(w, sale_id).status == "voided"
-    assert w.live() == []
+    assert result.status == "answered" and not result.applied
+    assert sale_of(w, sale_id).status == "active"  # the agent alone cannot void
     (d,) = decisions(w, flag.id)
     assert (d.choice, d.reason) == ("void_entry", "Saisie par erreur, billet jamais émis")
+    assert d.sale_version_no == sale_of(w, sale_id).version_no
+    done = validate(w, w.accountant, flag.id, True)
+    assert done.applied
+    assert sale_of(w, sale_id).status == "voided"
+    assert sale_of(w, sale_id).actor_user_id == w.accountant.id
+    assert w.live() == []
+
+
+def test_a_void_cannot_be_validated_by_its_own_answerer(w: FlagWorld) -> None:
+    flag, sale_id = not_in_amadeus(w)
+    answer(w, w.manager, flag.id, "void_entry", "Saisie par erreur, billet jamais émis")
+    with pytest.raises(approvals.ApprovalForbidden):
+        approvals.validate_flag(w.db, w.manager, flag.id, True, None, now=NOW)
+    w.db.rollback()
+    assert sale_of(w, sale_id).status == "active"
+
+
+def test_a_rejected_void_leaves_the_sale_and_reopens_the_flag(w: FlagWorld) -> None:
+    flag, sale_id = not_in_amadeus(w)
+    answer(w, w.staff, flag.id, "void_entry", "Saisie par erreur, billet jamais émis")
+    assert validate(w, w.accountant, flag.id, False, "Le billet existe bien").status == "open"
+    assert sale_of(w, sale_id).status == "active"
 
 
 def test_void_entry_needs_a_reason(w: FlagWorld) -> None:
@@ -276,6 +299,23 @@ def test_void_entry_needs_a_reason(w: FlagWorld) -> None:
         approvals.answer_flag(w.db, w.staff, flag.id, "void_entry", None, now=NOW)
     w.db.rollback()
     assert sale_of(w, sale_id).status == "active"
+
+
+def test_a_void_of_a_multi_ticket_sale_is_refused(w: FlagWorld) -> None:
+    upload_id = w.upload().upload_id
+    w.sell_all_issued(upload_id)
+    lines = w.lines(upload_id)
+    extra = [
+        w.ticket_of(lines[0], doc_number="3949999991"),
+        w.ticket_of(lines[0], doc_number="3949999992"),
+    ]
+    w.sell(extra, sign="0004SV")
+    w.run()
+    flag = next(f for f in w.live() if f.doc_number == "3949999991")
+    with pytest.raises(approvals.ApprovalError):
+        approvals.answer_flag(
+            w.db, w.staff, flag.id, "void_entry", "Saisie par erreur, jamais émis", now=NOW
+        )
 
 
 def test_waiting_for_a_later_report_records_it_and_keeps_the_flag_open(w: FlagWorld) -> None:
@@ -437,10 +477,11 @@ def test_acknowledging_the_partner_list(w: FlagWorld) -> None:
     w.run()
     day = w.day()
     assert not approvals.partner_list_seen(w.db, w.accountant, day)
+    seen = approvals.partner_digest(w.db, w.accountant, day)
     with pytest.raises(approvals.ApprovalForbidden):
-        approvals.acknowledge_partner_list(w.db, w.staff, day, now=NOW)
+        approvals.acknowledge_partner_list(w.db, w.staff, day, seen_digest=seen, now=NOW)
     w.db.rollback()
-    approvals.acknowledge_partner_list(w.db, w.accountant, day, now=NOW)
+    approvals.acknowledge_partner_list(w.db, w.accountant, day, seen_digest=seen, now=NOW)
     w.db.commit()
     assert approvals.partner_list_seen(w.db, w.accountant, day)
     assert "partner_list_acknowledged" in audit_types(w)
@@ -455,7 +496,9 @@ def test_acknowledging_an_empty_list_is_refused(w: FlagWorld) -> None:
     w.sell_all_issued(upload_id)
     w.run()
     with pytest.raises(approvals.ApprovalError):
-        approvals.acknowledge_partner_list(w.db, w.accountant, w.day(), now=NOW)
+        approvals.acknowledge_partner_list(
+            w.db, w.accountant, w.day(), seen_digest="0" * 16, now=NOW
+        )
 
 
 # --- the corrections for the export ------------------------------------------------------------
@@ -525,3 +568,273 @@ def test_the_agent_of_the_sale_edit_goes_through_the_normal_rules(w: FlagWorld) 
     assert agent_for(w, "0006AC").id == w.staff2.id
     with pytest.raises(approvals.ApprovalNotFound):
         approvals.answer_flag(w.db, w.staff, flag.id, "amadeus_right", None, now=NOW)
+
+
+# --- review round: what needs a validator ----------------------------------------
+
+
+def test_a_fare_class_difference_needs_a_validator(w: FlagWorld) -> None:
+    flag, _ = diff_world(w, "pax_type")
+    assert flag.field == "pax_type" and flag.needs_validation
+    assert answer(w, w.staff, flag.id, "mine_right", "Tarif enfant confirmé").status == "answered"
+
+
+def test_a_sign_difference_needs_a_validator_and_staff_cannot_ask_for_amadeus(
+    w: FlagWorld,
+) -> None:
+    upload = w.upload()
+    lines = w.lines(upload.upload_id)
+    target = next(x for x in lines if x.trnc == "TKTT" and x.staff_sign == "0004SV")
+    for line in lines:
+        if line.trnc == "TKTT":
+            sign = "0006AC" if line is target else line.staff_sign
+            w.sell([w.ticket_of(line)], sign=sign)
+    w.run()
+    flag = next(f for f in w.live() if f.doc_number == target.doc_number)
+    assert flag.field == "staff_sign" and flag.needs_validation
+    with pytest.raises(approvals.ApprovalForbidden):  # staff cannot re-sign a sale to another sign
+        approvals.answer_flag(w.db, w.staff2, flag.id, "amadeus_right", None, now=NOW)
+    w.db.rollback()
+    assert answer(w, w.manager, flag.id, "amadeus_right").status == "answered"
+    assert validate(w, w.accountant, flag.id, True).applied
+    assert w.live() == []
+
+
+# --- review round: the sale is tied to the flag ----------------------------------------
+
+
+def test_a_flag_made_stale_by_an_edit_is_refused_and_compared_again(w: FlagWorld) -> None:
+    flag, line = diff_world(w, "pax_name")
+    assert flag.sale_id is not None
+    view = sale_of(w, flag.sale_id)
+    t = view.tickets[0]
+    edited = SaleInput(
+        tickets=[
+            w.ticket_of(
+                line, doc_number=t.doc_number, total_doc=t.total_doc + 7, pax_name=t.pax_name
+            )
+        ],
+        ag_kind="direct",
+        pb=view.pb,
+        clt=view.clt,
+        payment_method=view.payment_method,
+        staff_sign=view.staff_sign,
+    )
+    sales.edit_sale(w.db, w.manager, view.id, edited, "Prix corrigé", now=NOW)
+    w.db.commit()
+    with pytest.raises(approvals.SituationChanged) as caught:
+        approvals.answer_flag(w.db, w.staff, flag.id, "amadeus_right", None, now=NOW)
+    assert "La situation a changé" in str(caught.value)
+    w.db.commit()  # the new comparison is kept
+    assert status_of(w, flag.id) == "superseded"
+    assert decisions(w, flag.id) == []
+
+
+def test_a_sale_edited_after_the_answer_sends_the_flag_back_to_open(w: FlagWorld) -> None:
+    flag, line = diff_world(w, "total_doc")
+    assert flag.sale_id is not None
+    first = sale_of(w, flag.sale_id)
+    answer(w, w.staff, flag.id, "amadeus_right")
+    (d,) = decisions(w, flag.id)
+    assert d.sale_version_no == first.version_no
+    # a change that is not part of the compared facts still moves the sale to a new version
+    edited = SaleInput(
+        tickets=[
+            w.ticket_of(
+                line, doc_number=first.tickets[0].doc_number, total_doc=first.tickets[0].total_doc
+            )
+        ],
+        ag_kind="direct",
+        pb=first.pb,
+        clt="Autre Client",
+        payment_method=first.payment_method,
+        staff_sign=first.staff_sign,
+    )
+    sales.edit_sale(w.db, w.manager, first.id, edited, "Client corrigé", now=NOW)
+    w.db.commit()
+    result = validate(w, w.accountant, flag.id, True)
+    assert result.status == "open" and not result.applied
+    last = decisions(w, flag.id)[-1]
+    assert (last.stage, last.choice) == ("validator", "rejected")
+    assert "re-répondre" in (last.reason or "")
+    assert sale_of(w, flag.sale_id).tickets[0].total_doc == first.tickets[0].total_doc
+
+
+def test_the_sale_must_be_the_flags_own(w: FlagWorld) -> None:
+    flag, _ = diff_world(w, "pax_name")
+    assert flag.sale_id is not None
+    sales.move_sale_day(w.db, w.manager, flag.sale_id, D19, "Mauvais jour", now=NOW)
+    w.db.commit()
+    with pytest.raises(approvals.SituationChanged):
+        approvals.answer_flag(w.db, w.manager, flag.id, "amadeus_right", None, now=NOW)
+
+
+# --- review round: small rules ----------------------------------------
+
+
+def test_waiting_twice_records_once(w: FlagWorld) -> None:
+    flag, _ = not_in_amadeus(w)
+    answer(w, w.staff, flag.id, "acknowledged")
+    answer(w, w.staff, flag.id, "acknowledged")
+    assert [d.choice for d in decisions(w, flag.id)] == ["acknowledged"]
+
+
+def test_a_name_with_other_case_and_spacing_does_not_reopen_the_flag(w: FlagWorld) -> None:
+    upload = w.upload(w.changed_20oct(1, **{"PAX NAME": "synth02/pax  jr"}))
+    lines = w.lines(upload.upload_id)
+    for line in lines:
+        if line.trnc == "TKTT":
+            name = "SYNTH/OTHER" if line.seq_order == 2 else line.pax_name
+            w.sell([w.ticket_of(line, pax_name=name)], sign=line.staff_sign)
+    w.run()
+    (flag,) = w.live()
+    answer(w, w.manager, flag.id, "amadeus_right")
+    w.run()
+    assert w.live() == []
+
+
+def count_selects(w: FlagWorld, call: Callable[[], object]) -> int:
+    seen: list[str] = []
+
+    def spy(conn: object, cursor: object, statement: str, *rest: object) -> None:
+        if statement.lstrip().upper().startswith("SELECT") and "set_config" not in statement:
+            seen.append(statement)
+
+    engine = w.db.get_bind()
+    event.listen(engine, "before_cursor_execute", spy)
+    try:
+        call()
+    finally:
+        event.remove(engine, "before_cursor_execute", spy)
+    return len(seen)
+
+
+def test_decisions_are_read_in_a_fixed_number_of_queries(w: FlagWorld) -> None:
+    flag, _ = diff_world(w, "total_doc")
+    answer(w, w.staff, flag.id, "mine_right", "Tarif négocié")
+    ids = [flag.id] * 1
+    small = count_selects(w, lambda: approvals.decisions_for(w.db, w.staff, ids))
+    many = count_selects(w, lambda: approvals.decisions_for(w.db, w.staff, ids * 20 + [10**6]))
+    assert small == many <= 3
+
+
+def test_the_validation_badge_is_a_fixed_number_of_queries(w: FlagWorld) -> None:
+    upload_id = w.upload().upload_id
+    w.sell_all_issued(upload_id)
+    partner_override_sale(w, "3949999990")
+    one = count_selects(w, lambda: approvals.to_validate_count(w.db, w.accountant))
+    partner_override_sale(w, "3949999989", fee=250)
+    partner_override_sale(w, "3949999988", fee=200)
+    assert approvals.to_validate_count(w.db, w.accountant) == 3
+    assert count_selects(w, lambda: approvals.to_validate_count(w.db, w.accountant)) == one <= 3
+
+
+# --- review round: override approvals ----------------------------------------
+
+
+def edit_override(
+    w: FlagWorld, sale: SaleView, actor: User, *, fee: int | None, cost: int = 0
+) -> None:
+    ticket = sale.tickets[0]
+    data = SaleInput(
+        tickets=[
+            replace(
+                w.ticket_of(w.lines(1)[0], doc_number=ticket.doc_number),
+                total_doc=ticket.total_doc + cost,
+            )
+        ],
+        ag_kind="partner",
+        partner_id=w.badi.id,
+        payment_method="credit",
+        staff_sign="0004SV",
+        fee_override=None if fee is None else Decimal(fee),
+        fee_override_reason=None if fee is None else "Remise accordée au partenaire",
+    )
+    sales.edit_sale(w.db, actor, sale.id, data, "Correction", now=NOW)
+    w.db.commit()
+
+
+def test_an_approval_does_not_survive_a_changed_cost_or_fee(w: FlagWorld) -> None:
+    w.sell_all_issued(w.upload().upload_id)
+    sale = partner_override_sale(w, "3949999990")
+    approvals.validate_override(w.db, w.accountant, sale.id, True, None, now=NOW)
+    w.db.commit()
+    edit_override(w, sale_of(w, sale.id), w.manager, fee=300, cost=50)  # another cost
+    assert approvals.to_validate_count(w.db, w.accountant) == 1
+
+
+def test_an_approval_never_revives_when_the_digest_changes_and_changes_back(w: FlagWorld) -> None:
+    w.sell_all_issued(w.upload().upload_id)
+    sale = partner_override_sale(w, "3949999990", fee=300)
+    approvals.validate_override(w.db, w.accountant, sale.id, True, None, now=NOW)
+    w.db.commit()
+    edit_override(w, sale_of(w, sale.id), w.manager, fee=250)
+    edit_override(w, sale_of(w, sale.id), w.manager, fee=300)  # back to the approved fee
+    assert approvals.to_validate_count(w.db, w.accountant) == 1
+
+
+def test_whoever_wrote_the_fee_in_any_version_cannot_approve_it(w: FlagWorld) -> None:
+    w.sell_all_issued(w.upload().upload_id)
+    sale = partner_override_sale(w, "3949999990", fee=300, actor=w.manager)
+    edit_override(w, sale_of(w, sale.id), w.accountant, fee=300, cost=10)  # same fee, new version
+    with pytest.raises(approvals.ApprovalForbidden):  # the manager wrote the fee
+        approvals.validate_override(w.db, w.manager, sale.id, True, None, now=NOW)
+    w.db.rollback()
+    with pytest.raises(approvals.ApprovalForbidden):  # the accountant wrote a version carrying it
+        approvals.validate_override(w.db, w.accountant, sale.id, True, None, now=NOW)
+
+
+def test_an_override_edited_by_the_would_be_validator_in_between_is_refused(w: FlagWorld) -> None:
+    w.sell_all_issued(w.upload().upload_id)
+    sale = partner_override_sale(w, "3949999990", fee=300, actor=w.manager)
+    edit_override(w, sale_of(w, sale.id), w.accountant, fee=300, cost=10)  # same fee, other cost
+    with pytest.raises(approvals.ApprovalForbidden):
+        approvals.validate_override(w.db, w.accountant, sale.id, True, None, now=NOW)
+
+
+# --- review round: the partner list digest ----------------------------------------
+
+
+def partner_day(w: FlagWorld, fee_sale: int | None = None) -> int:
+    upload_id = w.upload().upload_id
+    w.sell_all_issued(upload_id)
+    w.sell([w.ticket_of(w.lines(upload_id)[0], doc_number="3949999998")], partner=True)
+    w.run()
+    return upload_id
+
+
+def test_the_list_digest_covers_the_amounts(w: FlagWorld) -> None:
+    upload_id = partner_day(w)
+    first = approvals.partner_digest(w.db, w.accountant, w.day())
+    view = sales.sales_for_day_for(w.db, w.manager, D20)[-1]
+    t = view.tickets[0]
+    data = SaleInput(
+        tickets=[
+            w.ticket_of(w.lines(upload_id)[0], doc_number=t.doc_number, total_doc=t.total_doc + 9)
+        ],
+        ag_kind="partner",
+        partner_id=w.badi.id,
+        payment_method="credit",
+        staff_sign=view.staff_sign,
+    )
+    sales.edit_sale(w.db, w.manager, view.id, data, "Prix corrigé", now=NOW)
+    w.db.commit()
+    assert approvals.partner_digest(w.db, w.accountant, w.day()) != first
+
+
+def test_a_stale_digest_is_refused(w: FlagWorld) -> None:
+    partner_day(w)
+    with pytest.raises(approvals.ApprovalError) as caught:
+        approvals.acknowledge_partner_list(
+            w.db, w.accountant, w.day(), seen_digest="f" * 16, now=NOW
+        )
+    assert "La liste a changé" in str(caught.value)
+
+
+def test_the_author_of_a_listed_sale_cannot_acknowledge_it(w: FlagWorld) -> None:
+    partner_day(w)  # the manager wrote the partner sale
+    seen = approvals.partner_digest(w.db, w.manager, w.day())
+    with pytest.raises(approvals.ApprovalForbidden):
+        approvals.acknowledge_partner_list(w.db, w.manager, w.day(), seen_digest=seen, now=NOW)
+    w.db.rollback()
+    approvals.acknowledge_partner_list(w.db, w.accountant, w.day(), seen_digest=seen, now=NOW)

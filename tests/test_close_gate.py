@@ -94,7 +94,8 @@ def test_the_partner_list_must_be_seen(w: FlagWorld) -> None:
     w.run()
     reasons = gate(w)
     assert len(reasons) == 1 and "liste" in reasons[0]
-    approvals.acknowledge_partner_list(w.db, w.accountant, w.day(), now=NOW)
+    seen = approvals.partner_digest(w.db, w.accountant, w.day())
+    approvals.acknowledge_partner_list(w.db, w.accountant, w.day(), seen_digest=seen, now=NOW)
     w.db.commit()
     assert gate(w) == []
     rows = w.db.scalars(select(DayAcknowledgement)).all()
@@ -239,3 +240,23 @@ def test_the_export_close_is_gated_and_stores_the_approved_cost(w: FlagWorld) ->
     comment = cells[0].comment
     assert comment is not None
     assert "Valeur Amadeus d'origine : " + str(int(w.cost_of(line))) in comment.text
+
+
+def test_a_failed_rerun_keeps_what_the_caller_had_written(
+    w: FlagWorld, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from app.approvals import gate
+    from app.errors import UserError
+
+    w.sell_all_issued(w.upload().upload_id)  # a report, but no comparison yet: the gate runs one
+    w.db.add(AuditEvent(agency_id=w.agency_id, event_type="pending_marker", details={}))
+
+    def boom(*args: object, **kwargs: object) -> None:
+        raise UserError("La comparaison ne peut pas être faite.")
+
+    monkeypatch.setattr(gate, "rerun", boom)
+    reasons = approvals.can_close(w.db, w.accountant, w.day(), now=NOW)
+    w.db.commit()
+    assert reasons == ["La comparaison ne peut pas être faite."]
+    kept = w.db.scalars(select(AuditEvent).where(AuditEvent.event_type == "pending_marker")).all()
+    assert len(kept) == 1  # only the savepoint was rolled back

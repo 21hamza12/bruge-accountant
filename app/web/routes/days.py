@@ -130,10 +130,15 @@ def day_view(
     if upload is not None and upload.upload.uploaded_by_user_id is not None:
         uploader = names.get(upload.upload.uploaded_by_user_id)
     # The comparison with the Amadeus report (B8): the numbers this viewer may see.
-    counts = flags.day_summary(db, user, report_day).counts if report_day else None
+    summary = flags.day_summary(db, user, report_day) if report_day else None
+    counts = summary.counts if summary else None
     # The close gate (B9), read-only: what would stop a closer today.
     can_close = report_day is not None and not closed and permissions.can_close_day(user)
-    gate = approvals.gate_status(db, user, report_day) if can_close and report_day else None
+    gate = (
+        approvals.gate_status(db, user, report_day, partner_tickets=summary.partner_not_in_report)
+        if can_close and report_day and summary
+        else None
+    )
     return page(
         "days/show.html",
         status_code=status_code,
@@ -203,7 +208,7 @@ def day_confirm_close(day: str, db: Db, clock: Now, auth: Closer) -> Response:
         **shell_context(db, auth, ACTIVE_DAYS),
         day=chosen,
         totals=sales.day_totals(views),
-        gate=approvals.gate_status(db, auth.user, report_day),
+        gate=approvals.gate_status(db, auth.user, report_day, check_stale=True),
     )
 
 
@@ -221,9 +226,10 @@ def day_close(day: str, request: Request, db: Db, clock: Now, auth: Closer) -> R
             db, auth.user, report_day, now=clock(), ip=client_ip(request)
         )
         db.commit()
-    except approvals.CloseBlocked:
+    except approvals.CloseBlocked as blocked:
         db.commit()  # the gate may have run the comparison again: keep that
-        return day_view(db, auth, chosen, error=BLOCKED, status_code=409)
+        reasons = "; ".join(blocked.reasons)
+        return day_view(db, auth, chosen, error=f"{BLOCKED} {reasons}", status_code=409)
     except days.DayError as exc:
         db.rollback()
         return day_view(db, auth, chosen, error=str(exc), status_code=409)
@@ -231,7 +237,9 @@ def day_close(day: str, request: Request, db: Db, clock: Now, auth: Closer) -> R
 
 
 @router.post("/{day}/partner-list")
-def day_partner_list(day: str, request: Request, db: Db, clock: Now, auth: Validator) -> Response:
+def day_partner_list(
+    day: str, request: Request, db: Db, clock: Now, auth: Validator, posted: Posted
+) -> Response:
     """ "J'ai vu la liste": the partner tickets that are not in the report were looked at."""
     throttle(db, request, auth, clock, write=True)
     chosen, problem = _day_or_error(day, clock)
@@ -239,8 +247,14 @@ def day_partner_list(day: str, request: Request, db: Db, clock: Now, auth: Valid
         return _error_page(db, auth, problem)
     report_day = _existing(db, auth, chosen)
     try:
+        raw = posted.get("digest")
         approvals.acknowledge_partner_list(
-            db, auth.user, report_day, now=clock(), ip=client_ip(request)
+            db,
+            auth.user,
+            report_day,
+            seen_digest=raw if isinstance(raw, str) else "",
+            now=clock(),
+            ip=client_ip(request),
         )
         db.commit()
     except days.DayError as exc:
@@ -248,7 +262,8 @@ def day_partner_list(day: str, request: Request, db: Db, clock: Now, auth: Valid
         return day_view(db, auth, chosen, error=str(exc), status_code=409)
     except approvals.ApprovalError as exc:
         db.rollback()
-        return day_view(db, auth, chosen, error=str(exc), status_code=400)
+        refused = isinstance(exc, approvals.ApprovalForbidden)
+        return day_view(db, auth, chosen, error=str(exc), status_code=403 if refused else 400)
     return RedirectResponse(f"/days/{chosen.isoformat()}", status_code=303)
 
 

@@ -153,6 +153,7 @@
   {% if partner_open %}
   <form class="inline-form" method="post" action="/days/{{ day.isoformat() }}/partner-list">
     {% include "_csrf.html" %}
+    <input type="hidden" name="digest" value="{{ partner_digest }}">
     <button class="btn btn-primary" type="submit">{{ _("J'ai vu la liste") }}</button>
   </form>
   {% endif %}

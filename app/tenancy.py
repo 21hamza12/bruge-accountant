@@ -98,15 +98,15 @@ def bind_tenant(session: Session, agency_id: int) -> None:
     :class:`TenantBindingError`: use :func:`rebind_tenant` where switching is the intent.
     """
     _check_agency_id(agency_id)
-    _refuse_in_savepoint(session)
     current = bound_tenant(session)
+    if current == agency_id:
+        return  # nothing changes, so a savepoint is no problem
+    _refuse_in_savepoint(session)
     if current is not None:
-        if current != agency_id:
-            raise TenantBindingError(
-                f"the session is already bound to agency {current}; refusing to re-point it to "
-                f"{agency_id} (rebind_tenant is for admin paths that mean it)"
-            )
-        return
+        raise TenantBindingError(
+            f"the session is already bound to agency {current}; refusing to re-point it to "
+            f"{agency_id} (rebind_tenant is for admin paths that mean it)"
+        )
     _apply(session, agency_id)
 
 

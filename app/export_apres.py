@@ -54,7 +54,7 @@ from openpyxl.worksheet.worksheet import Worksheet
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app import audit, days, permissions, repository, sales
+from app import approvals, audit, days, permissions, repository, sales
 from app.comparison import TRNC_CANX, normalise_doc
 from app.models import AmadeusLine, DayExport, ReportDay, Upload, User
 from app.sales_rules import SaleView
@@ -362,6 +362,8 @@ def build_apres_xlsx(report: ApresReport, *, corrections: Corrections = NO_CORRE
         head.alignment = Alignment(horizontal="center")
     for n, line in enumerate(report.lines):
         row = FIRST_ROW + n
+        # corrections are keyed by the normalised number (a 13-digit line is found too)
+        key_doc = normalise_doc(line.doc_number, line.airline) or line.doc_number
         _text(ws, row, _COL_SEQ, line.seq_no)
         _text(ws, row, 2, line.airline)
         _text(ws, row, _COL_DOC, line.doc_number)
@@ -383,7 +385,7 @@ def build_apres_xlsx(report: ApresReport, *, corrections: Corrections = NO_CORRE
             _fill_row(ws, row, _FILL_GROUP)
             _note(ws, row, _COL_SEQ, line.marker)
         for col, title in enumerate(HEADERS, start=1):
-            change = corrections.get((line.doc_number, title))
+            change = corrections.get((key_doc, title))
             if change is not None:
                 _corrected(ws, row, col, change)
     total_row = FIRST_ROW + len(report.lines) + 1
@@ -409,8 +411,9 @@ def build_apres_xlsx(report: ApresReport, *, corrections: Corrections = NO_CORRE
 
 
 def corrections_for(db: Session, agency_id: int, report_day_id: int) -> Corrections:
-    """The approved corrections of the day. TODO(B9): read them from the approved flags."""
-    return NO_CORRECTIONS
+    """The approved corrections of the day: the resolved flags whose app value was kept
+    (``approvals.corrections_for``)."""
+    return approvals.corrections_for(db, agency_id, report_day_id)
 
 
 def stored_versions(db: Session, agency_id: int, report_day_id: int) -> list[int]:
@@ -509,10 +512,12 @@ def close_day_with_export(
 ) -> DayExport | None:
     """Close the day and store its TJQ APRES in the same transaction (the caller commits).
 
-    TODO(B9): the close preconditions (no open flag, ...) go here, before ``days.close_day``."""
+    The close gate (``approvals.can_close``: report compared, no blocking flag, overrides
+    validated, partner list seen) runs first and raises ``approvals.CloseBlocked``; the caller
+    commits even then, because the gate may have run the comparison again."""
     if _last_version(db, actor.agency_id, report_day.id) >= MAX_VERSIONS:
         raise ExportError(TOO_MANY_VERSIONS)  # refused before anything changes
-    days.close_day(db, actor, report_day, now=now, ip=ip)
+    approvals.close_day(db, actor, report_day, now=now, ip=ip)
     return store_next_version(db, actor, report_day, now=now, ip=ip)
 
 

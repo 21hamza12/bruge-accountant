@@ -14,7 +14,9 @@ from app.models import (
     AuditEvent,
     ComparisonFlag,
     ComparisonRun,
+    DayAcknowledgement,
     DayEvent,
+    FlagDecision,
     Partner,
     PartnerAlias,
     PartnerFee,
@@ -50,6 +52,7 @@ class Tenant:
     sale_id: int = 0
     run_id: int = 0  # a comparison run of the seeded day (it also has one flag)
     upload_id: int = 0
+    flag_id: int = 0  # the flag of that run (it also has a decision)
 
 
 def seed_tenant(owner_url: str, slug: str, phone: str, token_hash: str, doc_base: int) -> Tenant:
@@ -107,10 +110,10 @@ def seed_tenant(owner_url: str, slug: str, phone: str, token_hash: str, doc_base
             rows = [ticket_row(doc=f"{doc_base + n}") for n in range(2)]
             import_report(s, agency_id, parse_report(build_workbook(rows)), "seed.xlsx", SHA)
             day_id, sale_id = _seed_sale(s, agency_id, user.id, partner.id, doc_base)
-            upload_id, run_id = _seed_comparison(s, agency_id, user.id, day_id, sale_id)
+            upload_id, run_id, flag_id = _seed_comparison(s, agency_id, user.id, day_id, sale_id)
             return Tenant(
                 agency_id, slug, phone, token_hash, user.id, partner.id, day_id, sale_id,
-                run_id, upload_id,
+                run_id, upload_id, flag_id,
             )  # fmt: skip
     finally:
         engine.dispose()
@@ -168,8 +171,9 @@ def _seed_sale(
 
 def _seed_comparison(
     s: Session, agency_id: int, user_id: int, day_id: int, sale_id: int
-) -> tuple[int, int]:
-    """A comparison run of the seeded day on the seeded upload, with one flag."""
+) -> tuple[int, int, int]:
+    """A comparison run of the seeded day on the seeded upload, with one flag, one decision on it
+    and one acknowledgement."""
     upload_id = s.scalars(select(Upload.id).where(Upload.agency_id == agency_id)).first()
     assert upload_id is not None
     run = ComparisonRun(
@@ -186,20 +190,39 @@ def _seed_comparison(
     )
     s.add(run)
     s.commit()
+    flag = ComparisonFlag(
+        agency_id=agency_id,
+        report_day_id=day_id,
+        run_id=run.id,
+        doc_number="3999999999",
+        fingerprint="f" * 16,
+        kind="not_sent",
+        sale_id=sale_id,
+        responsible_sign="0004SV",
+    )
+    s.add(flag)
+    s.commit()
     s.add(
-        ComparisonFlag(
+        FlagDecision(
+            agency_id=agency_id,
+            flag_id=flag.id,
+            stage="agent",
+            choice="acknowledged",
+            actor_user_id=user_id,
+        )
+    )
+    s.add(
+        DayAcknowledgement(
             agency_id=agency_id,
             report_day_id=day_id,
+            kind="partner_list",
             run_id=run.id,
-            doc_number="3999999999",
-            fingerprint="f" * 16,
-            kind="not_sent",
-            sale_id=sale_id,
-            responsible_sign="0004SV",
+            digest="d" * 16,
+            actor_user_id=user_id,
         )
     )
     s.commit()
-    return upload_id, run.id
+    return upload_id, run.id, flag.id
 
 
 def insert_unscoped_audit_event(session: Session, event_type: str = "login_failed") -> None:

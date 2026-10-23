@@ -20,10 +20,10 @@ from datetime import date
 from typing import Any
 
 from fastapi import HTTPException
-from sqlalchemy import select
+from sqlalchemy import literal, select
 from sqlalchemy.orm import Session
 
-from app import accounts, flags, partner_aliases, permissions
+from app import accounts, approvals, flags, partner_aliases, permissions
 from app.models import Agency, User
 from app.repository import awaiting_counts_by_sign, latest_report_date, sign_owners
 from app.web.deps import AuthContext
@@ -39,6 +39,7 @@ ACTIVE_SALES = "sales"
 ACTIVE_DAYS = "days"
 ACTIVE_PROFILE = "profile"
 ACTIVE_FLAGS = "flags"
+ACTIVE_VALIDATE = "validate"
 
 
 @dataclass(frozen=True)
@@ -65,6 +66,8 @@ class Shell:
     latest_day: date | None
     badge: int
     flag_badge: int  # open blocking comparison flags the viewer may see ("Écarts")
+    can_validate: bool  # manager, accountant: the "À valider" screen
+    validate_badge: int  # answers and fee overrides waiting for a validator ("À valider")
     pending_aliases: int  # agency names waiting for a decision (who may manage partners)
     agents: tuple[AgentNav, ...]  # managers only
     owners: Mapping[str, str]  # managers only: sign to person
@@ -117,9 +120,20 @@ def build_shell(db: Session, auth: AuthContext, active: str) -> Shell:
         if sees_all
         else ()
     )
-    pending = (
-        partner_aliases.pending_count(db, agency_id) if permissions.can_manage_partners(user) else 0
-    )
+    # Every sidebar badge in one SELECT (each a scalar subquery; 0 when the role has no badge).
+    visible = None if sees_all else my_signs
+    zero = literal(0)
+    flag_badge, validate_badge, pending = db.execute(
+        select(
+            flags.open_blocking_query(agency_id, visible) if visible is None or visible else zero,
+            approvals.to_validate_query(agency_id)
+            if permissions.can_validate_money(user)
+            else zero,
+            partner_aliases.pending_count_query(agency_id)
+            if permissions.can_manage_partners(user)
+            else zero,
+        )
+    ).one()
     return Shell(
         agency=agency,
         user=user,
@@ -135,8 +149,10 @@ def build_shell(db: Session, auth: AuthContext, active: str) -> Shell:
         active=active,
         latest_day=day,
         badge=sum(counts.values()),
-        flag_badge=flags.open_blocking_count(db, user),
-        pending_aliases=pending,
+        flag_badge=int(flag_badge or 0),
+        can_validate=permissions.can_validate_money(user),
+        validate_badge=int(validate_badge or 0),
+        pending_aliases=int(pending or 0),
         agents=agents,
         owners=owners,
         my_signs=my_signs,

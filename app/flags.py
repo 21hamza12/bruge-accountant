@@ -42,7 +42,7 @@ from collections.abc import Collection
 from dataclasses import dataclass, field, replace
 from datetime import date, datetime
 
-from sqlalchemy import Select, and_, func, select
+from sqlalchemy import ScalarSelect, Select, and_, func, select
 from sqlalchemy.orm import Session
 
 from app import audit, days, permissions, repository, sales
@@ -86,8 +86,11 @@ __all__ = [
     "DaySummary",
     "FlagError",
     "day_summary",
+    "flag_for",
     "flags_for_day",
     "flags_for_me",
+    "is_current",
+    "visible_flag_ids",
     "latest_run",
     "latest_upload_for_day",
     "open_blocking_count",
@@ -432,6 +435,51 @@ def run_comparison(
     return run
 
 
+def is_current(db: Session, actor: User, report_day: ReportDay) -> bool:
+    """True when running the comparison again would change nothing: a run exists on the latest
+    line set, no sale would move, and the flags it would find are exactly the live flags (same
+    ticket, kind, field, both values and ticket facts). Written for the close gate (B9), which
+    must not trust flags made before a sale was edited, voided or moved, or a newer upload. Reads
+    only. A day without a report is not current."""
+    run = latest_run(db, actor, report_day)
+    upload = latest_upload_for_day(db, report_day.agency_id, report_day.day)
+    if run is None or upload is None:
+        return False
+    if run.upload_id != repository.lines_upload_for(db, report_day.agency_id, upload.id):
+        return False
+    try:
+        inputs = _gather(db, report_day, can_move=permissions.can_run_comparison(actor))
+    except FlagError:
+        return False
+    result = _compare(inputs, report_day.day)
+    if result.moves:
+        return False
+    fresh = {
+        (f.doc_number, f.kind.lower(), f.field or "", f.app_value or "", f.amadeus_value or "", p)
+        for f, p in _with_prints(inputs, result.flags)
+    }
+    live = {
+        (
+            r.doc_number,
+            r.kind,
+            r.field or "",
+            r.app_value or "",
+            r.amadeus_value or "",
+            r.fingerprint,
+        )
+        for r in db.scalars(
+            select(ComparisonFlag)
+            .where(
+                ComparisonFlag.agency_id == report_day.agency_id,
+                ComparisonFlag.report_day_id == report_day.id,
+                ComparisonFlag.status.in_(FLAG_LIVE_STATUSES),
+            )
+            .execution_options(populate_existing=True)
+        )
+    }
+    return fresh == live
+
+
 # --- reading ------------------------------------------------------------------------------------
 
 
@@ -468,6 +516,37 @@ def flags_for_day(
     return list(db.scalars(_scoped(query, signs).order_by(ComparisonFlag.id)))
 
 
+def flag_for(db: Session, actor: User, flag_id: int) -> ComparisonFlag | None:
+    """A flag as it stands now (re-read from the database), when it is in the actor's agency and
+    one the actor may see (a staff member's own signs); else None. B9 answers go through this."""
+    row = db.scalars(
+        select(ComparisonFlag)
+        .where(ComparisonFlag.agency_id == actor.agency_id, ComparisonFlag.id == flag_id)
+        .execution_options(populate_existing=True)
+    ).one_or_none()
+    if row is None:
+        return None
+    signs = _visible(db, actor)
+    if signs is not None and row.responsible_sign not in signs:
+        return None
+    return row
+
+
+def visible_flag_ids(db: Session, actor: User, flag_ids: Collection[int]) -> set[int]:
+    """Which of these flags the actor may see (in the actor's agency, and for staff on their own
+    signs), in one query."""
+    wanted = list(dict.fromkeys(flag_ids))
+    signs = _visible(db, actor)
+    if not wanted or (signs is not None and not signs):
+        return set()
+    query = select(ComparisonFlag.id).where(
+        ComparisonFlag.agency_id == actor.agency_id, ComparisonFlag.id.in_(wanted)
+    )
+    if signs is not None:
+        query = query.where(ComparisonFlag.responsible_sign.in_(signs))
+    return set(db.scalars(query))
+
+
 def flags_for_me(db: Session, actor: User) -> list[ComparisonFlag]:
     """The flags still waiting for somebody (open or answered), on any day, that the actor may
     see: a staff member's own signs, everything for manager and accountant."""
@@ -483,23 +562,29 @@ def flags_for_me(db: Session, actor: User) -> list[ComparisonFlag]:
     )
 
 
-def open_blocking_count(db: Session, actor: User) -> int:
-    """How many open blocking flags the actor may see (the sidebar badge)."""
-    signs = _visible(db, actor)
-    if signs is not None and not signs:
-        return 0
+def open_blocking_query(agency_id: int, signs: Collection[str] | None) -> ScalarSelect[int]:
+    """COUNT of open blocking flags of an agency, limited to ``signs`` unless None (as a scalar
+    subquery, so the page shell can fetch every sidebar badge in one SELECT)."""
     query = (
         select(func.count())
         .select_from(ComparisonFlag)
         .where(
-            ComparisonFlag.agency_id == actor.agency_id,
+            ComparisonFlag.agency_id == agency_id,
             ComparisonFlag.status == FLAG_OPEN,
             ComparisonFlag.blocking.is_(True),
         )
     )
     if signs is not None:
-        query = query.where(ComparisonFlag.responsible_sign.in_(signs))
-    return db.scalar(query) or 0
+        query = query.where(ComparisonFlag.responsible_sign.in_([norm_sign(s) for s in signs]))
+    return query.scalar_subquery()
+
+
+def open_blocking_count(db: Session, actor: User) -> int:
+    """How many open blocking flags the actor may see (the sidebar badge)."""
+    signs = _visible(db, actor)
+    if signs is not None and not signs:
+        return 0
+    return int(db.scalar(select(open_blocking_query(actor.agency_id, signs))) or 0)
 
 
 def latest_run(db: Session, actor: User, day: ReportDay) -> ComparisonRun | None:

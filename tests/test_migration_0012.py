@@ -113,12 +113,13 @@ def _tables(url: str) -> set[str]:
 # --- chain and shape ------------------------------------------------------------------------
 
 
-def test_0012_follows_0011_and_is_the_single_head() -> None:
+def test_0012_follows_0011() -> None:
     script = ScriptDirectory.from_config(alembic_config("sqlite://"))
     revision = script.get_revision("0012")
     assert revision is not None
     assert revision.down_revision == "0011"
-    assert script.get_heads() == ["0012"]
+    successor = script.get_revision("0013")
+    assert successor is not None and successor.down_revision == "0012"
 
 
 def test_grants_are_append_only() -> None:

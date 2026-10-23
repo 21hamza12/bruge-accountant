@@ -1,0 +1,120 @@
+{% extends "base.html" %}
+{% block title %}{{ _("À valider") }}{% endblock %}
+{% block content %}
+{% if error %}<p class="error-box" id="form-error" role="alert" tabindex="-1" autofocus>{{ error }}</p>{% endif %}
+<p class="muted">{{ _("Réponses d'agents sur un coût, un numéro ou un type de billet, et frais exceptionnels de partenaires. Vous ne pouvez pas valider votre propre réponse.") }}</p>
+
+{% if not flag_items and not override_items %}
+<section class="card">
+  <p class="muted">{{ _("Rien à valider.") }}</p>
+</section>
+{% endif %}
+
+{% if flag_items %}
+<section class="card" aria-labelledby="answers-title">
+  <h2 class="card-title" id="answers-title">{{ _("Réponses à valider") }}</h2>
+  <div class="table-wrap" tabindex="0" role="region" aria-label="{{ _('Réponses à valider (défilement horizontal)') }}">
+    <table class="table">
+      <caption class="visually-hidden">{{ _("Réponses d'agents en attente de validation") }}</caption>
+      <thead>
+        <tr>
+          <th scope="col">{{ _("Jour") }}</th>
+          <th scope="col">{{ _("Billet") }}</th>
+          <th scope="col">{{ _("Champ") }}</th>
+          <th scope="col">{{ _("Application") }}</th>
+          <th scope="col">{{ _("Amadeus") }}</th>
+          <th scope="col">{{ _("Réponse de l'agent") }}</th>
+          <th scope="col">{{ _("Décision") }}</th>
+        </tr>
+      </thead>
+      <tbody>
+      {% for item in flag_items %}
+        <tr>
+          <td>{{ item.day | date_fr }}</td>
+          <td class="mono">{{ item.row.doc_number }}</td>
+          <td>{{ item.row.field or "—" }}</td>
+          <td class="num">{{ item.row.app_value }}</td>
+          <td class="num">{{ item.row.amadeus_value }}</td>
+          <td>{{ item.answer }}{% if item.reason %}<br><span class="muted">{{ _("Motif") }} : {{ item.reason }}</span>{% endif %}<br><span class="muted">{{ item.by }}</span></td>
+          <td>
+            {% if item.own %}<p class="muted">{{ _("Votre réponse : un autre validateur doit la valider.") }}</p>{% endif %}
+            <form class="inline-form" method="post" action="/flags/{{ item.row.id }}/validate">
+              {% include "_csrf.html" %}
+              <input type="hidden" name="decision" value="approve">
+              <button class="btn btn-primary" type="submit"{% if item.own %} disabled{% endif %}>{{ _("Approuver") }}</button>
+            </form>
+            <details>
+              <summary class="btn">{{ _("Rejeter") }}</summary>
+              <form class="form" method="post" action="/flags/{{ item.row.id }}/validate">
+                {% include "_csrf.html" %}
+                <input type="hidden" name="decision" value="reject">
+                <div class="field">
+                  <label for="reject-{{ item.row.id }}">{{ _("Motif (5 caractères au moins)") }}</label>
+                  <input id="reject-{{ item.row.id }}" name="reason" type="text" required minlength="5" maxlength="500" autocomplete="off">
+                </div>
+                <button class="btn" type="submit"{% if item.own %} disabled{% endif %}>{{ _("Rejeter la réponse") }}</button>
+              </form>
+            </details>
+          </td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+{% endif %}
+
+{% if override_items %}
+<section class="card" aria-labelledby="overrides-title">
+  <h2 class="card-title" id="overrides-title">{{ _("Frais exceptionnels de partenaires") }}</h2>
+  <div class="table-wrap" tabindex="0" role="region" aria-label="{{ _('Frais exceptionnels (défilement horizontal)') }}">
+    <table class="table">
+      <caption class="visually-hidden">{{ _("Frais de partenaire saisis à la main, à valider") }}</caption>
+      <thead>
+        <tr>
+          <th scope="col">{{ _("Jour") }}</th>
+          <th scope="col">{{ _("Vente") }}</th>
+          <th scope="col">{{ _("Signe") }}</th>
+          <th scope="col" class="col-end">{{ _("Frais appliqués") }}</th>
+          <th scope="col">{{ _("Motif") }}</th>
+          <th scope="col">{{ _("Saisi par") }}</th>
+          <th scope="col">{{ _("Décision") }}</th>
+        </tr>
+      </thead>
+      <tbody>
+      {% for item in override_items %}
+        <tr>
+          <td>{{ item.sale.day | date_fr }}</td>
+          <td><a href="/sales/{{ item.sale.id }}">{{ _("Vente #%(id)s", id=item.sale.id) }}</a></td>
+          <td class="mono">{{ item.sale.staff_sign }}</td>
+          <td class="num col-end">{{ item.sale.fee_applied | money_fr }} {{ agency.currency }}</td>
+          <td>{{ item.sale.fee_override_reason }}</td>
+          <td>{{ item.by }}</td>
+          <td>
+            {% if item.own %}<p class="muted">{{ _("Vous avez saisi ces frais : un autre validateur doit les valider.") }}</p>{% endif %}
+            <form class="inline-form" method="post" action="/flags/overrides/{{ item.sale.id }}/validate">
+              {% include "_csrf.html" %}
+              <input type="hidden" name="decision" value="approve">
+              <button class="btn btn-primary" type="submit"{% if item.own %} disabled{% endif %}>{{ _("Approuver") }}</button>
+            </form>
+            <details>
+              <summary class="btn">{{ _("Rejeter") }}</summary>
+              <form class="form" method="post" action="/flags/overrides/{{ item.sale.id }}/validate">
+                {% include "_csrf.html" %}
+                <input type="hidden" name="decision" value="reject">
+                <div class="field">
+                  <label for="reject-sale-{{ item.sale.id }}">{{ _("Motif (5 caractères au moins)") }}</label>
+                  <input id="reject-sale-{{ item.sale.id }}" name="reason" type="text" required minlength="5" maxlength="500" autocomplete="off">
+                </div>
+                <button class="btn" type="submit">{{ _("Rejeter et remettre les frais standard") }}</button>
+              </form>
+            </details>
+          </td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+{% endif %}
+{% endblock %}

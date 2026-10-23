@@ -390,6 +390,7 @@ def test_staff_only_learn_that_a_report_was_received(env: Env) -> None:
         assert leaked not in text_of(r.text), leaked
 
 
+@pytest.mark.usefixtures("gate_open")
 def test_staff_do_not_see_the_history_of_the_day_only_the_closing_date(env: Env) -> None:
     fill_day(env)
     acc = accountant(env)
@@ -559,6 +560,7 @@ def test_staff_cannot_close_or_reopen_and_it_is_audited(env: Env) -> None:
     assert {r.status for r in table(env, ReportDay)} == {"open"}
 
 
+@pytest.mark.usefixtures("gate_open")
 def test_the_accountant_closes_then_the_manager_reopens_with_a_reason(env: Env) -> None:
     fill_day(env)
     acc = accountant(env)
@@ -594,6 +596,7 @@ def test_the_accountant_closes_then_the_manager_reopens_with_a_reason(env: Env) 
     assert "erreur de saisie" in history
 
 
+@pytest.mark.usefixtures("gate_open")
 def test_reopening_without_a_real_reason_is_a_french_error_and_changes_nothing(env: Env) -> None:
     fill_day(env)
     acc = accountant(env)
@@ -668,7 +671,7 @@ def test_every_post_route_of_the_day_pages_has_csrf_on_its_router() -> None:
         for r in days.router.routes
         if isinstance(r, APIRoute) and "POST" in (r.methods or ())
     }
-    assert posts == {"/days/{day}/close", "/days/{day}/reopen"}
+    assert posts == {"/days/{day}/close", "/days/{day}/reopen", "/days/{day}/partner-list"}
     assert any(d.dependency is csrf_protect for d in days.router.dependencies)
 
 
@@ -678,6 +681,7 @@ def test_every_post_route_of_the_day_pages_has_csrf_on_its_router() -> None:
 NASTY = '<script>alert(1)</script>"><img src=x onerror=alert(2)>'
 
 
+@pytest.mark.usefixtures("gate_open")
 def test_names_and_reasons_are_escaped(env: Env) -> None:
     m = env.manager_a()
     enter(m, tk(D1, pax_name="<b>X</b>"), staff_sign=SIGN, day=TODAY, clt=NASTY)
@@ -709,6 +713,7 @@ def test_pages_are_never_cached_and_have_no_inline_style_or_script(env: Env, pat
     assert '<html lang="fr"' in html and "content-security-policy" in r.headers
 
 
+@pytest.mark.usefixtures("gate_open")
 def test_the_reopen_page_and_post_answers_are_not_cached(env: Env) -> None:
     fill_day(env)
     m = env.manager_a()
@@ -754,6 +759,7 @@ def test_the_day_page_is_linked_from_the_dashboard_and_from_the_sales_list(env: 
 # --- rate limit ---------------------------------------------------------------------------------
 
 
+@pytest.mark.usefixtures("gate_open")
 def test_closing_and_reopening_share_a_per_user_limit(
     env: Env, monkeypatch: pytest.MonkeyPatch
 ) -> None:

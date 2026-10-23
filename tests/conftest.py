@@ -7,6 +7,7 @@ from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
+from unittest.mock import create_autospec
 
 import pytest
 from alembic import command
@@ -319,3 +320,13 @@ def make_app() -> Iterator[Callable[..., FastAPI]]:
     yield factory
     for app in built:
         app.state.engine.dispose()
+
+
+@pytest.fixture
+def gate_open(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Opt in: the close gate (B9) says "nothing blocks". For tests about closing, reopening or
+    exporting a day that has no Amadeus report; the gate itself is tested for real in
+    tests/test_close_gate.py and tests/test_approval_pages.py."""
+    from app.approvals import gate
+
+    monkeypatch.setattr(gate, "can_close", create_autospec(gate.can_close, return_value=[]))

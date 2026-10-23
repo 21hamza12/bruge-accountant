@@ -725,6 +725,14 @@ def test_0009_downgrade_widens_the_rule_and_upgrade_tightens_it_again(db_url: st
     migrate(db_url)
     cfg = alembic_config(db_url)
     command.downgrade(cfg, "0008")
+    # the models know the column 0013 added (it is gone after the downgrade): put it back so that
+    # the ORM can write the world; the upgrade below stops at 0009, before 0013 would add it again
+    engine = create_engine(db_url)
+    try:
+        with engine.begin() as conn:
+            conn.execute(text("ALTER TABLE sale_versions ADD COLUMN override_digest VARCHAR(16)"))
+    finally:
+        engine.dispose()
     w = _world(db_url)
     # 8 to 15 digits are valid again under 0008
     _add(

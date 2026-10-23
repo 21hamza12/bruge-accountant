@@ -719,6 +719,10 @@ class SaleVersion(Base):
     partner_fee_id: Mapped[int | None] = mapped_column(BigIntType)
     fee_applied: Mapped[Decimal | None] = mapped_column(Numeric(14, 2))
     fee_override_reason: Mapped[str | None] = mapped_column(Text)
+    # A short hash of what a validator approves on a one-off fee (partner, fee, reason and the
+    # tickets with their costs); NULL for a version without an override and for versions written
+    # before migration 0013. ``sales_rules.override_digest`` makes it.
+    override_digest: Mapped[str | None] = mapped_column(String(16))
     pb: Mapped[Decimal] = mapped_column(Numeric(14, 2))
     cost_total: Mapped[Decimal] = mapped_column(Numeric(14, 2))
     clt: Mapped[str | None] = mapped_column(Text)
@@ -977,6 +981,134 @@ class DayExport(Base):
     content: Mapped[bytes] = mapped_column(LargeBinary)
     sha256: Mapped[str] = mapped_column(String(64))
     created_by_user_id: Mapped[int] = mapped_column(BigIntType)
+    created_at: Mapped[datetime] = mapped_column(
+        UTCDateTime, default=_now, server_default=func.now()
+    )
+
+
+# --- Phase B9: answering flags and the close gate (migration 0013) -------------------------------
+
+STAGE_AGENT = "agent"
+STAGE_VALIDATOR = "validator"
+DECISION_STAGES = (STAGE_AGENT, STAGE_VALIDATOR)
+CHOICE_AMADEUS_RIGHT = "amadeus_right"
+CHOICE_MINE_RIGHT = "mine_right"
+CHOICE_VOID_ENTRY = "void_entry"
+CHOICE_ACKNOWLEDGED = "acknowledged"  # the agent keeps the entry and waits for a later report
+CHOICE_VALIDATED = "validated"
+CHOICE_REJECTED = "rejected"
+AGENT_CHOICES = (CHOICE_AMADEUS_RIGHT, CHOICE_MINE_RIGHT, CHOICE_VOID_ENTRY, CHOICE_ACKNOWLEDGED)
+VALIDATOR_CHOICES = (CHOICE_VALIDATED, CHOICE_REJECTED)
+DECISION_CHOICES = (*AGENT_CHOICES, *VALIDATOR_CHOICES)
+REASON_REQUIRED_CHOICES = (CHOICE_MINE_RIGHT, CHOICE_REJECTED, CHOICE_VOID_ENTRY)
+ACK_PARTNER_LIST = "partner_list"
+ACK_OVERRIDE = "override"
+ACK_KINDS = (ACK_PARTNER_LIST, ACK_OVERRIDE)
+
+
+class FlagDecision(Base):
+    """Append-only: one answer of an agent or one decision of a validator on a flag (who, when,
+    why, the old and the new value). Nothing is ever updated or deleted; the flag's own status
+    says where it stands now. A reason of 5 characters or more is required for ``mine_right``,
+    ``rejected`` and ``void_entry``."""
+
+    __tablename__ = "flag_decisions"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["agency_id", "flag_id"],
+            ["comparison_flags.agency_id", "comparison_flags.id"],
+            name="fk_flag_decisions_agency_flag",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["agency_id", "actor_user_id"],
+            ["users.agency_id", "users.id"],
+            name="fk_flag_decisions_agency_actor",
+            ondelete="RESTRICT",
+        ),
+        CheckConstraint(_in_list("stage", DECISION_STAGES), name="stage"),
+        CheckConstraint(_in_list("choice", DECISION_CHOICES), name="choice"),
+        CheckConstraint(
+            f"(stage = 'agent') = ({_in_list('choice', AGENT_CHOICES)})",
+            name="stage_matches_choice",
+        ),
+        CheckConstraint(
+            f"NOT ({_in_list('choice', REASON_REQUIRED_CHOICES)}) OR "
+            f"(reason IS NOT NULL AND length(trim(reason)) >= {MIN_REASON_LENGTH})",
+            name="reason_required",
+        ),
+        Index("ix_flag_decisions_agency_flag", "agency_id", "flag_id", "id"),
+        Index("ix_flag_decisions_agency_actor", "agency_id", "actor_user_id"),
+    )
+
+    id: Mapped[int] = mapped_column(BigIntType, primary_key=True)
+    agency_id: Mapped[int] = mapped_column(ForeignKey("agencies.id", ondelete="RESTRICT"))
+    flag_id: Mapped[int] = mapped_column(BigIntType)
+    stage: Mapped[str] = mapped_column(String(16))
+    choice: Mapped[str] = mapped_column(String(16))
+    reason: Mapped[str | None] = mapped_column(Text)
+    old_value: Mapped[str | None] = mapped_column(Text)
+    new_value: Mapped[str | None] = mapped_column(Text)
+    # The version of the sale the agent looked at: a validator applies the answer only to that one.
+    sale_version_no: Mapped[int | None] = mapped_column(Integer)
+    actor_user_id: Mapped[int] = mapped_column(BigIntType)
+    created_at: Mapped[datetime] = mapped_column(
+        UTCDateTime, default=_now, server_default=func.now()
+    )
+
+
+class DayAcknowledgement(Base):
+    """Append-only: somebody with the right to validate money has seen something that cannot be
+    settled by a flag. ``partner_list``: the partner tickets that are not in the Amadeus report
+    (``digest`` identifies the list seen, ``run_id`` the run that produced it). ``override``: a
+    one-off partner fee was approved (``sale_id`` and ``version_no`` of the sale as seen, and a
+    ``digest`` of the fee and its reason, so an edit that keeps the same fee stays approved)."""
+
+    __tablename__ = "day_acknowledgements"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["agency_id", "report_day_id"],
+            ["report_days.agency_id", "report_days.id"],
+            name="fk_day_acknowledgements_agency_report_day",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["agency_id", "run_id"],
+            ["comparison_runs.agency_id", "comparison_runs.id"],
+            name="fk_day_acknowledgements_agency_run",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["agency_id", "sale_id"],
+            ["sales.agency_id", "sales.id"],
+            name="fk_day_acknowledgements_agency_sale",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["agency_id", "actor_user_id"],
+            ["users.agency_id", "users.id"],
+            name="fk_day_acknowledgements_agency_actor",
+            ondelete="RESTRICT",
+        ),
+        CheckConstraint(_in_list("kind", ACK_KINDS), name="kind"),
+        CheckConstraint("(kind = 'override') = (sale_id IS NOT NULL)", name="sale_iff_override"),
+        CheckConstraint("(sale_id IS NULL) = (version_no IS NULL)", name="version_with_sale"),
+        CheckConstraint("(kind = 'partner_list') = (run_id IS NOT NULL)", name="run_iff_list"),
+        Index("ix_day_acknowledgements_agency_day", "agency_id", "report_day_id", "kind", "id"),
+        Index("ix_day_acknowledgements_agency_sale", "agency_id", "sale_id"),
+        Index("ix_day_acknowledgements_agency_run", "agency_id", "run_id"),
+        Index("ix_day_acknowledgements_agency_actor", "agency_id", "actor_user_id"),
+    )
+
+    id: Mapped[int] = mapped_column(BigIntType, primary_key=True)
+    agency_id: Mapped[int] = mapped_column(ForeignKey("agencies.id", ondelete="RESTRICT"))
+    report_day_id: Mapped[int] = mapped_column(BigIntType)
+    kind: Mapped[str] = mapped_column(String(16))
+    run_id: Mapped[int | None] = mapped_column(BigIntType)
+    sale_id: Mapped[int | None] = mapped_column(BigIntType)
+    version_no: Mapped[int | None] = mapped_column(Integer)
+    digest: Mapped[str] = mapped_column(String(16))
+    actor_user_id: Mapped[int] = mapped_column(BigIntType)
     created_at: Mapped[datetime] = mapped_column(
         UTCDateTime, default=_now, server_default=func.now()
     )

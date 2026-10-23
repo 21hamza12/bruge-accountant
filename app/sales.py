@@ -25,9 +25,8 @@ callers import everything from ``app.sales``.
   Removing a ticket, or voiding the sale, deletes its row: the number is free again.
 * **Fee overrides** (an owner policy: staff may override, but every override is visible): the
   audit events carry ``fee_applied`` and ``fee_override``; ``overrides_for_day`` lists the active
-  sales whose current version is an override. B9 will route them to accountant/manager
-  validation; nothing else is needed in the schema for that (``sale_versions.fee_override_reason``
-  is the marker).
+  sales whose current version is an override. B9 routes them to accountant/manager
+  validation (``app/approvals.py``; the approval itself is a ``day_acknowledgements`` row).
 * **Audit** events (ids and amounts only, never a name, phone or reason): ``sale_created``,
   ``sale_edited``, ``sale_voided``, ``sale_moved``; a refused attempt is ``permission_denied``
   with the action name only.
@@ -56,6 +55,7 @@ from app.clock import utc_now
 from app.errors import UserError
 from app.models import (
     AG_PARTNER,
+    DAY_CLOSED,
     SALE_ACTIVE,
     SALE_SOURCES,
     SALE_VOIDED,
@@ -83,6 +83,7 @@ from app.sales_rules import (
     below_cost_warning,
     day_totals,
     lines_from_json,
+    override_digest,
     pb_per_line,
     sale_cost,
     sale_profit,
@@ -124,6 +125,7 @@ __all__ = [
     "get_sale_for",
     "move_sale_day",
     "overrides_for_day",
+    "overrides_on_open_days",
     "pb_per_line",
     "preview_sale",
     "sale_cost",
@@ -360,6 +362,7 @@ def _view(head: Sale, version: SaleVersion, day: date) -> SaleView:
         partner_fee_id=version.partner_fee_id,
         fee_applied=version.fee_applied,
         fee_override_reason=version.fee_override_reason,
+        override_digest=version.override_digest,
         pb=version.pb,
         cost_total=version.cost_total,
         clt=version.clt,
@@ -505,6 +508,22 @@ def overrides_for_day(db: Session, actor: User, day: date) -> list[SaleView]:
     """The active sales of a day, within the actor's scope, whose current version carries a
     one-off fee (the queue B9 routes to accountant/manager validation)."""
     return [s for s in sales_for_day_for(db, actor, day) if s.fee_override_reason is not None]
+
+
+def overrides_on_open_days(db: Session, agency_id: int) -> list[SaleView]:
+    """The active sales of the agency, on days not closed, whose current version carries a
+    one-off fee (the validators' queue across days, B9). No sign filter: for manager and
+    accountant only, so the caller checks the role."""
+    query = (
+        _current(agency_id)
+        .where(
+            Sale.status == SALE_ACTIVE,
+            SaleVersion.fee_override_reason.is_not(None),
+            ReportDay.status != DAY_CLOSED,
+        )
+        .order_by(Sale.id)
+    )
+    return [_view(head, version, day) for head, version, day in db.execute(query)]
 
 
 _LOOKUP_CHUNK = 500
@@ -669,12 +688,13 @@ def _fresh_sale(db: Session, actor: User, sale_id: int, *, lock: bool) -> Sale:
 
 
 def _access(
-    db: Session, actor: User, sale_id: int, today: date, *, lock: bool
+    db: Session, actor: User, sale_id: int, today: date, *, lock: bool, any_day: bool = False
 ) -> tuple[Sale, ReportDay]:
     """The one place that decides whether the actor may work on an existing sale: it exists in
     the actor's agency and (for staff) is one of their signs; the day is today for staff; the day
     is not closed; the sale is not voided. With ``lock`` the locks are taken day first, then the
-    sale, and everything is re-read under them. Used by edit, void and preview alike."""
+    sale, and everything is re-read under them. Used by edit, void and preview alike. ``any_day``
+    (approvals only, see ``edit_sale``) lifts the "staff: today only" rule, nothing else."""
     scope = _scope(actor)
     head = _fresh_sale(db, actor, sale_id, lock=False)
     report_day = db.scalars(
@@ -682,7 +702,8 @@ def _access(
         .where(ReportDay.agency_id == head.agency_id, ReportDay.id == head.report_day_id)
         .execution_options(populate_existing=True)
     ).one()
-    _check_staff_day(scope, report_day.day, today)
+    if not any_day:
+        _check_staff_day(scope, report_day.day, today)
     if lock:
         days.lock_day(db, actor, report_day, shared=True)
         head = _fresh_sale(db, actor, sale_id, lock=True)
@@ -765,6 +786,13 @@ def _new_version(
         partner_fee_id=sale.partner_fee_id,
         fee_applied=sale.fee_applied,
         fee_override_reason=sale.fee_override_reason,
+        override_digest=(
+            None
+            if voided
+            else override_digest(
+                sale.partner_id, sale.fee_applied, sale.fee_override_reason, sale.tickets
+            )
+        ),
         pb=sale.pb,
         cost_total=sale.cost_total,
         clt=sale.clt,
@@ -985,17 +1013,20 @@ def edit_sale(
     ip: str | None = None,
     source: str = "form",
     expected_version: int | None = None,
+    any_day: bool = False,
 ) -> SaleResult:
     """Replace the content of a sale (tickets, price, client, payment...) with a new version.
 
     Manager and accountant must give a ``reason``; staff, editing their own sale of today, need
     not. The day stays (``move_sale_day`` changes it). ``SaleError`` when nothing changed, the
     sale is voided, or it changed under us ("rechargez"). ``expected_version`` is the version the
-    form was built on: when the sale has moved on, the edit is refused as stale.
+    form was built on: when the sale has moved on, the edit is refused as stale. ``any_day`` lets
+    a staff member correct their own sale of a past day; ONLY ``app/approvals.py`` passes it, when
+    the staff member answers a comparison flag on that sale (never from a form or a route).
     """
     _check_source(source)
     moment = now or utc_now()
-    head, report_day = _access(db, actor, sale_id, moment.date(), lock=True)
+    head, report_day = _access(db, actor, sale_id, moment.date(), lock=True, any_day=any_day)
     _check_expected(head, expected_version)
     scope = _scope(actor)
     clean = _reason_for_edit(scope, reason)

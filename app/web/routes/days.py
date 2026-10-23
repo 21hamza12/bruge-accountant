@@ -9,6 +9,11 @@ see everything; closing needs ``can_close_day`` (manager, accountant) and reopen
 audit event for anybody else. A date without a page (malformed, in the future, over 5 years back)
 is a 400 with a French message; a day nobody wrote to yet is an empty page, not an error.
 The comparison with the Amadeus report is B8: here an upload is only "received" or "not received".
+
+B9: closing goes through ``approvals.close_day`` (the close gate). A blocked close is a 409 whose
+page lists what blocks (a read-only preview ``approvals.gate_status`` also shows it before anybody
+tries). The comparison may be run again by the gate, so a blocked close still commits. Whoever may
+validate money records "J'ai vu la liste" for the partner tickets that are not in the report.
 """
 
 from __future__ import annotations
@@ -21,7 +26,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy.orm import Session
 from starlette.responses import RedirectResponse, Response
 
-from app import audit, day_page, days, export_apres, flags, permissions, reasons, sales
+from app import approvals, audit, day_page, days, export_apres, flags, permissions, reasons, sales
 from app.auth import ratelimit
 from app.clock import Clock
 from app.models import DAY_CLOSED, ReportDay
@@ -46,6 +51,8 @@ VERSION = re.compile(r"[0-9]{1,6}")  # ASCII digits only
 
 Viewer = Annotated[AuthContext, Depends(require_permission(permissions.can_use_sales_screens))]
 Closer = Annotated[AuthContext, Depends(require_permission(permissions.can_close_day))]
+Validator = Annotated[AuthContext, Depends(require_permission(permissions.can_validate_money))]
+BLOCKED = "La journée ne peut pas être clôturée."
 Exporter = Annotated[AuthContext, Depends(require_permission(permissions.can_export_day))]
 Reopener = Annotated[AuthContext, Depends(require_permission(permissions.can_reopen_day))]
 
@@ -123,7 +130,15 @@ def day_view(
     if upload is not None and upload.upload.uploaded_by_user_id is not None:
         uploader = names.get(upload.upload.uploaded_by_user_id)
     # The comparison with the Amadeus report (B8): the numbers this viewer may see.
-    counts = flags.day_summary(db, user, report_day).counts if report_day else None
+    summary = flags.day_summary(db, user, report_day) if report_day else None
+    counts = summary.counts if summary else None
+    # The close gate (B9), read-only: what would stop a closer today.
+    can_close = report_day is not None and not closed and permissions.can_close_day(user)
+    gate = (
+        approvals.gate_status(db, user, report_day, partner_tickets=summary.partner_not_in_report)
+        if can_close and report_day and summary
+        else None
+    )
     return page(
         "days/show.html",
         status_code=status_code,
@@ -145,7 +160,11 @@ def day_view(
         events=[{"e": e, "actor": names.get(e.actor_user_id)} for e in events],
         upload=upload,
         uploader=uploader,
-        can_close=report_day is not None and not closed and permissions.can_close_day(user),
+        can_close=can_close,
+        gate=gate,
+        can_acknowledge=gate is not None
+        and approvals.GATE_LIST in gate.reasons
+        and permissions.can_validate_money(user),
         can_reopen=closed and permissions.can_reopen_day(user),
         exports=exports,
         can_preview=exportable and not closed and upload is not None,
@@ -189,6 +208,7 @@ def day_confirm_close(day: str, db: Db, clock: Now, auth: Closer) -> Response:
         **shell_context(db, auth, ACTIVE_DAYS),
         day=chosen,
         totals=sales.day_totals(views),
+        gate=approvals.gate_status(db, auth.user, report_day, check_stale=True),
     )
 
 
@@ -200,15 +220,50 @@ def day_close(day: str, request: Request, db: Db, clock: Now, auth: Closer) -> R
         return _error_page(db, auth, problem)
     report_day = _existing(db, auth, chosen)
     try:
-        # Closes the day and stores its TJQ APRES (none without an Amadeus report) in one
-        # transaction; B9's close preconditions go inside ``close_day_with_export``.
+        # The close gate (``approvals``) runs inside ``close_day_with_export``, then the day is
+        # closed and its TJQ APRES stored (none without an Amadeus report), in one transaction.
         export_apres.close_day_with_export(
             db, auth.user, report_day, now=clock(), ip=client_ip(request)
+        )
+        db.commit()
+    except approvals.CloseBlocked as blocked:
+        db.commit()  # the gate may have run the comparison again: keep that
+        reasons = "; ".join(blocked.reasons)
+        return day_view(db, auth, chosen, error=f"{BLOCKED} {reasons}", status_code=409)
+    except days.DayError as exc:
+        db.rollback()
+        return day_view(db, auth, chosen, error=str(exc), status_code=409)
+    return RedirectResponse(f"/days/{chosen.isoformat()}", status_code=303)
+
+
+@router.post("/{day}/partner-list")
+def day_partner_list(
+    day: str, request: Request, db: Db, clock: Now, auth: Validator, posted: Posted
+) -> Response:
+    """ "J'ai vu la liste": the partner tickets that are not in the report were looked at."""
+    throttle(db, request, auth, clock, write=True)
+    chosen, problem = _day_or_error(day, clock)
+    if chosen is None:
+        return _error_page(db, auth, problem)
+    report_day = _existing(db, auth, chosen)
+    try:
+        raw = posted.get("digest")
+        approvals.acknowledge_partner_list(
+            db,
+            auth.user,
+            report_day,
+            seen_digest=raw if isinstance(raw, str) else "",
+            now=clock(),
+            ip=client_ip(request),
         )
         db.commit()
     except days.DayError as exc:
         db.rollback()
         return day_view(db, auth, chosen, error=str(exc), status_code=409)
+    except approvals.ApprovalError as exc:
+        db.rollback()
+        refused = isinstance(exc, approvals.ApprovalForbidden)
+        return day_view(db, auth, chosen, error=str(exc), status_code=403 if refused else 400)
     return RedirectResponse(f"/days/{chosen.isoformat()}", status_code=303)
 
 

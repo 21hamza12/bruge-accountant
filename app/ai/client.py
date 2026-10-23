@@ -11,7 +11,10 @@ from __future__ import annotations
 
 import base64
 import logging
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
+from types import ModuleType
 from typing import Any, Protocol
 
 log = logging.getLogger(__name__)
@@ -50,6 +53,25 @@ class AiUnavailable(Exception):
         self.kind = kind
 
 
+@contextmanager
+def map_errors(anthropic: ModuleType) -> Iterator[None]:
+    """Run an SDK call; any SDK error leaves as an ``AiUnavailable`` with a kind and no message
+    (the SDK's message can quote the request or the response)."""
+    try:
+        yield
+    except anthropic.APITimeoutError:
+        raise AiUnavailable("timeout") from None
+    except anthropic.APIConnectionError:
+        raise AiUnavailable("connection") from None
+    except anthropic.RateLimitError:
+        raise AiUnavailable("rate_limit") from None
+    except anthropic.AuthenticationError:
+        raise AiUnavailable("auth") from None
+    except anthropic.APIStatusError as exc:
+        log.warning("ai call failed", extra={"status": exc.status_code})  # never the body
+        raise AiUnavailable("server" if exc.status_code >= 500 else "request") from None
+
+
 class TranscribeClient(Protocol):
     def transcribe(self, image_bytes: bytes, media_type: str, model: str) -> Transcription:
         """The text of the image. Raises ``AiUnavailable``."""
@@ -84,21 +106,10 @@ class AnthropicTranscriber:
                 ],
             }
         ]
-        try:
+        with map_errors(anthropic):
             response = self._client.messages.create(
                 model=model, max_tokens=MAX_OUTPUT_TOKENS, messages=messages
             )
-        except anthropic.APITimeoutError:
-            raise AiUnavailable("timeout") from None
-        except anthropic.APIConnectionError:
-            raise AiUnavailable("connection") from None
-        except anthropic.RateLimitError:
-            raise AiUnavailable("rate_limit") from None
-        except anthropic.AuthenticationError:
-            raise AiUnavailable("auth") from None
-        except anthropic.APIStatusError as exc:
-            log.warning("ai call failed", extra={"status": exc.status_code})  # never the body
-            raise AiUnavailable("server" if exc.status_code >= 500 else "request") from None
         text = "".join(
             block.text for block in response.content if isinstance(block, anthropic.types.TextBlock)
         )

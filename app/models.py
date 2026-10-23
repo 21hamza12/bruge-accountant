@@ -1116,7 +1116,7 @@ class DayAcknowledgement(Base):
 
 # --- Phase D: AI usage and the agency's AI settings (migration 0014) -------------------------
 
-AI_PURPOSES = ("screenshot",)
+AI_PURPOSES = ("screenshot", "chat")
 AI_OUTCOMES = ("ok", "fallback", "error", "refused_budget")
 
 

@@ -8,7 +8,8 @@ second call is refused or fails, the first transcript is kept). The pages are jo
 they were sent.
 
 Every call is preceded by the budget check and followed by a row in ``ai_usage`` (committed at
-once: money spent is logged even when a later page fails). Images and transcripts live in
+once: money spent is logged even when a later page fails; see ``app.ai.calls``). Images and
+transcripts live in
 variables of this function only: nothing is stored, logged or audited, and they are dropped when
 it returns. A call that timed out is recorded at the estimated cost (it may have been billed); any
 other failure costs 0. A usage row that cannot be committed after a paid call is logged as an error
@@ -22,11 +23,11 @@ import logging
 from dataclasses import dataclass
 from datetime import datetime
 
-from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from app.ai import budget, fallback, pricing
-from app.ai.client import AiUnavailable, TranscribeClient, Transcription
+from app.ai.calls import BudgetRefused, Caller, CallFailed, Usage
+from app.ai.client import TranscribeClient, Transcription
 from app.ai.images import ImageRejected, prepare_image
 from app.models import User
 from app.parsing.pnr import parse_pnr_text
@@ -61,7 +62,7 @@ class ScreenshotRead:
 
 
 class _Caller:
-    """One submit's calls: the budget check before, the usage row after."""
+    """One submit's calls: the shared check-call-record (``app.ai.calls``), in screenshot words."""
 
     def __init__(
         self,
@@ -71,57 +72,28 @@ class _Caller:
         user: User,
         now: datetime,
     ) -> None:
-        self.db, self.client, self.settings, self.user, self.now = db, client, settings, user, now
-        self.agency_id = user.agency_id
+        self.client = client
+        self.calls = Caller(
+            db,
+            user,
+            now,
+            default_budget_usd=settings.ai_monthly_budget_usd,
+            purpose=budget.PURPOSE_SCREENSHOT,
+            estimate=pricing.estimate_micro_usd,
+        )
 
     def transcribe(self, image: bytes, media_type: str, model: str, outcome: str) -> Transcription:
         """The transcription, or ``ScreenshotError``. ``outcome`` is the usage row's on success."""
-        db, user = self.db, self.user
-        if not budget.within_budget(
-            db, self.agency_id, self.now, model, self.settings.ai_monthly_budget_usd
-        ):
-            budget.record(
-                db, user, now=self.now, model=model, input_tokens=0, output_tokens=0,
-                outcome=budget.OUTCOME_REFUSED,
-            )  # fmt: skip
-            db.commit()
-            raise ScreenshotError(budget.BUDGET_MESSAGE, 403)
         try:
-            result = self.client.transcribe(image, media_type, model)
-        except AiUnavailable as exc:
-            kind = exc.kind
-        except Exception as exc:  # noqa: BLE001 - a client bug must not become a 500
-            kind = type(exc).__name__  # the class only: a message could quote the content
-        else:
-            self._record_paid_call(model, result, outcome)
-            return result
-        log.warning("ai call failed", extra={"kind": kind, "model": model})
-        # a timeout may still have been billed: count the estimate; other failures were refused
-        cost = pricing.estimate_micro_usd(model) if kind == "timeout" else 0
-        budget.record(
-            db, user, now=self.now, model=model, input_tokens=0, output_tokens=0,
-            outcome=budget.OUTCOME_ERROR, cost_micro_usd=cost,
-        )  # fmt: skip
-        db.commit()
-        raise ScreenshotError(API_DOWN, 503)
-
-    def _record_paid_call(self, model: str, result: Transcription, outcome: str) -> None:
-        db = self.db
-        try:
-            cost = budget.record(
-                db, self.user, now=self.now, model=model, input_tokens=result.input_tokens,
-                output_tokens=result.output_tokens, outcome=outcome,
-            )  # fmt: skip
-            db.commit()
-        except SQLAlchemyError:
-            db.rollback()
-            cost = pricing.cost_micro_usd(model, result.input_tokens, result.output_tokens)
-            # the call was paid and is not in ai_usage: the log is the only trace of it
-            log.error(
-                "ai usage row lost after a paid call",
-                exc_info=True,
-                extra={"model": model, "cost_micro_usd": cost, "agency_id": self.agency_id},
+            return self.calls.call(
+                model,
+                outcome,
+                lambda: self.client.transcribe(image, media_type, model),
+                lambda result: Usage(result.input_tokens, result.output_tokens),
             )
+        except BudgetRefused:
+            raise ScreenshotError(budget.BUDGET_MESSAGE, 403) from None
+        except CallFailed:
             raise ScreenshotError(API_DOWN, 503) from None
 
 

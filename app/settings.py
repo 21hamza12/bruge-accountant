@@ -120,6 +120,14 @@ class Settings(BaseSettings):
     ai_monthly_budget_usd: Decimal = Field(default=Decimal(5), ge=0, le=100000)
     ai_timeout_s: float = Field(default=30.0, ge=1, le=120)  # one API call
     ai_max_retries: int = Field(default=1, ge=0, le=4)  # on 429 / 5xx / network errors only
+    # The chat (phase E part 2, docs/design/13-chat-ai.md): the cheap model first, the stronger one
+    # when the first could not resolve the turn (empty disables the second). The chat stops at this
+    # share of the month's budget; the rest is kept for screenshots.
+    ai_chat_enabled: bool = True
+    ai_chat_model: str = "claude-haiku-5-5"
+    ai_chat_fallback_model: str = "claude-sonnet-5-5"
+    ai_chat_budget_share: Decimal = Field(default=Decimal("0.8"), ge=Decimal("0.1"), le=1)
+    ai_chat_timeout_s: float = Field(default=20.0, ge=1, le=120)  # one chat API call
     render_git_commit: str | None = None
     # Render sets RENDER=true on its services. Seeing it outside production means a deploy
     # forgot ENV=production, so refuse to start rather than run with development defaults.
@@ -167,6 +175,11 @@ class Settings(BaseSettings):
     def ai_active(self) -> bool:
         """The AI features exist at all: a key, and not switched off with AI_ENABLED=false."""
         return self.has_ai_key and self.ai_enabled is not False
+
+    @property
+    def chat_ai_active(self) -> bool:
+        """The chat may ask the model: AI is active and the chat's own switch is on."""
+        return self.ai_active and self.ai_chat_enabled
 
     @property
     def is_production(self) -> bool:

@@ -72,6 +72,8 @@ EXPORT_USER = Limit("export_user", 120, 3600)
 SCREENSHOT_USER = Limit("screenshot_user", 60, 3600)
 # Chat messages (phase E): 60 an hour for each user, a person typing, not a script.
 CHAT_USER = Limit("chat_user", 60, 3600)
+# Chat messages that go to the AI (phase E part 2): 30 an hour for each user, on top of CHAT_USER.
+CHAT_AI_USER = Limit("chat_ai_user", 30, 3600)
 # Guesses at the current password of a logged-in account (stolen-session brute force).
 PASSWORD_CHANGE_USER = Limit("password_change_user", 5, 15 * 60)
 

@@ -61,6 +61,11 @@ BAD_DAY = "Je n'ai pas compris la date."
 BAD_DAY_HINT = BAD_DAY + " Écrivez par exemple 19/09, 19 septembre ou « hier »."
 BAD_DOC = "Je n'ai pas compris le numéro du billet (10 chiffres)."
 BAD_SIGN = "Je n'ai pas compris le signe."
+BAD_REQUEST = "Demande non comprise."
+MAX_DOC_ARG = 32  # characters of a ticket number argument (ten digits, an airline code, spaces)
+MAX_SIGN_ARG = 16  # characters of a staff sign argument (``0004SV``)
+# What a model is told on top of ``Param.hint``: how to write the value.
+SCHEMA_HINTS = {"day": " (date ISO AAAA-MM-JJ, ex. 2026-10-19)", "sign": " (ex. 0004SV)"}
 NO_SUCH_TOOL = "Cette demande n'existe pas."
 DENIED = "Cette demande n'est pas disponible pour votre rôle."
 NO_TICKET = "Aucun billet {doc} trouvé parmi vos ventes."
@@ -118,7 +123,10 @@ class Tool:
         properties: dict[str, Any] = {}
         for p in self.params:
             kind, fmt = kinds.get(p.kind, ("boolean" if p.kind == "flag" else "string", ""))
-            properties[p.name] = {"type": kind, "description": p.hint}
+            properties[p.name] = {
+                "type": kind,
+                "description": p.hint + SCHEMA_HINTS.get(p.kind, ""),
+            }
             if fmt:
                 properties[p.name]["format"] = fmt
         return {
@@ -132,7 +140,7 @@ class Tool:
         """The arguments, typed and normalised. Unknown names and wrong types are refused."""
         known = {p.name: p for p in self.params}
         if set(raw) - set(known):
-            raise ToolArgError("Demande non comprise.")
+            raise ToolArgError(BAD_REQUEST)
         out: dict[str, Any] = {}
         for p in self.params:
             value = raw.get(p.name)
@@ -163,18 +171,18 @@ def _coerce(p: Param, value: Any) -> Any:
         except ValueError:
             raise ToolArgError(BAD_DAY) from None
     if p.kind == "doc":
-        doc = find_doc(value) if isinstance(value, str) else None
+        doc = find_doc(value) if isinstance(value, str) and len(value) <= MAX_DOC_ARG else None
         return doc if doc is not None else _bad(BAD_DOC)
     if p.kind == "sign":
         try:
-            return (
-                accounts.normalize_staff_sign(value) if isinstance(value, str) else _bad(BAD_SIGN)
-            )
+            if not isinstance(value, str) or len(value) > MAX_SIGN_ARG:
+                return _bad(BAD_SIGN)
+            return accounts.normalize_staff_sign(value)
         except accounts.AccountError:
             raise ToolArgError(BAD_SIGN) from None
     if p.kind == "flag":
-        return value if isinstance(value, bool) else _bad("Demande non comprise.")
-    return value if isinstance(value, str) else _bad("Demande non comprise.")
+        return value if isinstance(value, bool) else _bad(BAD_REQUEST)
+    return value if isinstance(value, str) else _bad(BAD_REQUEST)
 
 
 def _bad(message: str) -> Any:
@@ -210,10 +218,13 @@ def tool(
 
 
 def run_tool(ctx: ChatContext, name: str, raw: Mapping[str, Any]) -> Reply:
-    """Run a registered tool by name (the router and, in part 2, the model call this)."""
+    """Run a registered tool by name (the router and, in part 2, the model call this). Arguments
+    that are not an object are refused here, whatever a model sent."""
     found = TOOLS.get(name)
     if found is None:
         return r.refuse(r.INVALID, r.say(NO_SUCH_TOOL))
+    if not isinstance(raw, Mapping):
+        return r.refuse(r.INVALID, r.say(BAD_REQUEST), tool=name)
     return found.run(ctx, raw)
 
 

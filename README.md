@@ -68,7 +68,11 @@ set), `ALLOWED_HOSTS`, `CORS_ALLOWED_ORIGINS`, `COOKIE_SECURE`, `TRUSTED_PROXY_H
 feature is hidden), `AI_ENABLED` (default: on when there is a key; `true` without a key is refused in
 production), `AI_SCREENSHOT_MODEL` (`claude-haiku-5-5`), `AI_FALLBACK_MODEL` (`claude-sonnet-5-5`),
 `AI_MONTHLY_BUDGET_USD` (default 5, per agency; `python -m app ai-budget <slug> --usd N [--disable]`
-changes one agency), `AI_TIMEOUT_S` (30) and `AI_MAX_RETRIES` (1).
+changes one agency), `AI_TIMEOUT_S` (30) and `AI_MAX_RETRIES` (1). The chat's free questions
+(phase E part 2, `docs/design/13-chat-ai.md`): `AI_CHAT_ENABLED` (default on; needs the key),
+`AI_CHAT_MODEL` (`claude-haiku-5-5`), `AI_CHAT_FALLBACK_MODEL` (`claude-sonnet-5-5`, empty turns it
+off), `AI_CHAT_BUDGET_SHARE` (default 0.8: the chat stops at that share of the month's budget, the
+rest is kept for screenshots) and `AI_CHAT_TIMEOUT_S` (20).
 List variables take `a,b` or a JSON array (`["a","b"]`). `TRUSTED_PROXY_HOPS` defaults to 0 (the
 `X-Forwarded-*` headers are ignored); on Render it is 1. A wildcard CORS origin is refused in every
 environment. In production the app also refuses to start without an explicit non-SQLite

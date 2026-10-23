@@ -22,11 +22,13 @@ from app.ai import pricing
 from app.models import AgencyAiSettings, AiUsage, User
 
 PURPOSE_SCREENSHOT = "screenshot"
+PURPOSE_CHAT = "chat"
 OUTCOME_OK = "ok"
 OUTCOME_FALLBACK = "fallback"
 OUTCOME_ERROR = "error"
 OUTCOME_REFUSED = "refused_budget"
 BUDGET_MESSAGE = "Budget IA du mois atteint : collez le texte Amadeus."
+BUDGET_CHAT = "Budget IA du mois atteint : je ne comprends que les demandes simples."
 
 
 @dataclass(frozen=True)
@@ -77,14 +79,24 @@ def month_to_date_micro(db: Session, agency_id: int, now: datetime) -> int:
 
 
 def within_budget(
-    db: Session, agency_id: int, now: datetime, model: str, default_budget_usd: Decimal
+    db: Session,
+    agency_id: int,
+    now: datetime,
+    model: str,
+    default_budget_usd: Decimal,
+    *,
+    estimate_micro: int | None = None,
+    share: Decimal = Decimal(1),
 ) -> bool:
-    """True when one more call to ``model`` (estimated) keeps the month under the budget."""
+    """True when one more call to ``model`` keeps the month under ``share`` of the budget. The
+    estimate is a screenshot's unless ``estimate_micro`` says otherwise (the chat passes its own
+    and a share below 1, which keeps the last part of the month for screenshots)."""
     limits = get_limits(db, agency_id, default_budget_usd)
     if not limits.enabled:
         return False
+    estimate = pricing.estimate_micro_usd(model) if estimate_micro is None else estimate_micro
     spent = month_to_date_micro(db, agency_id, now)
-    return spent + pricing.estimate_micro_usd(model) <= limits.budget_micro
+    return spent + estimate <= int(limits.budget_micro * share)
 
 
 def record(

@@ -20,18 +20,24 @@ from fastapi.testclient import TestClient
 from sqlalchemy import Engine, event, func, select
 
 from app import sales
+from app.ai.client import AiUnavailable
+from app.ai.fake import FakeChatClient, fake_text, fake_tool
 from app.auth import ratelimit
 from app.chat import store
+from app.chat.agent import AI_DOWN
 from app.models import (
     CHAT_APP,
     CHAT_USER,
     ROLE_ACCOUNTANT,
+    AgencyAiSettings,
+    AiUsage,
     AuditEvent,
     ChatMessage,
     Sale,
     User,
 )
 from app.sales import SaleInput, TicketInput
+from app.settings import Settings
 from app.tenancy import rebind_tenant
 from app.web.deps import AuthContext, current_user, require_login
 from tests.page_support import Env
@@ -755,3 +761,184 @@ def test_a_ticket_lookup_filters_the_flags_by_ticket_in_the_query(env: Env) -> N
     assert len(flag_queries) == 1 and re.search(r"doc_number = \?", flag_queries[0]), flag_queries
     assert sum("FROM staff_sign_links" in q for q in seen) <= 2, seen
     assert len(seen) <= 3 * CEILING, seen
+
+
+# --- phase E part 2: the model answers what the rules do not understand ------------------------
+
+
+def with_chat_ai(env: Env, replies: Any) -> FakeChatClient:
+    fake = FakeChatClient(replies)
+    env.factory.app.state.chat_client = fake  # type: ignore[attr-defined]
+    return fake
+
+
+def usage_rows(env: Env) -> list[AiUsage]:
+    with owner_session(env.db.owner_url) as s:
+        rebind_tenant(s, env.seeded.agency_a)
+        found = list(s.scalars(select(AiUsage).order_by(AiUsage.id)))
+        s.expunge_all()
+        return found
+
+
+def test_without_a_chat_client_a_free_question_is_the_polite_answer(env: Env) -> None:
+    assert env.factory.app.state.chat_client is None  # type: ignore[attr-defined]
+    c = env.staff_a()
+    say(c, "raconte-moi une histoire sur Dakar")
+    assert rows(env)[-1].text.startswith("Je n'ai pas compris votre demande.")
+    assert usage_rows(env) == []
+
+
+def test_a_free_question_is_answered_by_the_model_and_the_links_work(env: Env) -> None:
+    env.load()
+    sell_today(env, "3940000777")
+    fake = with_chat_ai(
+        env,
+        [
+            fake_tool("list_sales", {"day": env.clock.now.date().isoformat()}),
+            fake_text("Vous avez une vente aujourd'hui, & elle est complète <b>peut-être</b>."),
+        ],
+    )
+    c = env.staff_a()
+    answer = say(c, "comment se présente ma journée de travail ?", htmx=True)
+    assert answer.status_code == 200
+    html = answer.text
+    assert "<b>" not in html and "&amp; elle est complète" in html  # escaped, tags gone
+    link = re.search(r'<a class="chat-link" href="(/sales/\d+)"', html)
+    assert link is not None and c.get(link.group(1)).status_code == 200
+    assert [q.model for q in fake.requests] == ["claude-haiku-5-5"] * 2
+    saved = rows(env)
+    assert [m.role for m in saved] == [CHAT_USER, CHAT_APP]
+    assert saved[0].text == "comment se présente ma journée de travail ?"
+    assert saved[1].text.startswith("Vous avez une vente aujourd'hui, & elle est complète")
+    assert f"\t{link.group(1)}" in saved[1].text  # the tool's own link, stored as a link
+    assert [(u.purpose, u.outcome) for u in usage_rows(env)] == [("chat", "ok")] * 2
+
+
+def test_the_model_is_not_asked_when_a_rule_understands(env: Env) -> None:
+    fake = with_chat_ai(env, [])
+    c = env.staff_a()
+    say(c, "aide")
+    say(c, "billet 3940000777")
+    say(c, "mes billets")
+    assert fake.requests == [] and usage_rows(env) == []
+
+
+def test_an_amadeus_paste_never_reaches_the_model(env: Env) -> None:
+    fake = with_chat_ai(env, [])
+    say(env.staff_a(), PNR)
+    assert fake.requests == []
+
+
+def test_a_failing_model_is_a_polite_answer_never_a_500(env: Env) -> None:
+    c = env.staff_a()
+    for htmx in (True, False):
+        with_chat_ai(env, [AiUnavailable("server")])
+        answer = say(c, "une question libre sur le monde", htmx=htmx)
+        assert answer.status_code == (200 if htmx else 303)
+    assert AI_DOWN in rows(env)[-1].text
+    shown = thread(c.get("/chat").text)
+    assert AI_DOWN in unescape(shown[-1]) and "Voici ce que je sais faire" in shown[-1]
+
+
+def test_a_bug_in_the_client_is_the_same_polite_answer(env: Env) -> None:
+    def broken(request: Any) -> Any:
+        raise RuntimeError("zq-secret-9")
+
+    with_chat_ai(env, broken)
+    c = env.staff_a()
+    answer = say(c, "une question libre", htmx=True)
+    assert answer.status_code == 200 and "zq-secret-9" not in answer.text
+    assert AI_DOWN in rows(env)[-1].text
+
+
+def test_the_history_sent_is_the_persons_own_messages_of_today_only(env: Env) -> None:
+    fake = with_chat_ai(env, lambda request: fake_text("Oui."))
+    c = env.staff_a()
+    say(env.manager_a(), "message du gérant")
+    say(c, "premier message libre")
+    say(c, "deuxième message libre")
+    say(c, "aide")  # answered by the rules: an app reply is stored, never sent
+    say(c, PNR)  # a placeholder is stored, never sent
+    say(c, "troisième message libre")
+    say(c, "quatrième message libre")
+    say(c, "cinquième message libre")
+    turn = fake.requests[-1].messages[0]["content"][0]["text"]
+    assert "- troisième message libre" in turn and "- quatrième message libre" in turn
+    assert "- aide" in turn  # the latest three of the person's own, whoever answered them
+    assert "deuxième message libre" not in turn and "du gérant" not in turn
+    assert "Voici ce que je sais faire" not in turn and "Texte Amadeus" not in turn
+    assert turn.endswith("Message : cinquième message libre") and turn.count("\n- ") == 3
+
+
+def test_a_typed_message_answered_by_the_rules_is_still_context(env: Env) -> None:
+    fake = with_chat_ai(env, lambda request: fake_text("Oui."))
+    c = env.staff_a()
+    say(c, "aide")
+    say(c, PNR)
+    say(c, "une question libre")
+    turn = fake.requests[-1].messages[0]["content"][0]["text"]
+    assert "- aide" in turn and "Texte Amadeus" not in turn and turn.count("\n- ") == 1
+
+
+def test_the_hourly_limit_of_free_questions_is_a_normal_answer(
+    env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(ratelimit, "CHAT_AI_USER", ratelimit.Limit("chat_ai_user", 1, 3600))
+    fake = with_chat_ai(env, [fake_text("Bonjour.")])
+    c = env.staff_a()
+    say(c, "première question libre")
+    answer = say(c, "seconde question libre", htmx=True)
+    assert answer.status_code == 200 and "Trop de questions libres" in answer.text
+    assert len(fake.requests) == 1
+    assert say(c, "aide").status_code == 303  # the simple requests still work
+
+
+def test_the_model_is_off_for_an_agency_that_switched_the_ai_off(env: Env) -> None:
+    with owner_session(env.db.owner_url) as s:
+        rebind_tenant(s, env.seeded.agency_a)
+        s.add(
+            AgencyAiSettings(
+                agency_id=env.seeded.agency_a, enabled=False, monthly_budget_micro_usd=5_000_000
+            )
+        )
+        s.commit()
+    fake = with_chat_ai(env, [fake_text("jamais")])
+    say(env.staff_a(), "une question libre")
+    assert fake.requests == [] and rows(env)[-1].text.startswith("Je n'ai pas compris")
+
+
+def test_the_chat_client_exists_only_with_a_key_and_the_chat_switch(db_url: str) -> None:
+    from pydantic import SecretStr
+
+    from app.ai.chat_client import AnthropicChatClient
+    from app.web.main import create_app
+
+    def build(**kw: Any) -> Any:
+        app = create_app(Settings(database_url=SecretStr(db_url), **kw))
+        app.state.engine.dispose()
+        return app.state.chat_client
+
+    assert build() is None
+    key = SecretStr("sk-test-not-real")
+    assert isinstance(build(anthropic_api_key=key), AnthropicChatClient)
+    assert build(anthropic_api_key=key, ai_chat_enabled=False) is None
+    assert build(anthropic_api_key=key, ai_enabled=False) is None
+    fake = FakeChatClient()
+    app = create_app(Settings(database_url=SecretStr(db_url)), chat_client=fake)
+    app.state.engine.dispose()
+    assert app.state.chat_client is fake
+
+
+def test_one_ai_turn_stays_within_the_query_budget(env: Env) -> None:
+    env.load()
+    sell_today(env, "3940000777")
+    day = env.clock.now.date().isoformat()
+    c = env.staff_a()
+    with_chat_ai(env, lambda request: fake_text("Voilà."))
+    post_statements(env, c, "une question libre pour chauffer")  # warm-up
+    with_chat_ai(env, [fake_tool("list_sales", {"day": day}), fake_text("Une vente aujourd'hui.")])
+    seen = post_statements(env, c, "comment se présente ma journée ?")
+    assert sum("FROM chat_messages" in q for q in seen) == 2, seen  # history + the thread
+    assert sum("FROM staff_sign_links" in q for q in seen) <= 2, seen
+    assert sum("INSERT INTO ai_usage" in q for q in seen) == 2, seen
+    assert len(seen) <= 6 * CEILING, seen

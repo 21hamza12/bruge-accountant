@@ -596,3 +596,37 @@ def test_flags_for_me_can_be_narrowed_to_one_ticket_in_the_query(w: ChatWorld) -
     assert {f.id for f in one} == {f.id for f in everything if f.doc_number == sc.not_sent}
     assert flags.flags_for_me(w.db, w.manager, doc="3940000000") == []
     assert flags.flags_for_me(w.db, w.staff2, doc=sc.not_sent) == []  # not their sign
+
+
+# --- phase E part 2: what a model may send ----------------------------------------------------
+
+
+def test_the_schema_says_how_to_write_a_date_a_ticket_and_a_sign() -> None:
+    props = TOOLS["list_sales"].input_schema()["properties"]
+    assert props["day"]["format"] == "date" and "AAAA-MM-JJ" in props["day"]["description"]
+    assert "2026-10-19" in props["day"]["description"]
+    assert "0004SV" in props["sign"]["description"]
+    doc = TOOLS["ticket_status"].input_schema()["properties"]["doc"]
+    assert "10 chiffres" in doc["description"]
+
+
+@pytest.mark.parametrize("raw", [None, "list_sales", ["day"], 12, ("a", 1)])
+def test_arguments_that_are_not_an_object_are_refused_not_raised(w: ChatWorld, raw: Any) -> None:
+    answer = run_tool(w.ctx(w.manager), "list_sales", raw)
+    assert (answer.outcome, texts(answer)) == (r.INVALID, ["Demande non comprise."])
+
+
+def test_an_oversized_ticket_or_sign_is_refused_before_it_is_read(w: ChatWorld) -> None:
+    ctx = w.ctx(w.manager)
+    huge_doc = "3940299439" + " x" * 5000
+    assert run_tool(ctx, "ticket_status", {"doc": huge_doc}).outcome == r.INVALID
+    assert run_tool(ctx, "ticket_status", {"doc": "3940299439"}).outcome == r.OK
+    assert run_tool(ctx, "list_sales", {"sign": "0004SV" + "A" * 40}).outcome == r.INVALID
+    assert run_tool(ctx, "list_sales", {"sign": "0004SV"}).outcome == r.OK
+
+
+def test_null_arguments_count_as_missing_the_all_required_form(w: ChatWorld) -> None:
+    ctx = w.ctx(w.manager)
+    answer = run_tool(ctx, "list_sales", {"day": None, "sign": None, "mine": None})
+    assert answer.outcome == r.OK
+    assert run_tool(ctx, "ticket_status", {"doc": None}).outcome == r.INVALID

@@ -752,6 +752,8 @@ def test_a_ticket_lookup_filters_the_flags_by_ticket_in_the_query(env: Env) -> N
     post_statements(env, c, "aide")
     seen = post_statements(env, c, "billet 3940000777")
     flag_queries = [q for q in seen if "FROM comparison_flags" in q]
-    assert len(flag_queries) == 1 and re.search(r"doc_number = \?", flag_queries[0]), flag_queries
+    assert len(flag_queries) == 1 and re.search(
+        r"doc_number = (\?|%\(doc_number_\w+\)s)", flag_queries[0]
+    ), flag_queries
     assert sum("FROM staff_sign_links" in q for q in seen) <= 2, seen
     assert len(seen) <= 3 * CEILING, seen

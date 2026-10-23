@@ -59,10 +59,19 @@ class Tenant:
 
 
 def seed_tenant(
-    owner_url: str, slug: str, phone: str, token_hash: str, doc_base: int, *, ai: bool = True
+    owner_url: str,
+    slug: str,
+    phone: str,
+    token_hash: str,
+    doc_base: int,
+    *,
+    ai: bool = True,
+    chat: bool | None = None,
 ) -> Tenant:
     """One agency with a row in every agency-scoped table, written through its own tenant
-    (``ai=False`` leaves out the phase D tables, for a database older than migration 0014)."""
+    (``ai=False`` leaves out the phase D tables, for a database older than migration 0014;
+    ``chat=False`` leaves out the chat, older than 0015; it follows ``ai`` by default)."""
+    chat = ai if chat is None else chat
     engine = make_engine(owner_url)
     try:
         with make_session_factory(engine)() as s:
@@ -91,7 +100,8 @@ def seed_tenant(
                 )
             )
             s.add(AuditEvent(agency_id=agency_id, event_type="seed", details={}))
-            s.add(ChatMessage(agency_id=agency_id, user_id=user.id, role="user", text="aide"))
+            if chat:
+                s.add(ChatMessage(agency_id=agency_id, user_id=user.id, role="user", text="aide"))
             partner = Partner(agency_id=agency_id, name="BADI", name_key="badi")
             s.add(partner)
             s.commit()

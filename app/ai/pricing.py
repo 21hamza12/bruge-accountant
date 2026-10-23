@@ -54,3 +54,43 @@ def usd_to_micro(usd: Decimal) -> int:
 def micro_to_usd_text(micro: int) -> str:
     """``1234567`` as ``1.234567``."""
     return f"{Decimal(micro) / MICRO:.6f}".rstrip("0").rstrip(".") or "0"
+
+
+# --- the chat (phase E part 2, docs/design/13-chat-ai.md) -------------------------------------
+# Prompt caching: a token written to the cache costs 1.25 x the input price, a token read from it
+# 0.10 x. ``input_tokens`` below is only the part of the prompt that is neither written nor read.
+CACHE_WRITE_FACTOR = Decimal("1.25")
+CACHE_READ_FACTOR = Decimal("0.10")
+# What ONE chat call is estimated to cost before it is made: a prompt of 8 000 tokens (system,
+# tools, the question and the tool results of the turn: about 3 500 in practice) all written to the
+# cache, and the output limit of a call (300 tokens: a chat answer is one to three sentences).
+# Above any real call; the budget never under-counts.
+CHAT_ESTIMATE_INPUT_TOKENS = 8000
+CHAT_ESTIMATE_OUTPUT_TOKENS = 300  # = chat_client.MAX_OUTPUT_TOKENS (a test pins it)
+
+
+def cost_with_cache_micro_usd(
+    model: str,
+    input_tokens: int,
+    cache_write_tokens: int,
+    cache_read_tokens: int,
+    output_tokens: int,
+) -> int:
+    """The cost of a call that used prompt caching, in whole micro-USD, rounded up."""
+    if min(input_tokens, cache_write_tokens, cache_read_tokens, output_tokens) < 0:
+        raise ValueError("token counts cannot be negative")
+    price_in, price_out = _price(model)
+    exact = (
+        price_in * input_tokens
+        + price_in * CACHE_WRITE_FACTOR * cache_write_tokens
+        + price_in * CACHE_READ_FACTOR * cache_read_tokens
+        + price_out * output_tokens
+    )
+    return int(exact.to_integral_value(rounding=ROUND_CEILING))
+
+
+def estimate_chat_micro_usd(model: str) -> int:
+    """What one chat call is assumed to cost, before the call."""
+    return cost_with_cache_micro_usd(
+        model, 0, CHAT_ESTIMATE_INPUT_TOKENS, 0, CHAT_ESTIMATE_OUTPUT_TOKENS
+    )

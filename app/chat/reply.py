@@ -22,10 +22,11 @@ from typing import Any
 from app.models import CHAT_MAX_TEXT
 
 OK = "ok"
-UNKNOWN = "unknown"  # nothing matched: the seam part 2 plugs the AI into
+UNKNOWN = "unknown"  # nothing matched (and the AI had nothing to add, or was not asked)
 DENIED = "denied"  # a tool the role may not use
 INVALID = "invalid"  # a tool name or an argument that is not usable
 ERROR = "error"  # a lookup that failed on our side (the page says so, politely)
+AI = "ai"  # answered by the model, with the lookups it asked for (app.chat.agent)
 
 SAFE_HREF = re.compile(r"/(?:[A-Za-z0-9_\-.]+(?:/[A-Za-z0-9_\-.]+)*)?(?:\?[A-Za-z0-9_\-.=&]*)?")
 MAX_LINE = 300

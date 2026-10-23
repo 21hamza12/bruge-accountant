@@ -174,7 +174,7 @@ def _shape(url: str) -> dict[str, dict[str, Any]]:
 def test_the_migrated_tables_match_the_models(db_url: str, tmp_path: Any) -> None:
     if _is_postgres(db_url):
         pytest.skip("compared on SQLite")
-    migrate(db_url, revision="0014")
+    migrate(db_url, revision="0016")  # 0016 widened the purpose CHECK the model now has
     model_url = f"sqlite:///{tmp_path / 'model.db'}"
     model_engine = create_engine(model_url)
     Base.metadata.create_all(model_engine)

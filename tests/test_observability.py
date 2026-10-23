@@ -206,6 +206,36 @@ def test_configure_logging_is_idempotent_and_silences_uvicorn_access() -> None:
         logging.getLogger("uvicorn.access").disabled = False
 
 
+@pytest.mark.parametrize("name", ["PIL", "anthropic", "httpx", "httpx2", "httpcore", "httpcore2"])
+def test_the_libraries_that_log_what_they_send_are_pinned_to_warning(name: str) -> None:
+    from app.observability import quiet_libraries
+
+    logger = logging.getLogger(name)
+    before = logger.level
+    try:
+        logger.setLevel(logging.DEBUG)  # what ANTHROPIC_LOG=debug does when the SDK is imported
+        quiet_libraries()
+        assert logger.level == logging.WARNING
+    finally:
+        logger.setLevel(before)
+
+
+def test_building_the_ai_clients_pins_the_libraries_again() -> None:
+    """The SDK reads ANTHROPIC_LOG when it is first imported, which is after configure_logging."""
+    from pydantic import SecretStr
+
+    from app.settings import Settings
+    from app.web.main import _real_ai_client, _real_chat_client
+
+    names = ("anthropic", "httpx", "httpx2", "httpcore")
+    key = SecretStr("sk-test-not-real")
+    for build in (_real_chat_client, _real_ai_client):
+        for name in names:
+            logging.getLogger(name).setLevel(logging.DEBUG)
+        assert build(Settings(anthropic_api_key=key)) is not None
+        assert all(logging.getLogger(n).level == logging.WARNING for n in names), build
+
+
 # --- redaction is the formatter's final step: no leak may depend on the filter being installed --
 
 

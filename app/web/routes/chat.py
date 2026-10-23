@@ -4,8 +4,11 @@ person, ``POST /chat`` answers one message.
 * **Who**: ``permissions.can_use_chat`` (staff, manager, accountant). The conversation is the
   person's own: the user and the agency come from the session, nothing from the request, and not
   even a manager reads another person's messages.
-* **No AI, no write beyond the conversation**: the reply comes from ``app.chat.router`` (fixed,
-  read-only lookups with the person's own rights). A pasted Amadeus text is handed to the existing
+* **No write beyond the conversation**: the reply comes from ``app.chat.router`` (fixed,
+  read-only lookups with the person's own rights). A message no rule understands goes to the
+  model (``app.chat.agent``) when the app has a chat client, which can only run the same
+  lookups; without one it is the polite "not understood". A pasted Amadeus text is handed to the
+  existing
   paste screen by a form in THIS response only (``Reply.handoff_text``); the conversation stores a
   placeholder, never the text.
 * **htmx**: the form posts with ``hx-post`` and the response is the whole panel (thread and an
@@ -40,14 +43,15 @@ from starlette.responses import RedirectResponse, Response
 
 from app import audit, permissions
 from app.auth import ratelimit
+from app.chat import agent, ai_prompt, store
 from app.chat import reply as r
-from app.chat import store
 from app.chat.reply import Line, Reply
-from app.chat.router import looks_like_amadeus, route_message
+from app.chat.router import UnknownHandler, looks_like_amadeus, polite_unknown, route_message
 from app.chat.tools import ChatContext
 from app.clock import Clock
 from app.models import CHAT_APP, CHAT_USER
 from app.parsing.pnr import MAX_TEXT_BYTES
+from app.settings import Settings
 from app.web import sale_paste
 from app.web.csrf import csrf_protect
 from app.web.deps import AuthContext, client_ip, get_clock, get_session, require_permission
@@ -252,11 +256,31 @@ def _checked(raw: object) -> tuple[str, bool, str]:
     return text, False, ""
 
 
-def _answer(ctx: ChatContext, db: Session, text: str) -> Reply:
+def _unknown_handler(request: Request) -> UnknownHandler:
+    """What answers a message no rule understood: the model when the app has a chat client (a key,
+    AI and the chat not switched off), else the polite "not understood". The person's earlier
+    messages are read lazily (a callable), only once every gate has passed and a model is really
+    going to be asked: a fragment, an agency without AI, a spent allowance or budget costs no
+    query for them."""
+    client = getattr(request.app.state, "chat_client", None)
+    if client is None:
+        return polite_unknown
+    settings: Settings = request.app.state.settings
+
+    def ask(ctx: ChatContext, text: str) -> Reply:
+        def history() -> list[str]:
+            return store.recent_user_texts(ctx.db, ctx.user, ctx.now, ai_prompt.AI_HISTORY)
+
+        return agent.answer_with_ai(ctx, text, client=client, settings=settings, history=history)
+
+    return ask
+
+
+def _answer(request: Request, ctx: ChatContext, db: Session, text: str) -> Reply:
     """The reply to one message. A lookup that fails is a polite error (the session is rolled
     back first), logged by the exception's name only: its message may hold the person's text."""
     try:
-        return route_message(ctx, text)
+        return route_message(ctx, text, unknown=_unknown_handler(request))
     except Exception as exc:
         db.rollback()
         log.error("chat lookup failed", extra={"error": type(exc).__name__})
@@ -273,7 +297,7 @@ def chat_post(request: Request, db: Db, clock: Now, auth: Chatter, posted: Poste
     text, is_paste, problem = _checked(raw)
     if problem:
         return _refused(db, request, auth, now, problem, 400, draft=_draft(raw))
-    answer = _answer(ChatContext(db, auth.user, now), db, text)
+    answer = _answer(request, ChatContext(db, auth.user, now), db, text)
     store.append(db, auth.user, CHAT_USER, store.stored_text(text, is_paste=is_paste), now)
     store.append(db, auth.user, CHAT_APP, answer.stored(), now)
     db.commit()

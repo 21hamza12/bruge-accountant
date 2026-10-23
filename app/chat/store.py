@@ -66,6 +66,24 @@ def day_start(now: datetime) -> datetime:
     return datetime.combine(now.date(), time.min, tzinfo=now.tzinfo)
 
 
+def recent_user_texts(db: Session, user: User, now: datetime, limit: int) -> list[str]:
+    """The last ``limit`` messages this person typed today (oldest first): what they said, not what
+    the application answered, and no pasted-screen placeholder. The context sent to the model."""
+    rows = db.scalars(
+        select(ChatMessage.text)
+        .where(
+            ChatMessage.agency_id == user.agency_id,
+            ChatMessage.user_id == user.id,
+            ChatMessage.role == CHAT_USER,
+            ChatMessage.text != PASTE_PLACEHOLDER,
+            ChatMessage.created_at >= day_start(now),
+        )
+        .order_by(ChatMessage.created_at.desc(), ChatMessage.id.desc())
+        .limit(limit)
+    )
+    return list(reversed(list(rows)))
+
+
 def recent(db: Session, user: User, now: datetime, limit: int = HISTORY) -> list[ChatMessage]:
     """The last ``limit`` messages of this user's conversation since the start of today (the
     application clock's day), oldest first. Earlier ones stay in the table, unshown."""

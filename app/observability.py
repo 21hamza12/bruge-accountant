@@ -153,7 +153,15 @@ class JsonFormatter(logging.Formatter):
         return json.dumps(doc, default=_type_name, ensure_ascii=False)
 
 
-QUIET_LIBRARIES = ("PIL", "anthropic", "httpcore", "httpcore2")
+QUIET_LIBRARIES = ("PIL", "anthropic", "httpx", "httpx2", "httpcore", "httpcore2")
+
+
+def quiet_libraries() -> None:
+    """Pin the libraries that log what they handle to WARNING. Called again after an AI client is
+    built: the Anthropic SDK sets its own levels from ANTHROPIC_LOG when it is first imported,
+    which is after ``configure_logging``."""
+    for name in QUIET_LIBRARIES:
+        logging.getLogger(name).setLevel(logging.WARNING)
 
 
 def configure_logging(level: int = logging.INFO) -> None:
@@ -171,8 +179,7 @@ def configure_logging(level: int = logging.INFO) -> None:
     logging.getLogger("uvicorn.access").disabled = True
     # At DEBUG these print what they handle: Pillow the EXIF tags of an image (GPS, camera), the
     # Anthropic SDK and httpcore the request body (a base64 screenshot). Never below WARNING.
-    for name in QUIET_LIBRARIES:
-        logging.getLogger(name).setLevel(logging.WARNING)
+    quiet_libraries()
 
 
 def _route_label(scope: Scope) -> str:

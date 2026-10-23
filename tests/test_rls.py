@@ -854,6 +854,47 @@ def test_the_month_to_date_sum_only_counts_the_tenant(world: World) -> None:
         assert s.scalar(select(func.sum(AiUsage.cost_micro_usd))) == 795
 
 
+def test_chat_usage_rows_are_tenant_isolated(world: World) -> None:
+    """Phase E part 2: the policies of 0014 cover the new purpose (0016 only widens a CHECK)."""
+    db, a, b = world
+    with app_session(db) as s:
+        bind_tenant(s, a.agency_id)
+        s.add(
+            AiUsage(
+                agency_id=a.agency_id,
+                user_id=a.user_id,
+                purpose="chat",
+                model="claude-haiku-5-5",
+                input_tokens=2500,
+                output_tokens=100,
+                cost_micro_usd=300,
+                outcome="ok",
+            )
+        )
+        s.commit()
+    with app_session(db) as s:
+        bind_tenant(s, b.agency_id)
+        assert s.scalars(select(AiUsage).where(AiUsage.purpose == "chat")).all() == []
+        assert s.scalar(select(func.sum(AiUsage.cost_micro_usd))) == 795  # B's own row only
+        s.add(
+            AiUsage(
+                agency_id=a.agency_id,  # a chat row for A written as B
+                user_id=a.user_id,
+                purpose="chat",
+                model="claude-haiku-5-5",
+                input_tokens=1,
+                output_tokens=1,
+                cost_micro_usd=1,
+                outcome="ok",
+            )
+        )
+        with pytest.raises(DBAPIError):
+            s.commit()
+    with app_session(db) as s:
+        bind_tenant(s, a.agency_id)
+        assert s.scalar(select(func.sum(AiUsage.cost_micro_usd))) == 795 + 300
+
+
 def test_ai_usage_of_another_agencys_user_is_refused_by_the_foreign_key(world: World) -> None:
     db, a, b = world
     with app_session(db) as s:

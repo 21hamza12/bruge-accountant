@@ -142,6 +142,8 @@ SQLite has abort triggers on UPDATE and DELETE.
 
 ## 6. What part 2 adds
 
+Built: see [13-chat-ai.md](13-chat-ai.md). What follows is the plan it was built from.
+
 One seam: `route_message(ctx, text, unknown=polite_unknown)`. A message no rule understands calls
 `unknown(ctx, text)`, which must return a `Reply`. Part 2 passes a function that:
 

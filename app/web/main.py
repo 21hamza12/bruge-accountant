@@ -26,10 +26,11 @@ from starlette.middleware import Middleware
 from starlette.responses import Response
 
 from app import db_roles
+from app.ai.chat_client import AnthropicChatClient, ChatModelClient
 from app.ai.client import AnthropicTranscriber, TranscribeClient
 from app.clock import Clock, utc_now
 from app.db import make_engine, make_session_factory
-from app.observability import configure_logging
+from app.observability import configure_logging, quiet_libraries
 from app.settings import Settings
 from app.web.deps import get_settings
 from app.web.errors import (
@@ -108,14 +109,28 @@ def _check_database_role(engine: Engine, settings: Settings) -> None:
     log.warning("%s. Tolerated outside production only.", problem)
 
 
+def _real_chat_client(settings: Settings) -> ChatModelClient | None:
+    if not settings.chat_ai_active or settings.anthropic_api_key is None:
+        return None
+    client = AnthropicChatClient(
+        settings.anthropic_api_key.get_secret_value().strip(),
+        timeout_s=settings.ai_chat_timeout_s,
+        max_retries=settings.ai_chat_max_retries,
+    )
+    quiet_libraries()  # the SDK was just imported: it may have lowered its loggers
+    return client
+
+
 def _real_ai_client(settings: Settings) -> TranscribeClient | None:
     if not settings.ai_active or settings.anthropic_api_key is None:
         return None
-    return AnthropicTranscriber(
+    client = AnthropicTranscriber(
         settings.anthropic_api_key.get_secret_value().strip(),
         timeout_s=settings.ai_timeout_s,
         max_retries=settings.ai_max_retries,
     )
+    quiet_libraries()
+    return client
 
 
 def create_app(
@@ -123,6 +138,7 @@ def create_app(
     extra_middleware: Sequence[Middleware] = (),
     clock: Clock | None = None,
     ai_client: TranscribeClient | None = None,
+    chat_client: ChatModelClient | None = None,
 ) -> FastAPI:
     """Build the application. Nothing happens at import time; run it with ``uvicorn --factory``."""
     settings = settings or Settings()
@@ -156,6 +172,8 @@ def create_app(
     # The AI client: None (feature hidden) unless there is a key and AI is not switched off. Tests
     # pass a fake (``app.ai.fake``) and never reach the real API.
     app.state.ai_client = ai_client or _real_ai_client(settings)
+    # The chat's own client (phase E part 2): None means the chat answers with plain code only.
+    app.state.chat_client = chat_client or _real_chat_client(settings)
 
     app.add_exception_handler(StarletteHTTPException, http_exception_handler)
     app.add_exception_handler(RequestValidationError, validation_exception_handler)

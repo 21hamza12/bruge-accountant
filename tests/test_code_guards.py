@@ -326,6 +326,22 @@ def test_guard_ignores_harmless_template_text(tmp_path: Path) -> None:
     assert find_violations(tmp_path) == []
 
 
+def test_the_anthropic_sdk_is_imported_only_by_the_client_modules() -> None:
+    """Every call to the API goes through app/ai/*client*.py (error mapping, no logging of the
+    message, one place to review what is sent). Nothing else may import the SDK."""
+    allowed = {"ai/client.py", "ai/chat_client.py"}
+    offenders = [
+        str(path.relative_to(APP_DIR))
+        for path in APP_DIR.rglob("*.py")
+        if path.relative_to(APP_DIR).as_posix() not in allowed
+        and re.search(r"^\s*(?:import|from)\s+anthropic\b", path.read_text(encoding="utf-8"), re.M)
+    ]
+    assert offenders == []
+    for name in allowed:  # and the guard sees what it guards
+        text = (APP_DIR / name).read_text(encoding="utf-8")
+        assert re.search(r"^\s*import anthropic\b", text, re.M), name
+
+
 def test_only_the_chat_store_reads_chat_messages() -> None:
     """The conversation is each person's own: every query of ``chat_messages`` is in
     app/chat/store.py, which filters on the session's agency and user. Nothing else may name the

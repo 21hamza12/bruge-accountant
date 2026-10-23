@@ -288,9 +288,29 @@ def _check_source(source: str) -> None:
         raise SaleError(BAD_SOURCE)
 
 
+def _staff_day_blocked(scope: str, day: date, today: date) -> bool:
+    """Staff (own signs only) work on the sales of today only."""
+    return scope == OWN and day != today
+
+
 def _check_staff_day(scope: str, day: date, today: date) -> None:
-    if scope == OWN and day != today:
+    if _staff_day_blocked(scope, day, today):
         raise SaleForbidden(ONLY_TODAY)
+
+
+VOID_NOT_TODAY = "not_today"
+VOID_DAY_CLOSED = "day_closed"
+
+
+def void_blocker(actor: User, day: date, day_status: str | None, today: date) -> str | None:
+    """Why ``actor`` cannot void (or edit) a sale of ``day``, or None: ``VOID_NOT_TODAY`` (staff
+    work on today's sales only) or ``VOID_DAY_CLOSED``, in the order ``_access`` applies them.
+    ``day_status`` is the day's status, None for a day with no row. The same two rules as
+    ``_access``; the chat tells the person why before linking to the void screen, which still
+    re-checks everything. Raises ``SaleForbidden`` for a role that may not enter sales."""
+    if _staff_day_blocked(_scope(actor), day, today):
+        return VOID_NOT_TODAY
+    return VOID_DAY_CLOSED if day_status == DAY_CLOSED else None
 
 
 def _reason_for_edit(scope: str, raw: str | None) -> str | None:
@@ -456,7 +476,22 @@ def sales_for_day_for(
 ) -> list[SaleView]:
     """The sales of a day that the actor may see, in creation order. ``signs`` narrows them
     further (it can never widen them). Voided sales only with ``include_voided``."""
-    allowed = visible_signs(db, actor)
+    return sales_for_day_within(
+        db, actor, day, visible_signs(db, actor), signs=signs, include_voided=include_voided
+    )
+
+
+def sales_for_day_within(
+    db: Session,
+    actor: User,
+    day: date,
+    allowed: Collection[str] | None,
+    *,
+    signs: Collection[str] | None = None,
+    include_voided: bool = False,
+) -> list[SaleView]:
+    """``sales_for_day_for`` for a caller that already read ``visible_signs`` (``allowed``), so
+    one answer reads the actor's signs once."""
     if allowed is None:
         wanted: Collection[str] | None = signs
     elif signs is None:

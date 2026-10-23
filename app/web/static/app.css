@@ -1823,3 +1823,106 @@ details.field summary {
   background: var(--subtle);
   border-block-start: 2px solid var(--border);
 }
+
+/* ---------- chat (phase E) ---------- */
+
+.chat {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  inline-size: 100%;
+  max-inline-size: 42rem;
+  margin-inline: auto;
+}
+
+/* column-reverse with one child: the scroll starts at the newest message, with no script. */
+.chat-scroll {
+  display: flex;
+  flex-direction: column-reverse;
+  overflow-y: auto;
+  min-block-size: 12rem;
+  max-block-size: 60vh;
+  max-block-size: calc(100dvh - 20rem);
+  padding: 0.75rem;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+.chat-thread {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.chat-msg {
+  max-inline-size: 88%;
+  padding: 0.5rem 0.75rem;
+  border-radius: var(--radius-md);
+  overflow-wrap: anywhere;
+}
+
+.chat-user {
+  align-self: flex-end;
+  background: var(--accent-soft);
+  color: #2d2480;
+}
+
+.chat-app {
+  align-self: flex-start;
+  background: var(--subtle);
+  border: 1px solid var(--border);
+}
+
+.chat-text {
+  white-space: pre-wrap;
+}
+
+.chat-line + .chat-line {
+  margin-block-start: 0.25rem;
+}
+
+.chat-link {
+  display: inline-flex;
+  align-items: center;
+  min-block-size: var(--tap);
+  color: var(--accent);
+  font-weight: 500;
+}
+
+.chat-app .btn {
+  margin-block: 0.25rem;
+}
+
+.chat-time {
+  display: block;
+  margin-block-start: 0.25rem;
+  color: var(--text-3);
+  font-size: 0.75rem;
+}
+
+.chat-form {
+  display: flex;
+  align-items: flex-end;
+  gap: 0.5rem;
+}
+
+.chat-form textarea {
+  flex: 1;
+  min-inline-size: 0;
+  min-block-size: var(--tap);
+  padding: 0.5rem 0.75rem;
+  border: 1px solid var(--border-input);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+  resize: vertical;
+}
+
+.chat-note {
+  font-size: 0.8125rem;
+}

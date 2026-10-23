@@ -48,8 +48,8 @@ def _tables(url: str) -> set[str]:
 
 
 def _world(url: str, *, ai: bool = True) -> tuple[Tenant, Tenant]:
-    a = seed_tenant(url, "agence-a", "+22212390101", "a1" * 32, 3940000000, ai=ai)
-    b = seed_tenant(url, "agence-b", "+22212390102", "b2" * 32, 3950000000, ai=ai)
+    a = seed_tenant(url, "agence-a", "+22212390101", "a1" * 32, 3940000000, ai=ai, chat=False)
+    b = seed_tenant(url, "agence-b", "+22212390102", "b2" * 32, 3950000000, ai=ai, chat=False)
     return a, b
 
 
@@ -94,11 +94,11 @@ def _add(url: str, agency: int, *rows: Any) -> None:
 # --- chain and shape ---------------------------------------------------------------------------
 
 
-def test_0014_follows_0013_and_is_the_single_head() -> None:
+def test_0014_follows_0013_and_the_chain_has_a_single_head() -> None:
     script = ScriptDirectory.from_config(alembic_config("sqlite://"))
     revision = script.get_revision("0014")
     assert revision is not None and revision.down_revision == "0013"
-    assert script.get_heads() == ["0014"]
+    assert len(script.get_heads()) == 1  # a newer migration is the head: see its own test
 
 
 def test_grants_follow_the_design() -> None:

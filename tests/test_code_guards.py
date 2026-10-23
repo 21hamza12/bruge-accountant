@@ -324,3 +324,16 @@ def test_guard_ignores_harmless_template_text(tmp_path: Path) -> None:
         "{{ x|safely }} {{ y | e }} autoescape true {% autoescape true %}\n", encoding="utf-8"
     )
     assert find_violations(tmp_path) == []
+
+
+def test_only_the_chat_store_reads_chat_messages() -> None:
+    """The conversation is each person's own: every query of ``chat_messages`` is in
+    app/chat/store.py, which filters on the session's agency and user. Nothing else may name the
+    model (the page reads it through ``store.StoredMessage``)."""
+    offenders = [
+        str(path.relative_to(APP_DIR))
+        for path in APP_DIR.rglob("*.py")
+        if path.relative_to(APP_DIR).as_posix() not in {"chat/store.py", "models.py"}
+        and re.search(r"\bChatMessage\b", path.read_text(encoding="utf-8"))
+    ]
+    assert offenders == []

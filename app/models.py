@@ -1172,3 +1172,42 @@ class AgencyAiSettings(Base):
     updated_at: Mapped[datetime] = mapped_column(
         UTCDateTime, default=_now, onupdate=_now, server_default=func.now()
     )
+
+
+# --- Phase E: the in-app chat (migration 0015) ---------------------------------------------------
+
+CHAT_USER = "user"
+CHAT_APP = "app"
+CHAT_ROLES = (CHAT_USER, CHAT_APP)
+CHAT_MAX_TEXT = 4000
+
+
+class ChatMessage(Base):
+    """Append-only: one message of the chat, from the person (``user``) or from the application
+    (``app``). The conversation belongs to ``user_id`` alone: nobody else reads it, not even a
+    manager (every query filters on the session's user; the row-level policy is per agency). No
+    ticket screenshot and no pasted Amadeus text is stored (a placeholder takes its place).
+    Never updated or deleted (migration 0015: no UPDATE/DELETE policy on Postgres, triggers on
+    SQLite)."""
+
+    __tablename__ = "chat_messages"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["agency_id", "user_id"],
+            ["users.agency_id", "users.id"],
+            name="fk_chat_messages_agency_user",
+            ondelete="RESTRICT",
+        ),
+        CheckConstraint(_in_list("role", CHAT_ROLES), name="role"),
+        CheckConstraint(f"length(text) BETWEEN 1 AND {CHAT_MAX_TEXT}", name="text_length"),
+        Index("ix_chat_messages_agency_user_created", "agency_id", "user_id", "created_at"),
+    )
+
+    id: Mapped[int] = mapped_column(BigIntType, primary_key=True)
+    agency_id: Mapped[int] = mapped_column(ForeignKey("agencies.id", ondelete="RESTRICT"))
+    user_id: Mapped[int] = mapped_column(BigIntType)
+    role: Mapped[str] = mapped_column(String(8))
+    text: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(
+        UTCDateTime, default=_now, server_default=func.now()
+    )

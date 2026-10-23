@@ -67,7 +67,13 @@ def more_signs(env: Env, first: int, last: int) -> list[str]:
     return signs
 
 
-PAGES = ["/", f"/?date={DAY}", "/questions", f"/questions?date={DAY}&status=all&limit=1000"]
+PAGES = [
+    "/",
+    f"/?date={DAY}",
+    "/questions",
+    f"/questions?date={DAY}&status=all&limit=1000",
+    "/chat",
+]
 
 
 def check(env: Env, client: TestClient, grow: Callable[[], None]) -> None:

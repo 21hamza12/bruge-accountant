@@ -26,6 +26,7 @@ from app.models import (
     AiUsage,
     AmadeusLine,
     AuditEvent,
+    ChatMessage,
     ComparisonFlag,
     ComparisonRun,
     DayAcknowledgement,
@@ -82,6 +83,7 @@ SCOPED_MODELS: list[Any] = [
     DayAcknowledgement,
     AiUsage,
     AgencyAiSettings,
+    ChatMessage,
 ]
 
 
@@ -325,6 +327,9 @@ def rows_for_agency_b(b: Tenant) -> dict[str, Any]:
         "agency_ai_settings": AgencyAiSettings(
             agency_id=b.agency_id, enabled=True, monthly_budget_micro_usd=1
         ),
+        "chat_messages": ChatMessage(
+            agency_id=b.agency_id, user_id=b.user_id, role="user", text="forged"
+        ),
         "uploads": Upload(
             agency_id=b.agency_id,
             filename="x.xlsx",
@@ -360,6 +365,7 @@ def rows_for_agency_b(b: Tenant) -> dict[str, Any]:
         "flag_decisions",
         "day_acknowledgements",
         "ai_usage",
+        "chat_messages",
     ],
 )
 def test_insert_for_another_agency_is_rejected(world: World, table: str) -> None:
@@ -593,6 +599,39 @@ def test_amadeus_lines_grants_are_select_and_insert_only(app_role_world: World) 
     assert privileges == {"SELECT", "INSERT"}
 
 
+def test_chat_messages_grants_are_select_and_insert_only(app_role_world: World) -> None:
+    db, _, _ = app_role_world
+    engine = create_engine(db.owner_url)
+    try:
+        with engine.connect() as conn:
+            privileges = set(
+                conn.execute(
+                    text(
+                        "SELECT privilege_type FROM information_schema.role_table_grants "
+                        "WHERE table_name = 'chat_messages' AND grantee = :g"
+                    ),
+                    {"g": make_url(db.app_url).username},
+                ).scalars()
+            )
+    finally:
+        engine.dispose()
+    assert privileges == {"SELECT", "INSERT"}
+
+
+def test_a_chat_message_of_another_agency_is_invisible_and_cannot_be_forged_for_a_user(
+    world: World,
+) -> None:
+    """Row-level security is per agency; the per-person rule (nobody reads another person's chat)
+    is the application's: the composite key still ties every message to a user of its own agency."""
+    db, a, b = world
+    with app_session(db) as s:
+        bind_tenant(s, a.agency_id)
+        assert set(s.scalars(select(ChatMessage.text))) == {"aide"}
+        s.add(ChatMessage(agency_id=a.agency_id, user_id=b.user_id, role="user", text="x"))
+        with pytest.raises(DBAPIError):  # a user of agency b is not a user of agency a
+            s.commit()
+
+
 # --- partners (migration 0007) -------------------------------------------------------
 
 
@@ -745,7 +784,9 @@ def test_the_tenant_may_edit_its_sale_and_delete_its_tickets(world: World) -> No
 
 
 @pytest.mark.parametrize(
-    "model", [DayEvent, SaleVersion, ComparisonRun, AiUsage], ids=lambda m: m.__tablename__
+    "model",
+    [DayEvent, SaleVersion, ComparisonRun, AiUsage, ChatMessage],
+    ids=lambda m: m.__tablename__,
 )
 def test_day_events_and_sale_versions_are_append_only_for_the_tenant(
     world: World, model: Any
@@ -758,6 +799,7 @@ def test_day_events_and_sale_versions_are_append_only_for_the_tenant(
         SaleVersion: {"pb": Decimal("1")},
         ComparisonRun: {"matched_count": 9},
         AiUsage: {"cost_micro_usd": 0},
+        ChatMessage: {"text": "edited"},
     }
     change = changes[model]
     with app_session(db) as s:
@@ -1079,5 +1121,7 @@ def test_the_exact_policies_installed(world: World) -> None:
         ("day_acknowledgements", "tenant_insert", "INSERT"),
         ("ai_usage", "tenant_read", "SELECT"),
         ("ai_usage", "tenant_insert", "INSERT"),
+        ("chat_messages", "tenant_read", "SELECT"),
+        ("chat_messages", "tenant_insert", "INSERT"),
     }
     assert installed == expected

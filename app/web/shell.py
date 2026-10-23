@@ -40,6 +40,7 @@ ACTIVE_DAYS = "days"
 ACTIVE_PROFILE = "profile"
 ACTIVE_FLAGS = "flags"
 ACTIVE_VALIDATE = "validate"
+ACTIVE_CHAT = "chat"
 
 
 @dataclass(frozen=True)
@@ -66,6 +67,7 @@ class Shell:
     latest_day: date | None
     badge: int
     flag_badge: int  # open blocking comparison flags the viewer may see ("Écarts")
+    can_chat: bool  # the "Discussion" entry (staff, manager, accountant)
     can_validate: bool  # manager, accountant: the "À valider" screen
     validate_badge: int  # answers and fee overrides waiting for a validator ("À valider")
     pending_aliases: int  # agency names waiting for a decision (who may manage partners)
@@ -150,6 +152,7 @@ def build_shell(db: Session, auth: AuthContext, active: str) -> Shell:
         latest_day=day,
         badge=sum(counts.values()),
         flag_badge=int(flag_badge or 0),
+        can_chat=permissions.can_use_chat(user),
         can_validate=permissions.can_validate_money(user),
         validate_badge=int(validate_badge or 0),
         pending_aliases=int(pending or 0),

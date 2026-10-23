@@ -48,8 +48,8 @@ def _tables(url: str) -> set[str]:
 
 
 def _world(url: str, *, ai: bool = True) -> tuple[Tenant, Tenant]:
-    a = seed_tenant(url, "agence-a", "+22212390101", "a1" * 32, 3940000000, ai=ai)
-    b = seed_tenant(url, "agence-b", "+22212390102", "b2" * 32, 3950000000, ai=ai)
+    a = seed_tenant(url, "agence-a", "+22212390101", "a1" * 32, 3940000000, ai=ai, chat=False)
+    b = seed_tenant(url, "agence-b", "+22212390102", "b2" * 32, 3950000000, ai=ai, chat=False)
     return a, b
 
 

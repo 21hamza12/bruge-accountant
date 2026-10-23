@@ -10,7 +10,7 @@ from typing import Any
 import pytest
 from alembic import command
 from alembic.script import ScriptDirectory
-from sqlalchemy import create_engine, delete, inspect, text, update
+from sqlalchemy import create_engine, delete, func, inspect, select, text, update
 from sqlalchemy.engine import make_url
 from sqlalchemy.exc import DBAPIError, IntegrityError
 
@@ -75,6 +75,18 @@ def _add(w: W, agency: int, *rows: Any) -> None:
             rebind_tenant(s, agency)
             s.add_all(rows)
             s.commit()
+    finally:
+        engine.dispose()
+
+
+def _count_for(w: W, agency: int) -> int:
+    """Read through a tenant-bound session: on Postgres the owner sees no row of a FORCE RLS
+    table without an agency."""
+    engine = make_engine(w.url)
+    try:
+        with make_session_factory(engine)() as s:
+            rebind_tenant(s, agency)
+            return s.scalar(select(func.count()).select_from(ChatMessage)) or 0
     finally:
         engine.dispose()
 
@@ -223,7 +235,7 @@ def test_the_valid_messages_are_accepted(db_url: str) -> None:
         message(w, text="x"),
         message(w, text="é" * CHAT_MAX_TEXT),
     )
-    assert _scalar(db_url, "SELECT count(*) FROM chat_messages") == 4
+    assert _count_for(w, w.a) == 4
 
 
 def test_a_message_cannot_point_at_a_user_of_another_agency(db_url: str) -> None:

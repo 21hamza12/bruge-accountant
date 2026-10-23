@@ -124,3 +124,10 @@ def test_revoke_statements_mirror_the_grants() -> None:
     joined = "\n".join(revoke_statements("bruge_app", "public"))
     assert 'FROM "bruge_app"' in joined
     assert "GRANT" not in joined
+
+
+def test_the_web_role_only_reads_the_ai_settings_and_only_appends_the_usage() -> None:
+    """The web never writes ``agency_ai_settings`` (the ``ai-budget`` command does, as the owner);
+    ``ai_usage`` is append-only."""
+    assert GRANTS["agency_ai_settings"] == "SELECT"
+    assert GRANTS["ai_usage"] == "SELECT, INSERT"

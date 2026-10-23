@@ -47,7 +47,8 @@ ASK_OTHER = "Choisissez le partenaire dans la liste."
 
 SOURCE_FORM = "form"
 SOURCE_PASTE = "paste"  # the form was prefilled from pasted Amadeus text (only labels history)
-SOURCES = (SOURCE_FORM, SOURCE_PASTE)
+SOURCE_SCREENSHOT = "screenshot"  # prefilled from the reading of a screenshot (same questions)
+SOURCES = (SOURCE_FORM, SOURCE_PASTE, SOURCE_SCREENSHOT)
 ANSWER_YES, ANSWER_OTHER, ANSWER_DIRECT = "yes", "other", "direct"
 MAX_NOTICES = 12
 HIDDEN_CLIP = 120  # the agency text and the reader warnings carried in hidden fields
@@ -113,7 +114,8 @@ class SaleForm:
 
     @property
     def from_paste(self) -> bool:
-        return self.source == SOURCE_PASTE
+        """Prefilled by the reader (pasted text or a screenshot): the agency question applies."""
+        return self.source in (SOURCE_PASTE, SOURCE_SCREENSHOT)
 
     @property
     def hidden_pairs(self) -> list[tuple[str, str]]:

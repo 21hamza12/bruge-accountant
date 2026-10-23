@@ -19,7 +19,7 @@ from html import unescape
 from html.parser import HTMLParser
 from typing import Any
 
-import httpx
+import httpx2 as httpx
 import openpyxl
 from fastapi.testclient import TestClient
 from sqlalchemy import select

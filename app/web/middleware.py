@@ -12,9 +12,10 @@ Order, outermost first (a request passes top to bottom, a response bottom to top
 7. ``ErrorBoundaryMiddleware``: turns an unhandled exception, or an ``HTTPException`` raised by
    a middleware below it, into the custom error page.
 8. ``RequestBodyLimitMiddleware``: 413 for a body over ``MAX_REQUEST_BYTES`` (declared length
-   checked before reading, streamed bodies counted). It is the first of the innermost layers, so
-   nothing after it (a caller's ``extra_middleware``, the dependencies, the routes) ever reads
-   more than the limit.
+   checked before reading, streamed bodies counted), except ``POST /sales/screenshot`` which has
+   a larger limit of its own (``SCREENSHOT_BODY_BYTES``: four photos of 8 MB). It is the first of
+   the innermost layers, so nothing after it (a caller's ``extra_middleware``, the dependencies,
+   the routes) ever reads more than its limit.
 9. Anything passed as ``extra_middleware``, then the router.
 
 Why this order: layers 1 to 4 wrap everything that can fail, so a 400 from the host check, a
@@ -37,6 +38,8 @@ from collections.abc import Sequence
 from starlette.middleware import Middleware
 from starlette.middleware.cors import CORSMiddleware
 
+from app.ai.images import MAX_IMAGE_BYTES
+from app.ai.screenshots import MAX_IMAGES
 from app.observability import RequestLogMiddleware
 from app.settings import Settings
 from app.web.bodylimit import RequestBodyLimitMiddleware
@@ -47,6 +50,9 @@ from app.web.security import (
     DefaultCacheControlMiddleware,
     SecurityHeadersMiddleware,
 )
+
+SCREENSHOT_PATH = "/sales/screenshot"
+SCREENSHOT_BODY_BYTES = MAX_IMAGES * MAX_IMAGE_BYTES + 1024 * 1024  # four photos, form overhead
 
 
 def build_middleware(
@@ -70,6 +76,12 @@ def build_middleware(
         )
     stack.append(Middleware(AllowedHostMiddleware, allowed_hosts=settings.allowed_hosts))
     stack.append(Middleware(ErrorBoundaryMiddleware))
-    stack.append(Middleware(RequestBodyLimitMiddleware, max_bytes=settings.max_request_bytes))
+    stack.append(
+        Middleware(
+            RequestBodyLimitMiddleware,
+            max_bytes=settings.max_request_bytes,
+            path_limits={SCREENSHOT_PATH: max(settings.max_request_bytes, SCREENSHOT_BODY_BYTES)},
+        )
+    )
     stack.extend(extra_middleware)
     return stack

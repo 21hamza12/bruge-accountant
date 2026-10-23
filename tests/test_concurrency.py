@@ -8,7 +8,7 @@ import threading
 import time
 from typing import Any
 
-import httpx
+import httpx2 as httpx
 import pytest
 from argon2.exceptions import VerifyMismatchError
 

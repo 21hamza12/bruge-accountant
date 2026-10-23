@@ -219,11 +219,11 @@ def _tables(url: str) -> set[str]:
 # --- chain and shape ---------------------------------------------------------------------------
 
 
-def test_0013_follows_0012_and_is_the_single_head() -> None:
+def test_0013_follows_0012_and_the_chain_has_a_single_head() -> None:
     script = ScriptDirectory.from_config(alembic_config("sqlite://"))
     revision = script.get_revision("0013")
     assert revision is not None and revision.down_revision == "0012"
-    assert script.get_heads() == ["0013"]
+    assert len(script.get_heads()) == 1  # 0014 is the head now: see test_migration_0014
 
 
 def test_grants_follow_the_design() -> None:

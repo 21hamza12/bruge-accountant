@@ -458,7 +458,7 @@ AG_DIRECT = "direct"
 AG_PARTNER = "partner"
 AG_LABEL_DIRECT = "BRUGE"
 PAYMENT_METHODS = ("cash", "bankily", "masrvi", "sedad", "virement", "cheque", "credit")
-SALE_SOURCES = ("form", "paste", "comparison")
+SALE_SOURCES = ("form", "paste", "screenshot", "comparison")
 TICKET_TYPES = ("TKTT", "EMDA", "EMDS", "RFND", "CANX")
 PAX_TYPES = ("ADT", "CHD", "INF")
 MIN_REASON_LENGTH = 5
@@ -1111,4 +1111,64 @@ class DayAcknowledgement(Base):
     actor_user_id: Mapped[int] = mapped_column(BigIntType)
     created_at: Mapped[datetime] = mapped_column(
         UTCDateTime, default=_now, server_default=func.now()
+    )
+
+
+# --- Phase D: AI usage and the agency's AI settings (migration 0014) -------------------------
+
+AI_PURPOSES = ("screenshot",)
+AI_OUTCOMES = ("ok", "fallback", "error", "refused_budget")
+
+
+class AiUsage(Base):
+    """Append-only: one row for each call to the AI (or refusal to make one): who, when, which
+    model, the tokens and the cost in micro-USD (1 000 000 = 1 USD). Never holds an image, a
+    transcript or any text. The month-to-date sum of an agency is the budget check."""
+
+    __tablename__ = "ai_usage"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["agency_id", "user_id"],
+            ["users.agency_id", "users.id"],
+            name="fk_ai_usage_agency_user",
+            ondelete="RESTRICT",
+        ),
+        CheckConstraint(_in_list("purpose", AI_PURPOSES), name="purpose"),
+        CheckConstraint(_in_list("outcome", AI_OUTCOMES), name="outcome"),
+        CheckConstraint(
+            "input_tokens >= 0 AND output_tokens >= 0 AND cost_micro_usd >= 0", name="nonneg"
+        ),
+        Index("ix_ai_usage_agency_created", "agency_id", "created_at"),
+        Index("ix_ai_usage_agency_user", "agency_id", "user_id"),
+    )
+
+    id: Mapped[int] = mapped_column(BigIntType, primary_key=True)
+    agency_id: Mapped[int] = mapped_column(ForeignKey("agencies.id", ondelete="RESTRICT"))
+    user_id: Mapped[int] = mapped_column(BigIntType)
+    created_at: Mapped[datetime] = mapped_column(
+        UTCDateTime, default=_now, server_default=func.now()
+    )
+    purpose: Mapped[str] = mapped_column(String(16))
+    model: Mapped[str] = mapped_column(String(64))
+    input_tokens: Mapped[int] = mapped_column(Integer)
+    output_tokens: Mapped[int] = mapped_column(Integer)
+    cost_micro_usd: Mapped[int] = mapped_column(BigIntType)
+    outcome: Mapped[str] = mapped_column(String(16))
+
+
+class AgencyAiSettings(Base):
+    """One row per agency at most: whether the AI is on for it and its monthly budget in
+    micro-USD. No row means the defaults (on, ``AI_MONTHLY_BUDGET_USD``). Mutable, and edited
+    only by ``python -m app ai-budget`` (owner connection): there is no operator screen yet."""
+
+    __tablename__ = "agency_ai_settings"
+    __table_args__ = (CheckConstraint("monthly_budget_micro_usd >= 0", name="budget_nonneg"),)
+
+    agency_id: Mapped[int] = mapped_column(
+        ForeignKey("agencies.id", ondelete="RESTRICT"), primary_key=True
+    )
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True, server_default=true())
+    monthly_budget_micro_usd: Mapped[int] = mapped_column(BigIntType)
+    updated_at: Mapped[datetime] = mapped_column(
+        UTCDateTime, default=_now, onupdate=_now, server_default=func.now()
     )

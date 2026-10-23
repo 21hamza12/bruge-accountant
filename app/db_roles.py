@@ -67,6 +67,10 @@ GRANTS = {
     # Phase B9 (migration 0013). Decisions and acknowledgements are append-only.
     "flag_decisions": "SELECT, INSERT",
     "day_acknowledgements": "SELECT, INSERT",
+    # Phase D (migration 0014). Usage is append-only. The web only reads the agency's AI settings;
+    # the ``ai-budget`` command writes them with the owner connection.
+    "ai_usage": "SELECT, INSERT",
+    "agency_ai_settings": "SELECT",
 }
 # The tables migration 0003 grants on, frozen. 0003 passes this to ``apply_grants`` instead of
 # relying on GRANTS, which later phases extend: a fresh ``alembic upgrade head`` runs 0003 before

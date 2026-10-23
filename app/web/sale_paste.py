@@ -18,7 +18,7 @@ from app import partner_aliases, partners
 from app.formatting import money
 from app.parsing.pnr import MAX_TEXT_BYTES, parse_pnr_text
 from app.parsing.pnr_sales import ProposedSale, proposed_sales
-from app.web.sale_forms import DIRECT, SOURCE_PASTE, SaleForm, TicketForm
+from app.web.sale_forms import DIRECT, SOURCE_PASTE, SOURCE_SCREENSHOT, SaleForm, TicketForm
 
 TEXT_FIELD = "pnr_text"
 EMPTY = "Collez le texte Amadeus de la réservation."
@@ -63,7 +63,9 @@ def _ag_fields(sale: ProposedSale) -> tuple[str, str]:
     return proposed, sale.agency_match
 
 
-def form_from_sale(sale: ProposedSale, reader_warnings: tuple[str, ...] = ()) -> SaleForm:
+def form_from_sale(
+    sale: ProposedSale, reader_warnings: tuple[str, ...] = (), source: str = SOURCE_PASTE
+) -> SaleForm:
     proposed, match = _ag_fields(sale)
     return SaleForm(
         tickets=[
@@ -83,7 +85,7 @@ def form_from_sale(sale: ProposedSale, reader_warnings: tuple[str, ...] = ()) ->
         clt=sale.clt or "",
         ap=sale.ap or "",
         staff_sign=sale.staff_sign or "",
-        source=SOURCE_PASTE,
+        source=source,
         ag_proposed=proposed,
         ag_text=sale.agency_text or "",
         ag_match=match,
@@ -91,16 +93,22 @@ def form_from_sale(sale: ProposedSale, reader_warnings: tuple[str, ...] = ()) ->
     )
 
 
-def read_paste(db: Session, agency_id: int, text: str) -> PasteResult:
-    """Parse ``text`` (already checked with ``check_text``) for this agency."""
-    reading = parse_pnr_text(text)
+def read_paste(
+    db: Session, agency_id: int, text: str, source: str = SOURCE_PASTE, nothing: str = NOTHING
+) -> PasteResult:
+    """Parse ``text`` (already checked with ``check_text``) for this agency. ``source`` labels the
+    forms (``paste``, or ``screenshot`` for the transcript of an image)."""
+    reading = parse_pnr_text(text, transcript=source == SOURCE_SCREENSHOT)
     names = [(p.id, p.name) for p in partners.list_active(db, agency_id)]
     aliases = partner_aliases.approved_pairs(db, agency_id)
     sales = proposed_sales(reading, names, aliases)
     if not sales:
-        return PasteResult([], reading.warnings, NOTHING)
+        return PasteResult([], reading.warnings, nothing)
     return PasteResult(
-        [Proposal(s, form_from_sale(s, reading.warnings), reading.agent_sign) for s in sales],
+        [
+            Proposal(s, form_from_sale(s, reading.warnings, source), reading.agent_sign)
+            for s in sales
+        ],
         reading.warnings,
     )
 

@@ -67,6 +67,10 @@ GRANTS = {
     # Phase B9 (migration 0013). Decisions and acknowledgements are append-only.
     "flag_decisions": "SELECT, INSERT",
     "day_acknowledgements": "SELECT, INSERT",
+    # Phase D (migration 0014). Usage is append-only. The web only reads the agency's AI settings;
+    # the ``ai-budget`` command writes them with the owner connection.
+    "ai_usage": "SELECT, INSERT",
+    "agency_ai_settings": "SELECT",
     # Phase E (migration 0015). The chat is append-only: no UPDATE, no DELETE.
     "chat_messages": "SELECT, INSERT",
 }

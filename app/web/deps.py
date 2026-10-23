@@ -37,6 +37,9 @@ def get_session(request: Request) -> Iterator[Session]:
     login route once it knows the user, or an admin path binds one.
     """
     session: Session = request.app.state.sessionmaker()
+    info = getattr(session, "info", None)  # what the page builders read (the screenshot button)
+    if info is not None:
+        info["ai_client"] = getattr(request.app.state, "ai_client", None) is not None
     try:
         yield session
     except BaseException:

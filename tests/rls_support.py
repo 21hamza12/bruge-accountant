@@ -11,6 +11,8 @@ from sqlalchemy.orm import Session
 
 from app.db import make_engine, make_session_factory
 from app.models import (
+    AgencyAiSettings,
+    AiUsage,
     AuditEvent,
     ChatMessage,
     ComparisonFlag,
@@ -56,8 +58,11 @@ class Tenant:
     flag_id: int = 0  # the flag of that run (it also has a decision)
 
 
-def seed_tenant(owner_url: str, slug: str, phone: str, token_hash: str, doc_base: int) -> Tenant:
-    """One agency with a row in every agency-scoped table, written through its own tenant."""
+def seed_tenant(
+    owner_url: str, slug: str, phone: str, token_hash: str, doc_base: int, *, ai: bool = True
+) -> Tenant:
+    """One agency with a row in every agency-scoped table, written through its own tenant
+    (``ai=False`` leaves out the phase D tables, for a database older than migration 0014)."""
     engine = make_engine(owner_url)
     try:
         with make_session_factory(engine)() as s:
@@ -113,6 +118,8 @@ def seed_tenant(owner_url: str, slug: str, phone: str, token_hash: str, doc_base
             import_report(s, agency_id, parse_report(build_workbook(rows)), "seed.xlsx", SHA)
             day_id, sale_id = _seed_sale(s, agency_id, user.id, partner.id, doc_base)
             upload_id, run_id, flag_id = _seed_comparison(s, agency_id, user.id, day_id, sale_id)
+            if ai:
+                _seed_ai(s, agency_id, user.id)
             return Tenant(
                 agency_id, slug, phone, token_hash, user.id, partner.id, day_id, sale_id,
                 run_id, upload_id, flag_id,
@@ -225,6 +232,24 @@ def _seed_comparison(
     )
     s.commit()
     return upload_id, run.id, flag.id
+
+
+def _seed_ai(s: Session, agency_id: int, user_id: int) -> None:
+    """One usage row and the AI settings of the agency (phase D)."""
+    s.add(
+        AiUsage(
+            agency_id=agency_id,
+            user_id=user_id,
+            purpose="screenshot",
+            model="claude-haiku-5-5",
+            input_tokens=650,
+            output_tokens=400,
+            cost_micro_usd=795,
+            outcome="ok",
+        )
+    )
+    s.add(AgencyAiSettings(agency_id=agency_id, enabled=True, monthly_budget_micro_usd=5_000_000))
+    s.commit()
 
 
 def insert_unscoped_audit_event(session: Session, event_type: str = "login_failed") -> None:

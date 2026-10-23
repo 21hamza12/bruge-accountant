@@ -29,7 +29,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlsplit
 
-import httpx
+import httpx2 as httpx
 import pytest
 
 BASE_URL = os.environ.get("E2E_BASE_URL", "").rstrip("/")

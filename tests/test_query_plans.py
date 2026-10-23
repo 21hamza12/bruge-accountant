@@ -16,7 +16,7 @@ import json
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
-from datetime import date, timedelta
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
@@ -25,12 +25,13 @@ import pytest
 from sqlalchemy import Engine, event, insert
 from sqlalchemy.orm import Session
 
+from app.ai import budget as ai_budget
 from app.auth import ratelimit
 from app.auth.login import find_user_by_phone
 from app.auth.sessions import SessionPolicy, hash_token, lookup_session
 from app.db import make_engine, make_session_factory
 from app.ingest import ingest_report
-from app.models import StaffSignLink, Ticket, Upload, User
+from app.models import AiUsage, StaffSignLink, Ticket, Upload, User
 from app.repository import (
     awaiting_counts_by_sign,
     get_upload,
@@ -162,6 +163,24 @@ class World:
                     for n in range(100)
                 ]
                 s.execute(insert(Ticket), rows)
+                s.commit()
+                # a year of AI usage: the month-to-date sum must pick its (agency, time) index
+                manager = self.seeded.manager_a if agency_id == a else self.seeded.manager_b
+                usage = [
+                    {
+                        "agency_id": agency_id,
+                        "user_id": manager,
+                        "created_at": datetime(2026, 1, 1, tzinfo=UTC) + timedelta(hours=7 * i),
+                        "purpose": "screenshot",
+                        "model": "claude-haiku-5-5",
+                        "input_tokens": 650,
+                        "output_tokens": 400,
+                        "cost_micro_usd": 795,
+                        "outcome": "ok",
+                    }
+                    for i in range(1200 if agency_id == a else 30000)
+                ]
+                s.execute(insert(AiUsage), usage)
                 s.commit()
         with owner_session(self.db.owner_url) as s:
             rebind_tenant(s, a)
@@ -354,6 +373,13 @@ def hot_queries(w: World) -> list[Hot]:
             # The primary key is as good a unique lookup as the (agency_id, id) constraint.
             frozenset({"uq_uploads_agency_id_id", "pk_uploads"}),
         ),
+        Hot(
+            "AI month-to-date cost",
+            Scope(agency_id=a),
+            lambda s: ai_budget.month_to_date_micro(s, a, w.clock()),
+            "FROM ai_usage",
+            frozenset({"ix_ai_usage_agency_created"}),
+        ),
     ]
 
 
@@ -444,6 +470,7 @@ CASE_NAMES = [
     "links by user",
     "rate-limit upsert",
     "upload by id",
+    "AI month-to-date cost",
 ]
 
 
@@ -461,4 +488,4 @@ def test_the_hot_query_uses_its_index(world: World, name: str) -> None:
 
 
 def test_every_hot_query_is_covered() -> None:
-    assert len(CASE_NAMES) == len(set(CASE_NAMES)) == 16
+    assert len(CASE_NAMES) == len(set(CASE_NAMES)) == 17

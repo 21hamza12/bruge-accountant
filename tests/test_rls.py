@@ -22,6 +22,8 @@ from sqlalchemy.orm import Session
 from app.db import make_engine, make_session_factory
 from app.models import (
     Agency,
+    AgencyAiSettings,
+    AiUsage,
     AmadeusLine,
     AuditEvent,
     ChatMessage,
@@ -79,6 +81,8 @@ SCOPED_MODELS: list[Any] = [
     ComparisonFlag,
     FlagDecision,
     DayAcknowledgement,
+    AiUsage,
+    AgencyAiSettings,
     ChatMessage,
 ]
 
@@ -310,6 +314,19 @@ def rows_for_agency_b(b: Tenant) -> dict[str, Any]:
             digest="d" * 16,
             actor_user_id=b.user_id,
         ),
+        "ai_usage": AiUsage(
+            agency_id=b.agency_id,
+            user_id=b.user_id,
+            purpose="screenshot",
+            model="claude-haiku-5-5",
+            input_tokens=1,
+            output_tokens=1,
+            cost_micro_usd=1,
+            outcome="ok",
+        ),
+        "agency_ai_settings": AgencyAiSettings(
+            agency_id=b.agency_id, enabled=True, monthly_budget_micro_usd=1
+        ),
         "chat_messages": ChatMessage(
             agency_id=b.agency_id, user_id=b.user_id, role="user", text="forged"
         ),
@@ -347,6 +364,7 @@ def rows_for_agency_b(b: Tenant) -> dict[str, Any]:
         "comparison_flags",
         "flag_decisions",
         "day_acknowledgements",
+        "ai_usage",
         "chat_messages",
     ],
 )
@@ -766,7 +784,9 @@ def test_the_tenant_may_edit_its_sale_and_delete_its_tickets(world: World) -> No
 
 
 @pytest.mark.parametrize(
-    "model", [DayEvent, SaleVersion, ComparisonRun, ChatMessage], ids=lambda m: m.__tablename__
+    "model",
+    [DayEvent, SaleVersion, ComparisonRun, AiUsage, ChatMessage],
+    ids=lambda m: m.__tablename__,
 )
 def test_day_events_and_sale_versions_are_append_only_for_the_tenant(
     world: World, model: Any
@@ -778,6 +798,7 @@ def test_day_events_and_sale_versions_are_append_only_for_the_tenant(
         DayEvent: {"reason": "edited"},
         SaleVersion: {"pb": Decimal("1")},
         ComparisonRun: {"matched_count": 9},
+        AiUsage: {"cost_micro_usd": 0},
         ChatMessage: {"text": "edited"},
     }
     change = changes[model]
@@ -798,6 +819,60 @@ def test_day_events_and_sale_versions_are_append_only_for_the_tenant(
         assert count(s, model) == before
         if model is SaleVersion:
             assert s.scalars(select(SaleVersion.pb)).all() == [Decimal("1500.00")]
+
+
+def test_the_tenant_reads_its_own_ai_settings_and_cannot_write_them(world: World) -> None:
+    db, a, b = world
+    with app_session(db) as s:
+        bind_tenant(s, a.agency_id)
+        assert s.scalars(select(AgencyAiSettings.agency_id)).all() == [a.agency_id]
+        if db.mode == "app-role":  # SELECT only: the ai-budget command writes it as the owner
+            for statement in (
+                update(AgencyAiSettings).values(enabled=False),
+                delete(AgencyAiSettings),
+            ):
+                with pytest.raises(ProgrammingError, match="permission denied"):
+                    s.execute(statement)
+                s.rollback()
+                bind_tenant(s, a.agency_id)
+            s.add(rows_for_agency_b(b)["agency_ai_settings"])
+            with pytest.raises(ProgrammingError, match="permission denied"):
+                s.commit()
+        else:  # single-role mode has no grants: row-level security alone finds nothing of B's
+            other = update(AgencyAiSettings).where(AgencyAiSettings.agency_id == b.agency_id)
+            assert affected(s.execute(other.values(monthly_budget_micro_usd=0))) == 0
+            s.rollback()
+    with app_session(db) as s:
+        bind_tenant(s, b.agency_id)
+        assert s.scalars(select(AgencyAiSettings.monthly_budget_micro_usd)).all() == [5_000_000]
+
+
+def test_the_month_to_date_sum_only_counts_the_tenant(world: World) -> None:
+    db, a, _ = world
+    with app_session(db) as s:
+        bind_tenant(s, a.agency_id)
+        assert s.scalar(select(func.sum(AiUsage.cost_micro_usd))) == 795
+
+
+def test_ai_usage_of_another_agencys_user_is_refused_by_the_foreign_key(world: World) -> None:
+    db, a, b = world
+    with app_session(db) as s:
+        bind_tenant(s, a.agency_id)
+        s.add(
+            AiUsage(
+                agency_id=a.agency_id,
+                user_id=b.user_id,
+                purpose="screenshot",
+                model="claude-haiku-5-5",
+                input_tokens=1,
+                output_tokens=1,
+                cost_micro_usd=1,
+                outcome="ok",
+            )
+        )
+        with pytest.raises(DBAPIError) as info:
+            s.commit()
+        assert "foreign key" in str(info.value)
 
 
 def test_a_sale_version_can_be_appended_for_the_bound_tenant(world: World) -> None:
@@ -1017,6 +1092,7 @@ def test_the_exact_policies_installed(world: World) -> None:
             "sales",
             "sale_tickets",
             "comparison_flags",
+            "agency_ai_settings",
         )
     } | {
         ("partner_fees", "tenant_read", "SELECT"),
@@ -1043,6 +1119,8 @@ def test_the_exact_policies_installed(world: World) -> None:
         ("flag_decisions", "tenant_insert", "INSERT"),
         ("day_acknowledgements", "tenant_read", "SELECT"),
         ("day_acknowledgements", "tenant_insert", "INSERT"),
+        ("ai_usage", "tenant_read", "SELECT"),
+        ("ai_usage", "tenant_insert", "INSERT"),
         ("chat_messages", "tenant_read", "SELECT"),
         ("chat_messages", "tenant_insert", "INSERT"),
     }

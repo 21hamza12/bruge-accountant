@@ -109,15 +109,11 @@ def _tables(url: str) -> set[str]:
 # --- chain and shape ---------------------------------------------------------------------------
 
 
-def test_0015_is_self_contained_and_follows_0013() -> None:
-    """Written beside phase D (0014): it names 0013 until 0014 is merged. Then ``down_revision``
-    becomes "0014" and ``HEAD`` below "0015" stays: that is the only change to make."""
+def test_0015_follows_0014_and_is_the_head() -> None:
     script = ScriptDirectory.from_config(alembic_config("sqlite://"))
     revision = script.get_revision("0015")
-    assert revision is not None and revision.down_revision == "0013"
+    assert revision is not None and revision.down_revision == "0014"
     assert script.get_heads() == ["0015"]
-    source = Path(revision.path).read_text(encoding="utf-8")
-    assert "0014" in source and "phase D" in source  # the re-pointing note is there
 
 
 def test_grants_follow_the_design() -> None:
@@ -128,7 +124,7 @@ def test_up_and_down_on_sqlite(db_url: str) -> None:
     if _is_postgres(db_url):
         pytest.skip("SQLite objects")
     cfg = alembic_config(db_url)
-    migrate(db_url, revision="0013")
+    migrate(db_url, revision="0014")
     assert TABLE not in _tables(db_url)
     command.upgrade(cfg, "0015")
     assert TABLE in _tables(db_url)
@@ -142,10 +138,10 @@ def test_up_and_down_on_sqlite(db_url: str) -> None:
     finally:
         engine.dispose()
     assert indexes["ix_chat_messages_agency_user_created"] == ["agency_id", "user_id", "created_at"]
-    command.downgrade(cfg, "0013")
+    command.downgrade(cfg, "0014")
     assert TABLE not in _tables(db_url)
     assert not [n for n in _names(db_url, "trigger") if TABLE in n]
-    assert _scalar(db_url, "SELECT version_num FROM alembic_version") == "0013"
+    assert _scalar(db_url, "SELECT version_num FROM alembic_version") == "0014"
     command.upgrade(cfg, "0015")
     assert TABLE in _tables(db_url)
 

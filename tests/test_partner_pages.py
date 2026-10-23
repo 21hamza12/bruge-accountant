@@ -6,7 +6,7 @@ import re
 from datetime import date
 from decimal import Decimal
 
-import httpx
+import httpx2 as httpx
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import select

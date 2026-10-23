@@ -1,14 +1,13 @@
 """the in-app chat: chat_messages (phase E, part 1)
 
 Revision ID: 0015
-Revises: 0013
+Revises: 0014
 Create Date: 2026-10-23 16:00:00.000000
 
 EXPAND-ONLY: one new table, nothing existing is touched, so the previous release keeps working.
 
-Self-contained on purpose: it was written beside phase D (0014, ``ai_usage`` and
-``agency_ai_settings``) and depends on nothing in it. Once 0014 is merged, ``down_revision`` is the
-only line to change (``"0014"``), plus the head assertion of tests/test_migration_0015.py.
+Written beside phase D (0014, ``ai_usage`` and ``agency_ai_settings``) and depends on nothing in
+it; it follows 0014 now that phase D is merged.
 
 * ``chat_messages``: append-only. One row for each message of a conversation: ``role`` is ``user``
   (what the person typed) or ``app`` (the reply), ``text`` is 1 to 4000 characters (CHECK), and
@@ -38,7 +37,7 @@ from app import db_roles
 from app.db_roles import ROLE_ENV_VAR
 
 revision: str = "0015"
-down_revision: str | None = "0013"  # re-point to "0014" once phase D is merged
+down_revision: str | None = "0014"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 

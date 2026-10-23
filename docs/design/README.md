@@ -16,6 +16,7 @@ AI advice). Real agency files go in `intake/` (git-ignored, local only).
 | [07-chat.md](07-chat.md) | What agents, accountant and manager do in the chat; AI advice | Approved |
 | [08-build-plan.md](08-build-plan.md) | Phases A–I, in order, with what each delivers | Approved |
 | [10-ticket-screens.md](10-ticket-screens.md) | What the ticket screenshots show: pasteable PNR text, RM per passenger, two ticketing offices | New |
+| [11-screenshots.md](11-screenshots.md) | Reading Amadeus screenshots with Claude: measured results, models, fallback rule, privacy, budget | Built (phase D) |
 | [09-phase-b-plan.md](09-phase-b-plan.md) | Phase B step by step (B1–B11), conventions, approved defaults | Approved |
 | [12-chat-part1.md](12-chat-part1.md) | Phase E part 1: the in-app chat without AI (router, tool registry, storage, security) | Built |
 

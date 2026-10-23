@@ -75,8 +75,12 @@ class Harness:
         await send({"type": "http.response.start", "status": 200, "headers": []})
         await send({"type": "http.response.body", "body": b"ok"})
 
-    def run(self, headers: list[tuple[bytes, bytes]]) -> None:
-        middleware = RequestBodyLimitMiddleware(self.downstream, max_bytes=self.limit)
+    def run(
+        self, headers: list[tuple[bytes, bytes]], path_limits: dict[str, int] | None = None
+    ) -> None:
+        middleware = RequestBodyLimitMiddleware(
+            self.downstream, max_bytes=self.limit, path_limits=path_limits
+        )
         asyncio.run(middleware(_scope(headers), self.receive, self.send))
 
     @property
@@ -102,6 +106,22 @@ def test_a_declared_length_at_the_limit_passes() -> None:
     h.run([(b"content-length", str(LIMIT).encode())])
     assert h.status == 200
     assert h.app_read == LIMIT
+
+
+def test_a_path_can_have_its_own_larger_limit_and_no_other_path_does() -> None:
+    declared = [(b"content-length", b"10000")]
+    h = Harness([b"x" * 10_000])
+    h.run(declared, path_limits={"/x": 20_000})
+    assert h.status == 200 and h.app_read == 10_000
+    other = Harness([b"x" * 10_000])
+    other.run(declared, path_limits={"/y": 20_000})
+    assert other.status == 413 and other.receive_calls == 0
+
+
+def test_a_path_limit_also_bounds_a_streamed_body() -> None:
+    h = Harness([b"x" * 1000] * 50)
+    h.run([(b"transfer-encoding", b"chunked")], path_limits={"/x": 5000})
+    assert h.status == 413 and h.receive_calls == 6  # 6000 > 5000
 
 
 def test_a_streamed_body_is_counted_and_stopped_at_the_limit() -> None:

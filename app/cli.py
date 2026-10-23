@@ -1,7 +1,7 @@
 """Command line interface.
 
 ``python -m app <command>`` with command one of: init-db, add-agency, bootstrap-agency,
-reset-password, grant-app-role, purge-expired, import, seed-demo.
+reset-password, ai-budget, grant-app-role, purge-expired, import, seed-demo.
 
 Exit codes: 0 success, 1 failure (database, file, parse), 2 usage or refusal (bad arguments, a
 name already taken, a role that may not be used), 130 interrupted at the password prompt.
@@ -16,7 +16,7 @@ import sqlite3
 import sys
 from collections.abc import Sequence
 from datetime import date
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any, NoReturn
 
@@ -26,7 +26,9 @@ from alembic.util.exc import CommandError
 from pydantic import ValidationError
 from sqlalchemy.exc import DBAPIError, IntegrityError, SQLAlchemyError
 
-from app import db_roles
+from app import audit, db_roles
+from app.ai import budget as ai_budget
+from app.ai import pricing as ai_pricing
 from app.auth.passwords import hash_password, password_policy_error
 from app.auth.phone import InvalidPhoneError, mask_phone, normalize_phone
 from app.auth.ratelimit import purge_expired_windows
@@ -57,6 +59,7 @@ from app.repository import (
 from app.settings import Settings, environment_is_production
 from app.tenancy import bind_tenant
 
+MAX_AI_BUDGET_USD = Decimal(100000)
 EXIT_OK = 0
 EXIT_FAILURE = 1
 EXIT_USAGE = 2
@@ -73,6 +76,16 @@ def _iso_date(value: str) -> date:
         return date.fromisoformat(value)
     except ValueError as exc:
         raise argparse.ArgumentTypeError(f"{value!r} is not a YYYY-MM-DD date") from exc
+
+
+def _usd_amount(value: str) -> Decimal:
+    try:
+        amount = Decimal(value)
+    except InvalidOperation as exc:
+        raise argparse.ArgumentTypeError("not an amount in USD") from exc
+    if not amount.is_finite() or amount < 0 or amount > MAX_AI_BUDGET_USD:
+        raise argparse.ArgumentTypeError(f"the budget must be between 0 and {MAX_AI_BUDGET_USD}")
+    return amount
 
 
 class _Parser(argparse.ArgumentParser):
@@ -195,6 +208,25 @@ def _build_parser() -> argparse.ArgumentParser:
         required=True,
         help="read the shared demo password from the first line of standard input",
     )
+
+    ai = sub.add_parser(
+        "ai-budget",
+        parents=[db_option],
+        allow_abbrev=False,
+        help="set an agency's monthly AI budget, or switch its AI off (owner connection)",
+        description=(
+            "Set the monthly budget (in USD) of the AI screenshot reading for one agency, or "
+            "switch it off for that agency with --disable (--enable switches it back on). With "
+            "no row an agency has the default AI_MONTHLY_BUDGET_USD and the feature on. There is "
+            "no operator screen yet, so this is the only way to change it. Run it with the owner "
+            'connection like reset-password: DATABASE_URL="$MIGRATION_DATABASE_URL".'
+        ),
+    )
+    ai.add_argument("slug", help="the agency's slug")
+    ai.add_argument("--usd", type=_usd_amount, help="monthly budget in USD, e.g. 5 or 12.50")
+    switch = ai.add_mutually_exclusive_group()
+    switch.add_argument("--disable", action="store_true", help="switch the AI off for the agency")
+    switch.add_argument("--enable", action="store_true", help="switch the AI back on")
 
     imp = sub.add_parser("import", parents=[db_option], help="import an Amadeus daily report")
     imp.add_argument("file", type=Path, help="Amadeus report (.xlsx)")
@@ -386,6 +418,55 @@ def _reset_password(url: str, args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+def _ai_budget(url: str, args: argparse.Namespace) -> int:
+    if args.usd is None and not args.disable and not args.enable:
+        return _fail("give --usd N, --disable or --enable", EXIT_USAGE)
+    enabled = False if args.disable else (True if args.enable else None)
+    settings = Settings()
+    engine = make_engine(url)
+    try:
+        with make_session_factory(engine)() as session:
+            agency = get_agency_by_slug(session, args.slug)
+            if agency is None:
+                return _fail(f"no agency has the slug {args.slug!r}", EXIT_USAGE)
+            bind_tenant(session, agency.id)
+            now = utc_now()
+            row = ai_budget.set_limits(
+                session,
+                agency.id,
+                budget_usd=args.usd,
+                enabled=enabled,
+                default_budget_usd=settings.ai_monthly_budget_usd,
+                now=now,
+            )
+            audit.record(
+                session,
+                audit.AI_BUDGET_SET,
+                agency_id=agency.id,
+                details={
+                    "budget_micro_usd": row.monthly_budget_micro_usd,
+                    "enabled": row.enabled,
+                    "operator": _operator(),
+                },
+                now=now,
+            )
+            spent = ai_budget.month_to_date_micro(session, agency.id, now)
+            session.commit()
+            _emit(
+                {
+                    "agency": agency.slug,
+                    "enabled": bool(row.enabled),
+                    "monthly_budget_usd": ai_pricing.micro_to_usd_text(
+                        int(row.monthly_budget_micro_usd)
+                    ),
+                    "spent_this_month_usd": ai_pricing.micro_to_usd_text(spent),
+                }
+            )
+    finally:
+        engine.dispose()
+    return EXIT_OK
+
+
 def _grant_app_role(url: str, role: str) -> int:
     try:
         db_roles.validate_role_name(role)
@@ -567,8 +648,8 @@ def _database_failure(exc: SQLAlchemyError) -> int:
         return _fail("database is not ready; run: init-db", EXIT_FAILURE)
     if "permission denied" in lowered:
         return _fail(
-            f"database error: {detail}\nAdministrative commands (add-agency, bootstrap-agency) "
-            "need the owner connection, not the web application's role: run them with "
+            f"database error: {detail}\nAdministrative commands (add-agency, bootstrap-agency, "
+            "ai-budget) need the owner connection, not the web application's role: run them with "
             "DATABASE_URL set to the value of MIGRATION_DATABASE_URL.",
             EXIT_FAILURE,
         )
@@ -621,6 +702,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             return _bootstrap(url, args)
         if args.command == "reset-password":
             return _reset_password(url, args)
+        if args.command == "ai-budget":
+            return _ai_budget(url, args)
         if args.command == "grant-app-role":
             return _grant_app_role(url, args.role)
         if args.command == "purge-expired":

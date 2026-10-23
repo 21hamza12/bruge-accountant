@@ -78,6 +78,28 @@ def month_to_date_micro(db: Session, agency_id: int, now: datetime) -> int:
     return int(total or 0)
 
 
+def day_start(now: datetime) -> datetime:
+    """UTC midnight of ``now``'s day."""
+    moment = now.astimezone(UTC) if now.tzinfo else now.replace(tzinfo=UTC)
+    return moment.replace(hour=0, minute=0, second=0, microsecond=0)
+
+
+def fallbacks_today(db: Session, agency_id: int, now: datetime) -> int:
+    """Calls the chat made to the stronger model for this agency since UTC midnight: the rows
+    ``fallback`` of purpose ``chat``. One indexed query (``agency_id``, ``created_at``)."""
+    found = db.scalar(
+        select(func.count())
+        .select_from(AiUsage)
+        .where(
+            AiUsage.agency_id == agency_id,
+            AiUsage.created_at >= day_start(now),
+            AiUsage.purpose == PURPOSE_CHAT,
+            AiUsage.outcome == OUTCOME_FALLBACK,
+        )
+    )
+    return int(found or 0)
+
+
 def within_budget(
     db: Session,
     agency_id: int,

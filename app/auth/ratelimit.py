@@ -74,6 +74,8 @@ SCREENSHOT_USER = Limit("screenshot_user", 60, 3600)
 CHAT_USER = Limit("chat_user", 60, 3600)
 # Chat messages that go to the AI (phase E part 2): 30 an hour for each user, on top of CHAT_USER.
 CHAT_AI_USER = Limit("chat_ai_user", 30, 3600)
+# ... and 120 an hour for the whole agency, so a few busy users cannot spend its budget.
+CHAT_AI_AGENCY = Limit("chat_ai_agency", 120, 3600)
 # Guesses at the current password of a logged-in account (stolen-session brute force).
 PASSWORD_CHANGE_USER = Limit("password_change_user", 5, 15 * 60)
 

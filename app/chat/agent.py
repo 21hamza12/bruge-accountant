@@ -11,16 +11,21 @@ gives back ``ai_prompt.model_view`` of each result, never ``Reply.lines``. The a
 model's words made plain (``ai_prompt.clean_prose``, and replaced when a number in them comes from
 nowhere) followed by the lines of the lookups it ran, which carry the real links.
 
-A turn the cheap model could not resolve (cut answer, refusal, still wanting tools at the round
-cap, every lookup invalid) is started again from the same messages by the stronger model, once.
-Every model call is checked against the budget before and recorded after (``app.ai.calls``).
-Nothing the person or the model said is logged or kept in ``ai_usage``.
+A turn the cheap model could not resolve (still wanting tools at the round cap, every lookup
+invalid, or a transient failure of the provider's own servers) is started again from the same
+messages by the stronger model, once, within the agency's daily cap on such calls. A cut answer
+(``max_tokens``, ``pause_turn``) or a refusal is NOT retried: the lookups so far and "Je n'ai pas
+pu répondre complètement." (or the polite error) are the answer, so that a long or odd question
+cannot make the dearer model run. A whole turn has a deadline. Every model call is checked against
+the budget before and recorded after (``app.ai.calls``). Nothing the person or the model said is
+logged or kept in ``ai_usage``.
 """
 
 from __future__ import annotations
 
 import logging
-from collections.abc import Sequence
+import time
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from functools import partial
 from typing import Any
@@ -51,10 +56,15 @@ AI_DOWN = (
     "Les demandes simples marchent toujours :"
 )
 PARTIAL = "Je n'ai pas pu répondre complètement."
+ONLY_THE_APP = "Je ne peux répondre qu'avec les informations de l'application."
 
 # how a pass ends
 DONE, UNRESOLVED, BUDGET, DOWN = "done", "unresolved", "budget", "down"
-CUT_OFF = ("max_tokens", "refusal")  # stop reasons that leave the turn unresolved
+# stop reasons that end a pass without an answer (``pause_turn`` is not an ``end_turn``)
+CUT_OFF = ("max_tokens", "refusal", "pause_turn")
+# why a pass is UNRESOLVED and the stronger model may do better, or DOWN and may be transient
+RETRY_UNRESOLVED = ("round_cap", "invalid")
+RETRY_DOWN = ("server", "overloaded")
 
 
 @dataclass
@@ -73,7 +83,7 @@ class _Pass:
 
     model: str
     status: str = DONE
-    reason: str = ""  # why UNRESOLVED: max_tokens, refusal, round_cap or invalid
+    reason: str = ""  # why UNRESOLVED (max_tokens, refusal, round_cap, invalid, deadline) or DOWN
     prose: str = ""
     ran: list[tuple[str, Reply]] = field(default_factory=list)  # the lookups, in order
     sent: list[str] = field(default_factory=list)  # the results as the model saw them
@@ -143,6 +153,7 @@ def _run_pass(
     model: str,
     outcome: str,
     totals: _Totals,
+    expired: Callable[[], bool],
 ) -> _Pass:
     state = _Pass(model)
     offered = {t["name"] for t in tools}
@@ -150,6 +161,9 @@ def _run_pass(
     asked = 0  # tool_use blocks seen
     for number in range(1, MAX_ROUNDS + 1):
         last = number == MAX_ROUNDS
+        if expired():  # before each call: the turn has used its time, answer with what there is
+            state.status, state.reason = UNRESOLVED, "deadline"
+            return state
         request = ChatRequest(
             model, ai_prompt.SYSTEM, tools, messages, {"type": "none" if last else "auto"}
         )
@@ -166,8 +180,8 @@ def _run_pass(
         except BudgetRefused:
             state.status = BUDGET
             return state
-        except CallFailed:
-            state.status = DOWN
+        except CallFailed as failed:
+            state.status, state.reason = DOWN, failed.kind
             return state
         state.rounds += 1
         totals.rounds += 1
@@ -208,9 +222,12 @@ def _compose(ctx: ChatContext, text: str, state: _Pass, status: str) -> Reply:
     else:
         prose = ai_prompt.clean_prose(state.prose)
         words = " ".join(line.text for line in prose)
-        sources = [*state.sent, text, ctx.today.isoformat()]
-        if prose and not ai_prompt.grounded(words, sources):
-            prose = (r.say(ai_prompt.DEFAULT_PROSE),) if tool_lines else ()
+        if prose and names:  # a lookup ran: every number and price word must come from its data
+            if not ai_prompt.grounded(words, state.sent, message=text, today=ctx.today):
+                prose = (r.say(ai_prompt.DEFAULT_PROSE),) if tool_lines else ()
+        elif prose and not ai_prompt.safe_without_tools(words):  # nothing was looked up
+            reply = Reply(r.UNKNOWN, (r.say(ONLY_THE_APP), *help_lines(user)))
+            return _with_data(reply, state, names)
         if not prose and not tool_lines:
             return _with_data(polite_unknown(ctx, text), state, names)
         lines = [*prose, *tool_lines] if tool_lines else [*prose, *help_lines(user)]
@@ -225,20 +242,64 @@ def _with_data(reply: Reply, state: _Pass, names: list[str]) -> Reply:
     return Reply(reply.outcome, _lines_of(reply), None, _data(state, names))
 
 
-def _gated(ctx: ChatContext, text: str) -> Reply | None:
-    """The answers plain code gives before any model is asked, or None to go on."""
+def _free_question_allowed(ctx: ChatContext) -> bool:
+    """Count this free question against the person's hourly allowance and the agency's. Called only
+    when a model call is about to be made. A question the agency's allowance refuses gives the
+    person's hit back."""
     user, db = ctx.user, ctx.db
+    mine = ratelimit.hit(db, ratelimit.CHAT_AI_USER, str(user.id), ctx.now)
+    ours = None
+    if mine.allowed:
+        ours = ratelimit.hit(db, ratelimit.CHAT_AI_AGENCY, str(user.agency_id), ctx.now)
+        if not ours.allowed:
+            ratelimit.refund(db, ratelimit.CHAT_AI_USER, str(user.id), ctx.now)
+    db.commit()
+    refused = next((d for d in (mine, ours) if d is not None and not d.allowed), None)
+    if refused is not None:
+        log.info("chat ai limited", extra={"retry_after": refused.retry_after})
+        return False
+    return True
+
+
+def _gated(ctx: ChatContext, text: str, caller: Caller, primary: str) -> Reply | None:
+    """The answers plain code gives before any model is asked, or None to go on. Only a question
+    that is really going to a model uses the free-question allowances."""
+    user = ctx.user
     if looks_like_fragment(text):  # ticket content never reaches the chat model
         first, *rest = _lines_of(polite_unknown(ctx, text))
         return Reply(r.UNKNOWN, (first, r.say(FRAGMENT_HINT), *rest))
-    if not budget.agency_enabled(db, user.agency_id):
+    if not budget.agency_enabled(ctx.db, user.agency_id):
         return polite_unknown(ctx, text)
-    decision = ratelimit.hit(db, ratelimit.CHAT_AI_USER, str(user.id), ctx.now)
-    db.commit()
-    if not decision.allowed:
-        log.info("chat ai limited", extra={"retry_after": decision.retry_after})
+    if not caller.affordable(primary):  # the chat's share of the month is spent
+        caller.refuse(primary)
+        return _compose(ctx, text, _Pass(primary, status=BUDGET), BUDGET)
+    if not _free_question_allowed(ctx):
         return Reply(r.UNKNOWN, (r.say(TOO_MANY_AI), *help_lines(user)))
     return None
+
+
+def _no_history() -> Sequence[str]:
+    return ()
+
+
+def _may_retry(state: _Pass) -> bool:
+    return (state.status == UNRESOLVED and state.reason in RETRY_UNRESOLVED) or (
+        state.status == DOWN and state.reason in RETRY_DOWN
+    )
+
+
+def _merged(first: _Pass, second: _Pass) -> _Pass:
+    """The stronger model's unresolved pass with the lookups of the first one kept (the lines the
+    person sees are those of every lookup run, without duplicates)."""
+    return _Pass(
+        second.model,
+        second.status,
+        second.reason,
+        second.prose,
+        [*first.ran, *second.ran],
+        [*first.sent, *second.sent],
+        first.rounds + second.rounds,
+    )
 
 
 def answer_with_ai(
@@ -247,13 +308,17 @@ def answer_with_ai(
     *,
     client: ChatModelClient,
     settings: Settings,
-    history: Sequence[str] = (),
+    history: Callable[[], Sequence[str]] = _no_history,
+    monotonic: Callable[[], float] = time.monotonic,
 ) -> Reply:
-    """The reply to a message that no rule understood. ``history`` is the person's own earlier
-    messages of today (``store.recent_user_texts``)."""
-    gated = _gated(ctx, text)
-    if gated is not None:
-        return gated
+    """The reply to a message that no rule understood. ``history`` returns the person's own earlier
+    messages of today (``store.recent_user_texts``); it is called only once every gate has passed,
+    so a refused question costs no query for it."""
+    started = monotonic()
+
+    def expired() -> bool:
+        return monotonic() - started > settings.ai_chat_turn_deadline_s
+
     caller = Caller(
         ctx.db,
         ctx.user,
@@ -262,22 +327,35 @@ def answer_with_ai(
         purpose=budget.PURPOSE_CHAT,
         estimate=pricing.estimate_chat_micro_usd,
         share=settings.ai_chat_budget_share,
+        commit_before_call=True,
     )
-    turn = ai_prompt.build_user_turn(ctx.user, ctx.now, text, history)
+    primary, stronger = settings.ai_chat_model, settings.ai_chat_fallback_model
+    gated = _gated(ctx, text, caller, primary)
+    if gated is not None:
+        return gated
+    turn = ai_prompt.build_user_turn(ctx.user, ctx.now, text, history())
     tools = ai_prompt.tool_definitions(ctx.user)
     totals = _Totals()
-    primary, stronger = settings.ai_chat_model, settings.ai_chat_fallback_model
-    state = _run_pass(ctx, caller, client, turn, tools, primary, budget.OUTCOME_OK, totals)
+    state = _run_pass(ctx, caller, client, turn, tools, primary, budget.OUTCOME_OK, totals, expired)
     status = state.status
-    if status == UNRESOLVED and stronger and stronger != primary:
+    if (
+        _may_retry(state)
+        and stronger
+        and stronger != primary
+        and not expired()
+        and budget.fallbacks_today(ctx.db, ctx.user.agency_id, ctx.now)
+        < settings.ai_chat_fallback_daily_cap
+    ):
         second = _run_pass(
-            ctx, caller, client, turn, tools, stronger, budget.OUTCOME_FALLBACK, totals
+            ctx, caller, client, turn, tools, stronger, budget.OUTCOME_FALLBACK, totals, expired
         )
-        if second.status in (DONE, UNRESOLVED):
-            state, status = second, second.status
+        if second.status == DONE:
+            state, status = second, DONE
+        elif second.status == UNRESOLVED:
+            state, status = _merged(state, second), UNRESOLVED
         elif second.status == DOWN:
             status = DOWN  # the first pass's lookups are shown, then the polite error
-        # BUDGET: the first pass's partial result is kept (status stays UNRESOLVED)
+        # BUDGET: the first pass's partial result is kept (its own status stands)
     answer = _compose(ctx, text, state, status)
     log.info(
         "chat ai",

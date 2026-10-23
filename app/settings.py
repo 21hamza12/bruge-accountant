@@ -10,6 +10,8 @@ from typing import Annotated, Any, Literal
 from pydantic import Field, SecretStr, ValidationInfo, field_validator, model_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
+from app.ai.pricing import PRICES
+
 DEV_ALLOWED_HOSTS = ["localhost", "127.0.0.1", "testserver"]
 
 
@@ -128,6 +130,19 @@ class Settings(BaseSettings):
     ai_chat_fallback_model: str = "claude-sonnet-5-5"
     ai_chat_budget_share: Decimal = Field(default=Decimal("0.8"), ge=Decimal("0.1"), le=1)
     ai_chat_timeout_s: float = Field(default=20.0, ge=1, le=120)  # one chat API call
+    # No retry inside the SDK (a retry doubles the cost and the wait of a call that is already
+    # slow; the turn deadline and the stronger model are the chat's own second chance).
+    ai_chat_max_retries: int = Field(default=0, ge=0, le=4)
+    ai_chat_turn_deadline_s: float = Field(default=45.0, ge=5, le=300)  # a whole turn
+    # Calls to the stronger model (rows ``fallback`` of purpose ``chat``) an agency may cost in one
+    # UTC day; 0 never escalates.
+    ai_chat_fallback_daily_cap: int = Field(default=20, ge=0, le=100000)
+    # Variables the Anthropic SDK reads by itself. They are fields only so that production can
+    # refuse them: a base URL would send the key (and every question) to another host, an auth
+    # token replaces the key, and ANTHROPIC_LOG=debug makes the SDK log request bodies.
+    anthropic_base_url: str | None = None
+    anthropic_auth_token: SecretStr | None = None
+    anthropic_log: str | None = None
     render_git_commit: str | None = None
     # Render sets RENDER=true on its services. Seeing it outside production means a deploy
     # forgot ENV=production, so refuse to start rather than run with development defaults.
@@ -147,6 +162,14 @@ class Settings(BaseSettings):
             raise ValueError("RENDER is set but ENV is not production; set ENV=production")
         if self.ai_enabled and not self.has_ai_key and self.env == "production":
             raise ValueError("AI_ENABLED is true but ANTHROPIC_API_KEY is not set")
+        self._check_models()
+        if self.env == "production":
+            for name in ("anthropic_base_url", "anthropic_auth_token", "anthropic_log"):
+                if getattr(self, name) is not None:
+                    raise ValueError(
+                        f"{name.upper()} must not be set in production "
+                        "(the SDK would read it: another host, another credential or debug logs)"
+                    )
         if self.env != "production":
             if not self.allowed_hosts:
                 self.allowed_hosts = list(DEV_ALLOWED_HOSTS)
@@ -165,6 +188,21 @@ class Settings(BaseSettings):
         if any(not origin.lower().startswith("https://") for origin in self.cors_allowed_origins):
             raise ValueError("CORS_ALLOWED_ORIGINS entries must be https:// origins in production")
         return self
+
+    def _check_models(self) -> None:
+        """Every model named must be in the price table: a typo would be priced at the dearest
+        entry and fail on the first call instead of at startup. An empty second model is allowed
+        (it switches the second try off)."""
+        for name, optional in (
+            ("ai_chat_model", False),
+            ("ai_chat_fallback_model", True),
+            ("ai_screenshot_model", False),
+            ("ai_fallback_model", True),
+        ):
+            model = getattr(self, name)
+            if model in PRICES or (optional and model == ""):
+                continue
+            raise ValueError(f"{name.upper()} is not a model in the price table: {model!r}")
 
     @property
     def has_ai_key(self) -> bool:

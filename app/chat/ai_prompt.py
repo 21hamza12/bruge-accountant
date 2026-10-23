@@ -6,14 +6,20 @@
   minus ``AI_HIDDEN``: the model never learns that a tool of another role exists.
 * ``build_user_turn``: today's date, the role, up to ``AI_HISTORY`` earlier messages of the person
   themselves and the message. Never an application reply, never Amadeus text.
-* ``model_view``: what a tool result looks like to the model: the outcome and ``sanitize(data)``.
-  ``Reply.lines`` is NEVER sent: it holds partner and client names, which are other people's data
-  and a way to plant instructions in a record. ``sanitize`` keeps only numbers, booleans, ISO dates,
-  ticket numbers and the code's own fixed phrases, and drops any other string.
+* ``model_view``: what a tool result looks like to the model: the outcome and ``sanitize(tool,
+  data)``. ``Reply.lines`` is NEVER sent: it holds partner and client names, which are other
+  people's data and a way to plant instructions in a record. ``sanitize`` is an allowlist of the
+  fields each tool puts in ``data``, each with a strict shape (a number, a boolean, an ISO date, a
+  ten-digit ticket number, a staff sign, one of the code's own fixed phrases); anything else is
+  dropped.
+* ``redact``: phone numbers, e-mail addresses and long digit runs are replaced before the person's
+  message and history leave for the provider.
 * ``clean_prose``: the model's words as plain text lines the page may show: no control character,
   no Markdown, no tag, no URL or path, so nothing the model writes can become a link or markup.
-* ``grounded``: a number of three digits or more in the prose must come from a tool result or from
-  the person's own message. The model never sets a price (decision 14).
+* ``grounded`` and ``safe_without_tools``: the model never states a price or invents a number
+  (decision 14): every number in its words must be a whole number token of a tool result (the
+  person's message counts only for ticket numbers and dates), and French number words and price
+  words are refused unless the results hold that very word.
 """
 
 from __future__ import annotations
@@ -21,10 +27,12 @@ from __future__ import annotations
 import json
 import re
 import unicodedata
-from collections.abc import Iterable, Mapping, Sequence
-from datetime import datetime
+from collections.abc import Callable, Iterable, Mapping, Sequence
+from dataclasses import dataclass
+from datetime import date, datetime
 from typing import Any
 
+from app.accounts import SIGN_PATTERN
 from app.chat.reply import MAX_LINE, Line, Reply
 from app.chat.tools import Tool, tools_for
 from app.models import ROLE_ACCOUNTANT, ROLE_MANAGER, ROLE_STAFF, User
@@ -36,7 +44,6 @@ HISTORY_CHARS = 200  # each of them, at most
 MAX_PROSE_LINES = 4
 MAX_PROSE_CHARS = 600
 MAX_TOOL_LINES = 30
-GROUNDING_MIN_DIGITS = 3
 
 SYSTEM = """\
 You are the assistant inside the chat of a travel-agency accounting application. The people who \
@@ -84,8 +91,9 @@ def _description(tool: Tool) -> str:
 
 
 def _all_required(schema: dict[str, Any]) -> dict[str, Any]:
-    """The same schema with every property required and nullable, for a strict mode that refuses
-    optional properties. ``check_args`` reads ``None`` as missing."""
+    """The schema with every property required and nullable (``"type": ["string", "null"]``,
+    ``additionalProperties: false``): valid under strict mode whether or not it allows optional
+    properties. ``Tool.check_args`` reads ``None`` as missing, so a null is "not given"."""
     properties = {
         name: {**prop, "type": [prop["type"], "null"]}
         for name, prop in schema["properties"].items()
@@ -93,20 +101,50 @@ def _all_required(schema: dict[str, Any]) -> dict[str, Any]:
     return {**schema, "properties": properties, "required": list(properties)}
 
 
-def tool_definitions(user: User, *, all_required: bool = False) -> list[dict[str, Any]]:
-    """The ``tools`` of a request, strict, for this person's role."""
-    out: list[dict[str, Any]] = []
-    for tool in offered_tools(user):
-        schema = tool.input_schema()
-        out.append(
-            {
-                "name": tool.name,
-                "description": _description(tool),
-                "input_schema": _all_required(schema) if all_required else schema,
-                "strict": True,
-            }
-        )
-    return out
+def tool_definitions(user: User) -> list[dict[str, Any]]:
+    """The ``tools`` of a request, strict, for this person's role. The one schema form."""
+    return [
+        {
+            "name": tool.name,
+            "description": _description(tool),
+            "input_schema": _all_required(tool.input_schema()),
+            "strict": True,
+        }
+        for tool in offered_tools(user)
+    ]
+
+
+# --- what leaves for the provider is redacted -------------------------------------------------
+
+REDACTED = "[…]"
+_EMAIL = re.compile(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+")
+_INTERNATIONAL = re.compile(r"\+\s?\d[\d .\-\u00a0\u202f]{6,}\d")
+_GROUPED = re.compile(r"(?<!\d)\d{2,4}(?:[ .\-\u00a0\u202f]\d{2,4}){2,}(?!\d)")
+_DATE_LIKE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}|[0-9]{1,2}\.[0-9]{1,2}\.[0-9]{2,4}")
+_LONG_RUN = re.compile(r"(?<!\d)\d{6,}(?!\d)")
+TICKET_LENGTHS = (10, 13)  # digits of a ticket number
+MIN_REDACTED_DIGITS = 6
+
+
+def _redact_grouped(found: re.Match[str]) -> str:
+    text = found.group()
+    digits = re.sub(r"\D", "", text)
+    return text if _DATE_LIKE.fullmatch(text) or len(digits) < MIN_REDACTED_DIGITS else REDACTED
+
+
+def _redact_run(found: re.Match[str]) -> str:
+    return found.group() if len(found.group()) in TICKET_LENGTHS else REDACTED
+
+
+def redact(text: str) -> str:
+    """``text`` with e-mail addresses, phone numbers (``+222...``, 8-digit local numbers, grouped
+    digits) and every digit run of six or more that is not a ten- or thirteen-digit ticket number
+    replaced by ``[…]``. Dates (ISO, ``dd/mm/yyyy``, ``dd.mm.yyyy``) and short numbers stay: they
+    are what a question is about; a client's phone or address never needs to reach the provider."""
+    text = _EMAIL.sub(REDACTED, text)
+    text = _INTERNATIONAL.sub(REDACTED, text)
+    text = _GROUPED.sub(_redact_grouped, text)
+    return _LONG_RUN.sub(_redact_run, text)
 
 
 # --- the turn ---------------------------------------------------------------------------------
@@ -118,44 +156,146 @@ def build_user_turn(user: User, now: datetime, text: str, history: Sequence[str]
     day = now.date()
     role = _ROLE_LABELS.get(user.role, "inconnu")
     lines = [f"Aujourd'hui : {day.isoformat()} ({_WEEKDAYS[day.weekday()]}). Rôle : {role}."]
-    earlier = [h[:HISTORY_CHARS] for h in history if h.strip()][-AI_HISTORY:]
+    earlier = [redact(h)[:HISTORY_CHARS] for h in history if h.strip()][-AI_HISTORY:]
     if earlier:
         lines.append("Messages précédents de la personne (contexte) :")
         lines += [f"- {h}" for h in earlier]
-    lines.append(f"Message : {text}")
+    lines.append(f"Message : {redact(text)}")
     return "\n".join(lines)
 
 
 # --- what the model sees of a result ----------------------------------------------------------
 
-_KEY = re.compile(r"[A-Za-z0-9_]{1,32}")
-_SAFE_STRING = re.compile(r"[0-9A-Za-zÀ-ÿ'() .,-]{0,80}")
+
+@dataclass(frozen=True)
+class _List:
+    """A list whose every element has the shape ``item`` (the others are dropped)."""
+
+    item: Any
 
 
-def sanitize(value: Any) -> Any:
-    """``value`` with every string that is not made of plain characters dropped, every key that is
-    not a plain name dropped, and anything that is not a number, boolean, null, string, list or
-    object dropped. A value that is already plain comes back equal."""
-    if value is None or isinstance(value, bool | int):
-        return value
-    if isinstance(value, str):
-        return value if _SAFE_STRING.fullmatch(value) else None
-    if isinstance(value, Mapping):
-        return {
-            k: sanitize(v)
-            for k, v in value.items()
-            if isinstance(k, str) and _KEY.fullmatch(k) and _keeps(v)
+@dataclass(frozen=True)
+class _Obj:
+    """An object that keeps only the named fields, each with its own shape."""
+
+    fields: Mapping[str, Any]
+
+
+@dataclass(frozen=True)
+class _Map:
+    """An object whose keys must pass ``key`` and whose values have the shape ``value``."""
+
+    key: Callable[[Any], bool]
+    value: Any
+
+
+_DROP: Any = object()
+_ISO_DATE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")
+_DOC = re.compile(r"[0-9]{10}")
+# what ``tools._missing`` says is still to do: fixed phrases (the count of open flags varies)
+_MISSING = re.compile(r"numéro du client|[0-9]{1,4} écart\(s\) à traiter")
+
+
+def _is_int(value: Any) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+def _is_bool(value: Any) -> bool:
+    return isinstance(value, bool)
+
+
+def _is_iso_date(value: Any) -> bool:
+    if not isinstance(value, str) or _ISO_DATE.fullmatch(value) is None:
+        return False
+    try:
+        date.fromisoformat(value)
+    except ValueError:
+        return False
+    return True
+
+
+def _is_doc(value: Any) -> bool:
+    return isinstance(value, str) and _DOC.fullmatch(value) is not None
+
+
+def _is_sign(value: Any) -> bool:
+    """A staff sign: the application's own pattern (``accounts.SIGN_PATTERN``), e.g. ``0004SV``."""
+    return isinstance(value, str) and SIGN_PATTERN.fullmatch(value) is not None
+
+
+def _is_missing(value: Any) -> bool:
+    return isinstance(value, str) and _MISSING.fullmatch(value) is not None
+
+
+_MISSING_LIST = _List(_is_missing)
+_DOCS = _List(_is_doc)
+_SPEC_ID, _SPEC_BOOL, _SPEC_DAY, _SPEC_DOC = _is_int, _is_bool, _is_iso_date, _is_doc
+
+# The fields each tool may put in ``Reply.data`` for the model, and their shapes. A tool that is not
+# here (``help``, ``paste_sale``: never offered) sends no data. A new tool, or a new field, is not
+# sent until it is added here: a test runs every tool and compares what comes back to what it put.
+_TOOL_FIELDS: dict[str, _Obj] = {
+    "list_sales": _Obj(
+        {
+            "day": _SPEC_DAY,
+            "count": _SPEC_ID,
+            "sales": _List(_Obj({"sale_id": _SPEC_ID, "docs": _DOCS, "missing": _MISSING_LIST})),
         }
-    if isinstance(value, list | tuple):
-        return [sanitize(v) for v in value if _keeps(v)]
-    return None
+    ),
+    "open_flags": _Obj({"count": _SPEC_ID, "by_sign": _Map(_is_sign, _SPEC_ID)}),
+    "not_sent_tickets": _Obj({"count": _SPEC_ID, "docs": _DOCS}),
+    "ticket_status": _Obj(
+        {
+            "doc": _SPEC_DOC,
+            "found": _SPEC_BOOL,
+            "flags": _List(_SPEC_ID),
+            "sale_id": _SPEC_ID,
+            "day": _SPEC_DAY,
+            "missing": _MISSING_LIST,
+        }
+    ),
+    "day_sheet": _Obj({"day": _SPEC_DAY, "available": _SPEC_BOOL, "draft": _SPEC_BOOL}),
+    "void_link": _Obj(
+        {"doc": _SPEC_DOC, "found": _SPEC_BOOL, "sale_id": _SPEC_ID, "can_void": _SPEC_BOOL}
+    ),
+}
 
 
-def _keeps(value: Any) -> bool:
-    """False for a value ``sanitize`` would turn into nothing (so it leaves no ``null`` behind)."""
-    if isinstance(value, str):
-        return _SAFE_STRING.fullmatch(value) is not None
-    return value is None or isinstance(value, bool | int | str | Mapping | list | tuple)
+def _clean(spec: Any, value: Any) -> Any:
+    """``value`` as ``spec`` allows it, or ``_DROP``."""
+    if isinstance(spec, _Obj):
+        if not isinstance(value, Mapping):
+            return _DROP
+        kept = {
+            k: c
+            for k, v in value.items()
+            if isinstance(k, str) and k in spec.fields
+            if (c := _clean(spec.fields[k], v)) is not _DROP
+        }
+        return kept
+    if isinstance(spec, _Map):
+        if not isinstance(value, Mapping):
+            return _DROP
+        return {
+            k: c
+            for k, v in value.items()
+            if spec.key(k) and (c := _clean(spec.value, v)) is not _DROP
+        }
+    if isinstance(spec, _List):
+        if not isinstance(value, list | tuple):
+            return _DROP
+        return [c for v in value if (c := _clean(spec.item, v)) is not _DROP]
+    return value if spec(value) else _DROP
+
+
+def sanitize(tool: str | None, data: Mapping[str, Any]) -> dict[str, Any]:
+    """The part of a tool's ``data`` the model may see: only the fields declared for that tool,
+    each with its strict shape. Anything else (a free string, an unknown key, a wrong type, a tool
+    with no declaration) is dropped. Data that is already plain comes back equal."""
+    spec = _TOOL_FIELDS.get(tool or "")
+    cleaned = _clean(spec, data) if spec is not None else _DROP
+    result: dict[str, Any] = {} if cleaned is _DROP else cleaned
+    return result
 
 
 def _dump(outcome: str, data: Any, *, truncated: bool) -> str:
@@ -166,7 +306,8 @@ def _dump(outcome: str, data: Any, *, truncated: bool) -> str:
 
 
 def _longest_list(data: Any) -> list[Any] | None:
-    """The longest list in ``data`` (top level, and one level down inside lists of objects)."""
+    """The longest non-empty list among the values of ``data`` (the top level only: that is where
+    the allowlisted tools put their lists)."""
     found: list[list[Any]] = []
     if isinstance(data, dict):
         for v in data.values():
@@ -178,7 +319,7 @@ def _longest_list(data: Any) -> list[Any] | None:
 def model_view(reply: Reply) -> str:
     """A tool result for the model: compact JSON, at most ``MAX_RESULT_CHARS`` characters (long
     lists are cut and ``truncated`` is set)."""
-    data = sanitize(dict(reply.data))
+    data = sanitize(reply.tool, reply.data)
     truncated = False
     text = _dump(reply.outcome, data, truncated=truncated)
     while len(text) > MAX_RESULT_CHARS:
@@ -198,8 +339,7 @@ def model_view(reply: Reply) -> str:
 _URL = re.compile(r"https?://\S+|www\.\S+", re.IGNORECASE)
 _PATH = re.compile(r"(?<![\w/])\(?/\S*")
 _MARKERS = re.compile(r"[*#_`>|<\[\]~]")
-_DIGITS = re.compile(rf"\d{{{GROUNDING_MIN_DIGITS},}}")
-DEFAULT_PROSE = "Voici ce que j'ai trouvé :"
+DEFAULT_PROSE = "Voici ce que j'ai trouvé :"  # in place of words that are not grounded
 
 
 def clean_prose(text: str) -> tuple[Line, ...]:
@@ -221,8 +361,211 @@ def clean_prose(text: str) -> tuple[Line, ...]:
     return tuple(lines)
 
 
-def grounded(prose: str, sources: Iterable[str]) -> bool:
-    """True when every run of ``GROUNDING_MIN_DIGITS`` digits or more in ``prose`` appears in one
-    of ``sources`` (the tool results as sent, the person's message, today's date)."""
-    heap = "\n".join(sources)
-    return all(run in heap for run in _DIGITS.findall(prose))
+_WORD = re.compile(r"[a-z]+")
+_NUMBER_TOKEN = re.compile(r"[0-9]+(?:[   .,][0-9]+)*")
+_PLAIN_NUMBER = re.compile(r"[0-9]+")
+_ISO_IN_TEXT = re.compile(r"(?<![0-9])([0-9]{4})-([0-9]{2})-([0-9]{2})(?![0-9])")
+_DMY_IN_TEXT = re.compile(r"(?<![0-9/])([0-9]{1,2})/([0-9]{1,2})(?:/([0-9]{2,4}))?(?![0-9/])")
+_UPPER_WORD = re.compile(r"(?<![A-Za-z])[A-Z]{2,}(?![A-Za-z])")
+# French number words, as amounts or counts (``un`` is the article too: only ``million``,
+# ``milliard`` and the others are listed), and the words and symbols of a price.
+_NUMBER_WORDS = frozenset(
+    [
+        "zero",
+        "deux",
+        "trois",
+        "quatre",
+        "cinq",
+        "six",
+        "sept",
+        "huit",
+        "neuf",
+        "dix",
+        "onze",
+        "douze",
+        "treize",
+        "quatorze",
+        "quinze",
+        "seize",
+        "vingt",
+        "vingts",
+        "trente",
+        "quarante",
+        "cinquante",
+        "soixante",
+        "septante",
+        "huitante",
+        "octante",
+        "nonante",
+        "cent",
+        "cents",
+        "mille",
+        "milles",
+        "million",
+        "millions",
+        "milliard",
+        "milliards",
+    ]
+)
+_PRICE_WORDS = frozenset(
+    [
+        "eur",
+        "euro",
+        "euros",
+        "mru",
+        "ouguiya",
+        "ouguiyas",
+        "um",
+        "da",
+        "dzd",
+        "dinar",
+        "dinars",
+        "fcfa",
+        "usd",
+        "dollar",
+        "dollars",
+        "prix",
+        "tarif",
+        "tarifs",
+        "montant",
+        "montants",
+        "frais",
+    ]
+)
+_PRICE_PREFIXES = ("cout", "tarif", "montant")  # coût, coûte, coûter, ...
+_PRICE_SYMBOLS = ("€", "$")
+
+
+def _ascii(text: str) -> str:
+    """``text`` in NFKC with every decimal digit of any script written 0-9 (Arabic-Indic and
+    full-width digits are digits too), and NBSP / narrow NBSP as plain spaces."""
+    text = unicodedata.normalize("NFKC", text)
+    return "".join(
+        str(unicodedata.decimal(c)) if unicodedata.category(c) == "Nd" else c for c in text
+    )
+
+
+def _fold(text: str) -> str:
+    """Lower case without accents: ``Coût`` is ``cout``."""
+    decomposed = unicodedata.normalize("NFKD", _ascii(text).lower())
+    return "".join(c for c in decomposed if not unicodedata.combining(c))
+
+
+def _forbidden_words(text: str) -> set[str]:
+    """The number words, price words and price symbols in ``text``."""
+    found = {
+        w
+        for w in _WORD.findall(_fold(text))
+        if w in _NUMBER_WORDS or w in _PRICE_WORDS or w.startswith(_PRICE_PREFIXES)
+    }
+    return found | {s for s in _PRICE_SYMBOLS if s in text}
+
+
+def _strings(value: Any) -> Iterable[str]:
+    """Every string of a decoded JSON value, keys included; numbers as their digits."""
+    if isinstance(value, str):
+        yield value
+    elif _is_int(value):
+        yield str(abs(value))
+    elif isinstance(value, Mapping):
+        for k, v in value.items():
+            yield from _strings(k)
+            yield from _strings(v)
+    elif isinstance(value, list | tuple):
+        for v in value:
+            yield from _strings(v)
+
+
+def _result_texts(results: Iterable[str]) -> list[str]:
+    """What the tool results say, as strings: each result decoded (its numbers and strings), or as
+    it is when it is not JSON."""
+    out: list[str] = []
+    for raw in results:
+        try:
+            out.extend(_strings(json.loads(raw)))
+        except ValueError:
+            out.append(raw)
+    return out
+
+
+def _dates_in(text: str) -> tuple[set[tuple[int, int]], set[int]]:
+    """``({(month, day)}, {year})`` of the ISO and ``dd/mm[/yy[yy]]`` dates in ``text``."""
+    days: set[tuple[int, int]] = set()
+    years: set[int] = set()
+    for year, month, day in _ISO_IN_TEXT.findall(text):
+        days.add((int(month), int(day)))
+        years.add(int(year))
+    for day, month, year in _DMY_IN_TEXT.findall(text):
+        days.add((int(month), int(day)))
+        if year:
+            years.add(int(year) + (2000 if len(year) == 2 else 0))
+    return days, years
+
+
+def _ticket_numbers(text: str) -> set[str]:
+    """Digit runs of ten or thirteen (as typed, or with spaces or dots between groups)."""
+    found = {m for m in _PLAIN_NUMBER.findall(text) if len(m) in TICKET_LENGTHS}
+    for token in _NUMBER_TOKEN.findall(text):
+        digits = re.sub(r"\D", "", token)
+        if len(digits) in TICKET_LENGTHS:
+            found.add(digits)
+    return found
+
+
+def grounded(
+    prose: str, tool_data: Iterable[str], *, message: str = "", today: date | None = None
+) -> bool:
+    """True when the model's ``prose`` states nothing the tool results do not.
+
+    * Numbers are compared as WHOLE tokens: digit groups separated by one space, NBSP, narrow NBSP,
+      ``.`` or ``,`` are one token (``45 000``, ``45.000``, ``45,50`` are 45000 and 4550), other
+      scripts' digits are read as 0-9. Every number token of one digit or more must be a number or
+      digit run of a tool result (``tool_data``, as sent): never a piece of a longer number.
+    * The person's ``message`` counts only for ticket numbers (10 or 13 digits) and for dates; a
+      date in the prose (ISO or ``dd/mm[/yyyy]``) is also fine when it is one of a tool result, of
+      the message or ``today``.
+    * French number words and price words (``deux``, ``mille``, ``euros``, ``prix``, ``coût``,
+      ``montant``, ``frais``, ``MRU``, ``DA``, ``$``...) are refused unless that very word is in a
+      tool result.
+    """
+    texts = _result_texts(tool_data)
+    blob = _ascii("\n".join(texts))
+    data_words = set(_WORD.findall(_fold(blob))) | {s for s in _PRICE_SYMBOLS if s in blob}
+    if _forbidden_words(prose) - data_words:
+        return False
+    tokens = set(_PLAIN_NUMBER.findall(blob))
+    days, years = _dates_in(blob)
+    asked = _ascii(message)
+    user_days, user_years = _dates_in(asked)
+    days |= user_days
+    years |= user_years
+    if today is not None:
+        days.add((today.month, today.day))
+        years.add(today.year)
+    tickets = _ticket_numbers(asked)
+
+    def known_date(found: re.Match[str]) -> str:
+        parts = found.groups()
+        if len(parts) == 3 and found.re is _ISO_IN_TEXT:
+            year, month, day = (int(x) for x in parts)
+        else:
+            day, month = int(parts[0]), int(parts[1])
+            year = (int(parts[2]) + (2000 if len(parts[2]) == 2 else 0)) if parts[2] else 0
+        known = (month, day) in days and (not year or year in years)
+        return "\n" if known else found.group()
+
+    text = _DMY_IN_TEXT.sub(known_date, _ISO_IN_TEXT.sub(known_date, _ascii(prose)))
+    for token in _NUMBER_TOKEN.findall(text):
+        digits = re.sub(r"\D", "", token)
+        if digits not in tokens and digits not in tickets:
+            return False
+    return True
+
+
+def safe_without_tools(prose: str) -> bool:
+    """True when words the model said with NO lookup behind them may be shown: no digit, nothing
+    that looks like a ticket number or a staff sign (capital letters), no number or price word."""
+    text = _ascii(prose)
+    if _PLAIN_NUMBER.search(text) or _UPPER_WORD.search(text):
+        return False
+    return not _forbidden_words(text)

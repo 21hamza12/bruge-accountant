@@ -19,9 +19,9 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any, Protocol
 
-from app.ai.client import map_errors
+from app.ai.client import API_BASE_URL, map_errors
 
-MAX_OUTPUT_TOKENS = 1024
+MAX_OUTPUT_TOKENS = 300  # a chat answer is one to three sentences: this is the cost cap
 EFFORT = "low"
 ALLOWED_TOOL_CHOICES = ("auto", "none")
 
@@ -83,8 +83,10 @@ class AnthropicChatClient:
         import anthropic  # imported here: nothing else needs the SDK, and tests never build this
 
         self._anthropic = anthropic
+        # base_url is explicit: the SDK would otherwise read ANTHROPIC_BASE_URL and send the key,
+        # and every question, to whatever host it names.
         self._client = anthropic.Anthropic(
-            api_key=api_key, timeout=timeout_s, max_retries=max_retries
+            api_key=api_key, base_url=API_BASE_URL, timeout=timeout_s, max_retries=max_retries
         )
 
     def complete(self, request: ChatRequest) -> ChatResponse:

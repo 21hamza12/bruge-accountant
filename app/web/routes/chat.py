@@ -259,14 +259,18 @@ def _checked(raw: object) -> tuple[str, bool, str]:
 def _unknown_handler(request: Request) -> UnknownHandler:
     """What answers a message no rule understood: the model when the app has a chat client (a key,
     AI and the chat not switched off), else the polite "not understood". The person's earlier
-    messages are read only if the model is asked."""
+    messages are read lazily (a callable), only once every gate has passed and a model is really
+    going to be asked: a fragment, an agency without AI, a spent allowance or budget costs no
+    query for them."""
     client = getattr(request.app.state, "chat_client", None)
     if client is None:
         return polite_unknown
     settings: Settings = request.app.state.settings
 
     def ask(ctx: ChatContext, text: str) -> Reply:
-        history = store.recent_user_texts(ctx.db, ctx.user, ctx.now, ai_prompt.AI_HISTORY)
+        def history() -> list[str]:
+            return store.recent_user_texts(ctx.db, ctx.user, ctx.now, ai_prompt.AI_HISTORY)
+
         return agent.answer_with_ai(ctx, text, client=client, settings=settings, history=history)
 
     return ask

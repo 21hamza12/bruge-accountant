@@ -10,7 +10,7 @@ from typing import Any
 import pytest
 
 from app.ai.chat_client import AnthropicChatClient, ChatRequest, ChatResponse, ToolUse
-from app.ai.client import AiUnavailable
+from app.ai.client import API_BASE_URL, AiUnavailable
 from app.ai.fake import FakeChatClient, fake_text, fake_tool, fake_tools
 
 HAIKU = "claude-haiku-5-5"
@@ -94,7 +94,7 @@ def test_the_request_carries_tools_cached_system_effort_and_nothing_forbidden() 
     client, messages = _real(_answer([_text("Bonjour")]))
     client.complete(request())
     sent = messages.kwargs
-    assert sent["model"] == HAIKU and sent["max_tokens"] == 1024
+    assert sent["model"] == HAIKU and sent["max_tokens"] == 300
     assert sent["tools"] == TOOLS and sent["tools"][0]["strict"] is True
     assert sent["tool_choice"] == {"type": "auto"}
     assert sent["system"] == [
@@ -127,6 +127,15 @@ def test_an_assistant_message_last_is_refused_before_it_is_sent() -> None:
 def test_the_sdk_is_built_with_the_timeout_and_a_limited_retry() -> None:
     client = AnthropicChatClient("sk-test-not-real", timeout_s=7, max_retries=2)
     assert client._client.max_retries == 2 and client._client.timeout == 7
+
+
+def test_the_base_url_is_explicit_and_the_environment_cannot_redirect_the_key(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("ANTHROPIC_BASE_URL", "https://evil.example")
+    client = AnthropicChatClient("sk-test-not-real", timeout_s=7, max_retries=0)
+    assert str(client._client.base_url) == "https://api.anthropic.com"
+    assert API_BASE_URL == "https://api.anthropic.com"
 
 
 # --- what comes back ----------------------------------------------------------------------------

@@ -7,6 +7,9 @@ Shared by the screenshot reader and the chat, so the money rules exist once:
   ``BudgetRefused`` is raised;
 * a call that fails is recorded as ``error`` (cost 0; a timeout is recorded at the estimate, it may
   have been billed) and ``CallFailed`` is raised with the kind, never a message from the API;
+* ``commit_before_call`` (the chat; the screenshots do not) commits the session before the call so
+  that the pooled connection is not held while the model thinks; a commit that fails then is a
+  failed call (``CallFailed("commit_failed")``), never an exception out of the request;
 * a call that answers is recorded at once, with its real tokens (cache writes and reads priced
   at their own rates), and committed: money spent is logged even when a later step fails. A usage
   row that cannot be committed after a paid call is logged as an error (model, cost, agency) and
@@ -74,10 +77,12 @@ class Caller:
         purpose: str,
         estimate: Callable[[str], int],
         share: Decimal = Decimal(1),
+        commit_before_call: bool = False,
     ) -> None:
         self.db, self.user, self.now = db, user, now
         self.default_budget_usd, self.purpose = default_budget_usd, purpose
         self.estimate, self.share = estimate, share
+        self.commit_before_call = commit_before_call
         self.agency_id = user.agency_id
 
     def affordable(self, model: str) -> bool:
@@ -105,10 +110,10 @@ class Caller:
         ``outcome_of`` looks at the answer and says otherwise (a refusal is an ``error``)."""
         db = self.db
         if not self.affordable(model):
-            self._record(model, Usage(0, 0), budget.OUTCOME_REFUSED, 0)
-            db.commit()
+            self.refuse(model)
             raise BudgetRefused
-        db.commit()  # the pooled connection is not held while the model thinks (up to the timeout)
+        if self.commit_before_call and not self._release_connection():
+            raise CallFailed("commit_failed")
         try:
             result = make()
         except AiUnavailable as exc:
@@ -124,6 +129,25 @@ class Caller:
         self._record(model, Usage(0, 0), budget.OUTCOME_ERROR, cost)
         db.commit()
         raise CallFailed(kind)
+
+    def refuse(self, model: str) -> None:
+        """Record (and commit) a ``refused_budget`` row: the call was not made."""
+        self._record(model, Usage(0, 0), budget.OUTCOME_REFUSED, 0)
+        self.db.commit()
+
+    def _release_connection(self) -> bool:
+        """Commit so the pooled connection is free while the model thinks (up to the timeout).
+        False when the commit fails (logged by class name only, the session rolled back)."""
+        try:
+            self.db.commit()
+        except SQLAlchemyError as exc:
+            self.db.rollback()
+            log.error(
+                "ai commit before the call failed",
+                extra={"error": type(exc).__name__, "purpose": self.purpose},
+            )
+            return False
+        return True
 
     def _record(self, model: str, usage: Usage, outcome: str, cost: int) -> int:
         return budget.record(

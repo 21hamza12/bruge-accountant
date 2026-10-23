@@ -922,13 +922,67 @@ def test_the_chat_client_exists_only_with_a_key_and_the_chat_switch(db_url: str)
 
     assert build() is None
     key = SecretStr("sk-test-not-real")
-    assert isinstance(build(anthropic_api_key=key), AnthropicChatClient)
+    built = build(anthropic_api_key=key)
+    assert isinstance(built, AnthropicChatClient)
+    assert built._client.max_retries == 0  # the chat's own setting, not the screenshots' 1
     assert build(anthropic_api_key=key, ai_chat_enabled=False) is None
     assert build(anthropic_api_key=key, ai_enabled=False) is None
     fake = FakeChatClient()
     app = create_app(Settings(database_url=SecretStr(db_url)), chat_client=fake)
     app.state.engine.dispose()
     assert app.state.chat_client is fake
+
+
+def history_reads(seen: list[str]) -> int:
+    """Reads of ``chat_messages``: the page's thread is one; the model's history another."""
+    return sum("FROM chat_messages" in q for q in seen)
+
+
+def test_the_history_is_read_only_after_every_gate_has_passed(
+    env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with_chat_ai(env, lambda request: fake_text("Oui."))
+    c = env.staff_a()
+    post_statements(env, c, "une question libre pour chauffer")  # warm-up, goes to the model
+    assert history_reads(post_statements(env, c, "une autre question libre")) == 2
+    # a fragment of an Amadeus screen, a message a rule understands: no history read
+    assert history_reads(post_statements(env, c, "1.DUPONT/JEAN MR")) == 1
+    assert history_reads(post_statements(env, c, "aide")) == 1
+    # a person past the hourly limit of free questions: no history read
+    monkeypatch.setattr(ratelimit, "CHAT_AI_USER", ratelimit.Limit("chat_ai_user", 1, 3600))
+    assert history_reads(post_statements(env, c, "trop de questions libres")) == 1
+    # an agency that switched the AI off
+    with owner_session(env.db.owner_url) as s:
+        rebind_tenant(s, env.seeded.agency_a)
+        s.add(
+            AgencyAiSettings(
+                agency_id=env.seeded.agency_a, enabled=False, monthly_budget_micro_usd=5_000_000
+            )
+        )
+        s.commit()
+    assert history_reads(post_statements(env, env.manager_a(), "une question libre")) == 1
+
+
+def test_the_page_tells_the_person_not_to_write_clients_personal_data(env: Env) -> None:
+    html = env.staff_a().get("/chat").text
+    assert (
+        "N'écrivez pas de données personnelles de clients (téléphone, e-mail) : "
+        "les questions libres sont lues par un service d'IA."
+    ) in html
+
+
+def test_a_phone_number_and_an_email_never_reach_the_model(env: Env) -> None:
+    fake = with_chat_ai(env, lambda request: fake_text("Oui."))
+    c = env.staff_a()
+    say(c, "mon contact écrit à a@b.mr, que faire ?")
+    say(c, "mon contact est au 37 00 99 12 que faire ?")
+    say(c, "et le +222 37 00 99 12 alors ?")
+    turn = fake.requests[-1].messages[0]["content"][0]["text"]
+    assert "37009912" not in turn and "a@b.mr" not in turn and "22237009912" not in turn
+    assert "[…]" in turn
+    assert "- mon contact écrit à […], que faire ?" in turn  # the history is redacted too
+    shown = rows(env)[0].text  # the conversation shown back to the person is what they typed
+    assert "a@b.mr" in shown
 
 
 def test_one_ai_turn_stays_within_the_query_budget(env: Env) -> None:

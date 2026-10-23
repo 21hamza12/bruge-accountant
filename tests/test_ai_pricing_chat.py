@@ -7,7 +7,7 @@ from decimal import Decimal
 
 from sqlalchemy.orm import Session
 
-from app.ai import budget, pricing
+from app.ai import budget, chat_client, pricing
 from tests.test_ai_budget import NOW, agency_with_user, log_cost
 
 HAIKU, SONNET = "claude-haiku-5-5", "claude-sonnet-5-5"
@@ -53,11 +53,13 @@ def test_the_chat_estimate_is_above_a_realistic_turn() -> None:
     for model in (HAIKU, SONNET):
         realistic = pricing.cost_with_cache_micro_usd(model, 400, 2500, 0, 150)
         assert pricing.estimate_chat_micro_usd(model) > realistic
-    # the estimate is one call: 8 000 input tokens all written to the cache + 1 024 out
+    # the estimate is one call: 8 000 input tokens all written to the cache + 300 out (the limit)
     assert pricing.estimate_chat_micro_usd(HAIKU) == pricing.cost_with_cache_micro_usd(
-        HAIKU, 0, 8000, 0, 1024
+        HAIKU, 0, 8000, 0, 300
     )
-    assert pricing.estimate_chat_micro_usd(HAIKU) == 1512
+    assert pricing.estimate_chat_micro_usd(HAIKU) == 1150
+    assert pricing.estimate_chat_micro_usd(SONNET) == 23000
+    assert pricing.CHAT_ESTIMATE_OUTPUT_TOKENS == chat_client.MAX_OUTPUT_TOKENS == 300
 
 
 def test_a_new_model_name_cannot_make_the_chat_estimate_cheaper() -> None:

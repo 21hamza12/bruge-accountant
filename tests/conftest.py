@@ -296,6 +296,14 @@ def client(web_settings: Settings) -> Iterator[TestClient]:
 
 
 @pytest.fixture(autouse=True)
+def no_sdk_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The Anthropic SDK reads these by itself, and a production ``Settings`` refuses them: a
+    developer's shell (or a coding agent's) may have them set, and no test depends on them."""
+    for name in ("ANTHROPIC_BASE_URL", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_LOG"):
+        monkeypatch.delenv(name, raising=False)
+
+
+@pytest.fixture(autouse=True)
 def restore_logging() -> Iterator[None]:
     """create_app() configures logging; undo it so tests stay independent."""
     root = logging.getLogger()

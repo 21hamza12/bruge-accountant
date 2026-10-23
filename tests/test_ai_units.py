@@ -250,6 +250,42 @@ def test_production_refuses_ai_enabled_without_a_key() -> None:
     assert _prod(ai_enabled=True, anthropic_api_key="sk-x").ai_active is True
 
 
+def test_chat_defaults() -> None:
+    s = _settings()
+    assert (s.ai_chat_model, s.ai_chat_fallback_model) == (HAIKU, SONNET)
+    assert s.ai_chat_max_retries == 0  # a retry doubles the cost of a call that is already slow
+    assert s.ai_chat_turn_deadline_s == 45 and s.ai_chat_fallback_daily_cap == 20
+
+
+@pytest.mark.parametrize("name", ["ANTHROPIC_BASE_URL", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_LOG"])
+def test_production_refuses_the_sdk_environment_variables_that_redirect_or_log(
+    monkeypatch: pytest.MonkeyPatch, name: str
+) -> None:
+    monkeypatch.setenv(name, "https://evil.example" if "URL" in name else "x")
+    with pytest.raises(ValueError, match=name):
+        _prod(anthropic_api_key="sk-x")
+    monkeypatch.setenv(name, "")  # even empty: the SDK would read it
+    with pytest.raises(ValueError, match=name):
+        _prod()
+    assert _settings(anthropic_api_key="sk-x").ai_active is True  # development tolerates them
+    monkeypatch.delenv(name)
+    assert _prod(anthropic_api_key="sk-x").ai_active is True
+
+
+@pytest.mark.parametrize(
+    "field", ["ai_chat_model", "ai_chat_fallback_model", "ai_screenshot_model", "ai_fallback_model"]
+)
+def test_a_model_that_is_not_in_the_pricing_table_is_refused_at_startup(field: str) -> None:
+    with pytest.raises(ValueError, match=field.upper()):
+        _settings(**{field: "claude-future-9"})
+    assert getattr(_settings(**{field: SONNET}), field) == SONNET
+
+
+@pytest.mark.parametrize("field", ["ai_chat_fallback_model", "ai_fallback_model"])
+def test_an_empty_second_model_switches_the_second_try_off(field: str) -> None:
+    assert getattr(_settings(**{field: ""}), field) == ""
+
+
 def test_the_api_key_is_never_shown() -> None:
     s = _settings(anthropic_api_key="sk-very-secret")
     assert "sk-very-secret" not in repr(s) and "sk-very-secret" not in str(s.model_dump())

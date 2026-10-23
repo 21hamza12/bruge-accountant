@@ -107,6 +107,58 @@ carries `version_no`; a sale that moved on is "rechargez la page" (`expected_ver
 hour. Bottom bar: staff get "Saisir une vente" and "Mes ventes" in place of "Questions" (five tabs);
 manager and accountant keep their five and reach "Ventes du jour" from the sidebar and the dashboard.
 
+## 3d. Phase B as built (B1 to B11)
+
+What each step delivered:
+
+- **B1 roles**: the `accountant` role and every permission in `app/permissions.py`.
+- **B2 Amadeus snapshot**: `amadeus_lines`, the report exactly as received, append-only, in file order.
+- **B3 partners**: partners with a dated fee history (`fee_on`), their pages, and partner aliases
+  (the other names an agency is known by in the Amadeus text).
+- **B4 sales and days**: report days, multi-ticket sales with one P.B, versions kept for ever.
+- **B5 sale screens**: form, read-back, confirm, list, history, edit, void.
+- **B6 pasted text**: the booking screen pasted into the form (`/sales/paste`), one proposal per
+  passenger, the agency question, alias proposals.
+- **B7 day page**: the app's own TJQ AVANT per day, totals, status, history.
+- **B8 comparison**: `compare()` after each upload, flags, moved tickets, cancelled tickets listed.
+- **B9 approvals**: the agent answers, a validator approves, the close gate, reopen by the manager.
+- **B10 TJQ APRES**: built at close, stored by version, downloaded by manager and accountant.
+- **B11 acceptance**: `tests/test_acceptance_20oct.py` runs the made-up 20 October through the
+  web client only (real CSRF, real logins): setup of the partners and aliases, 34 tickets entered
+  by two agents (form and paste, a layover sale, partner sales, direct sales), the upload and the
+  automatic comparison (0 blocking flags, 9 cancelled, day approved), then a day with troubles (a
+  typo, a ticket nobody entered, a sign the agent keeps, a partner ticket issued elsewhere), the
+  refused and the accepted close, the download (34 lines in SEQ order, 624 126, P.B rules, the
+  highlighted correction, no formula), who sees what, and the reopen with version 2.
+  `tests/test_real_20oct.py` does the same with the real TJQ AVANT and compares with the
+  accountant's real TJQ APRES; it is skipped when `intake/amadeus-reports/TJQ AVANT.xlsx` or
+  `intake/excel-sheets/TJQ APRES.xlsx` is missing and prints counts only, never names.
+
+Decisions taken overnight (not in the first approval):
+
+1. **Moves** of a ticket to another day are made only by the manager or the accountant, and only
+   for a whole sale (never one ticket of a multi-ticket sale).
+2. **Only a run by the manager or the accountant approves a day.** An upload or a re-run by anyone
+   else can flag, but never sets the day to `approved`.
+3. **Voids, sign changes and passenger-type changes need a validator.** An agent's answer to such a
+   flag is `answered` and waits; the validator is never the person who answered. A change of cost
+   or of ticket number needs one too; a name, booking reference or airline fix needs the agent only.
+4. **The agent always confirms the partner.** A pasted booking proposes an agency (exact, through an
+   alias, prefix or close name) but never pre-answers: the read-back is refused until the agent
+   says yes, picks another partner, or sells direct.
+5. **Partner aliases need approval.** An agency name the agent assigned to a partner is only
+   *proposed*; a manager or accountant approves, rejects or reassigns it. A pending or rejected name
+   never matches a later paste.
+6. **The partner list**: partner tickets that are not in the report (issued in another office) do
+   not block the close, but a manager or accountant who did not write them must have seen the list
+   ("J'ai vu la liste"); a changed list or price must be seen again.
+
+Known difference with the accountant's file (found by the real-file check): for a child or an
+infant, the Amadeus report pads the `(CHD)` / `(INF)` mark away from the name; the app keeps the
+name with single spaces (the parser cleans white space) and writes ` (CHD)` after it. Everything
+else in the 8 Amadeus columns, the 34 lines and their order are identical. Reproducing the padding
+needs the raw name stored with the line (a migration), so it is left for a later step.
+
 ## 4. Approved defaults
 
 1. Pasted text: placeholder labelled-lines format now; real parser in its own PR when samples arrive.

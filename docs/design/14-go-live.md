@@ -31,9 +31,9 @@ C1 can start at once. C2 needs the Render account (§5).
 2. **Durable logs (item 8).** Render keeps logs only a short time. Send the JSON logs to a log
    service through a Render log stream (Better Stack free tier, or similar) and document the
    search for a request id. Secrets and bodies are already kept out of the logs (tested).
-3. **CHD/INF name padding in the TJQ APRES** (the one difference found by the B11 real-file check,
+3. **CHD/INF name padding in the TJQ APRES** (**built**, 24 Oct 2026; the real-file check now shows 0 differing cells; the one difference found by the B11 real-file check,
    `09-phase-b-plan.md` §3d): reproduce the Amadeus padding, so the parallel run compares equal.
-4. **Parallel-run comparison**: a manager/accountant upload of her APRES Excel for a closed day; the
+4. **Parallel-run comparison** (**built**, 24 Oct 2026, see [`15-parallel-run.md`](15-parallel-run.md)): a manager/accountant upload of her APRES Excel for a closed day; the
    app compares it with its own stored export (same 16 columns) and shows the cells that differ.
    Reuses the B11 comparison; nothing is changed by it.
 5. **Production AI settings**: `ANTHROPIC_API_KEY` stays out of `render.yaml` (entered in the

@@ -33,6 +33,8 @@ COLUMNS: Final = tuple(HEADERS)
 MAX_KEPT: Final = 500
 _CENT: Final = Decimal("0.01")
 _ADULT: Final = "ADT"
+CUT_MARK: Final = "… (tronqué)"
+_CUT_KEYS: Final = {"AG": "ag", "CLT": "clt", "AP": "ap"}
 _AROUND_SLASH: Final = re.compile(r"\s*/\s*")
 
 
@@ -100,8 +102,13 @@ def _fold(shown: str) -> str:
     return _AROUND_SLASH.sub("/", shown.casefold())
 
 
-def _money(value: Decimal | None) -> str:
-    return "" if value is None else format(value.quantize(_CENT), "f")
+def _money(value: Decimal | None, raw: str | None = None) -> str:
+    """The amount to the cent ("0.00" for a negative zero); when the cell was not an amount, her own
+    text (so an unreadable cell is never shown as empty); "" for an empty cell."""
+    if value is None:
+        return _shown(raw)
+    cents = value.quantize(_CENT)
+    return format(cents if cents else Decimal("0.00"), "f")
 
 
 def _name(ticket: ParsedTicket) -> str:
@@ -114,12 +121,12 @@ def _name(ticket: ParsedTicket) -> str:
 _CELLS: Final[tuple[tuple[str, Callable[[ParsedTicket], str], bool], ...]] = (
     ("SEQ NO", lambda t: _shown(t.seq_no), False),
     ("A/L", lambda t: _shown(t.airline), False),
-    ("TOTAL DOC", lambda t: _money(t.cost), True),
+    ("TOTAL DOC", lambda t: _money(t.cost, t.cost_raw), True),
     ("PAX NAME", _name, False),
     ("AS", lambda t: _shown(t.staff_sign), False),
     ("TRNC", lambda t: _shown(t.transaction_type), False),
     ("RLOC", lambda t: _shown(t.booking_ref), False),
-    ("P.B", lambda t: _money(t.pb), True),
+    ("P.B", lambda t: _money(t.pb, t.pb_raw), True),
     ("AG", lambda t: _shown(t.ag), False),
     ("CLT", lambda t: _shown(t.clt), False),
     ("AP", lambda t: _shown(t.ap), False),
@@ -145,7 +152,7 @@ def _ref(key: str, ticket: ParsedTicket) -> RowRef:
         doc_number=key,
         seq_no=_shown(ticket.seq_no),
         pax_name=_name(ticket),
-        total_doc=_money(ticket.cost),
+        total_doc=_money(ticket.cost, ticket.cost_raw),
     )
 
 
@@ -172,7 +179,12 @@ def compare(app: ParsedReport, hers: ParsedReport) -> Comparison:
         row_differs = False
         for title, shown, money in _CELLS:
             left, right = shown(other), shown(ours)
-            if (left == right) if money else (_fold(left) == _fold(right)):
+            cut_key = _CUT_KEYS.get(title, "")
+            cut_hers, cut_app = cut_key in other.cut, cut_key in ours.cut
+            if cut_hers or cut_app:  # a text cut to its limit can never be shown equal
+                left += CUT_MARK if cut_hers else ""
+                right += CUT_MARK if cut_app else ""
+            elif (left == right) if money else (_fold(left) == _fold(right)):
                 continue
             row_differs = True
             differing += 1

@@ -27,6 +27,7 @@ from app.parsing.amadeus import (
     KNOWN_FLAGS,
     MANUAL_LIMITS,
     MAX_NAME_CHARS,
+    MAX_RAW_CHARS,
     ParsedReport,
     ParsedTicket,
     ParseError,
@@ -69,6 +70,9 @@ _TICKET_KEYS = frozenset(
         "ag",
         "clt",
         "ap",
+        "cost_raw",
+        "pb_raw",
+        "cut",
     }
 )
 
@@ -110,6 +114,9 @@ def encode_report(report: ParsedReport) -> bytes:
                     "ag": t.ag,
                     "clt": t.clt,
                     "ap": t.ap,
+                    "cost_raw": t.cost_raw,
+                    "pb_raw": t.pb_raw,
+                    "cut": list(t.cut),
                 }
                 for t in report.tickets
             ],
@@ -183,6 +190,9 @@ def _ticket(raw: object) -> ParsedTicket:
     ticket_no = _str(raw["ticket_no"], MAX_TICKET_NO_CHARS)
     if not ticket_no:
         raise _Invalid("empty ticket number")
+    cut = tuple(_str(c, 3) for c in _list(raw["cut"], 3))
+    if not set(cut) <= set(MANUAL_LIMITS):
+        raise _Invalid("unknown cut column")
     return ParsedTicket(
         seq_no=_str(raw["seq_no"], FIELD_LIMITS["seq_no"]),
         airline=_str(raw["airline"], FIELD_LIMITS["airline"]),
@@ -204,6 +214,9 @@ def _ticket(raw: object) -> ParsedTicket:
         ag=_opt_str(raw["ag"], MANUAL_LIMITS["ag"]),
         clt=_opt_str(raw["clt"], MANUAL_LIMITS["clt"]),
         ap=_opt_str(raw["ap"], MANUAL_LIMITS["ap"]),
+        cost_raw=_opt_str(raw["cost_raw"], MAX_RAW_CHARS),
+        pb_raw=_opt_str(raw["pb_raw"], MAX_RAW_CHARS),
+        cut=cut,
     )
 
 

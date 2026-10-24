@@ -84,6 +84,7 @@ FIELD_LIMITS = {
 }
 # Lengths of the accountant's hand-typed text columns (read only by ``parse_apres``; no table
 # holds them, so they are not in ``FIELD_LIMITS``, which mirrors the column lengths).
+MAX_RAW_CHARS = 40
 MANUAL_LIMITS = {"ag": 200, "clt": 200, "ap": 200}
 COST_LIMIT = Decimal(10) ** 12  # Numeric(14, 2)
 _CENT = Decimal("0.01")
@@ -160,6 +161,11 @@ class ParsedTicket:
     ag: str | None = None
     clt: str | None = None
     ap: str | None = None
+    # ``parse_apres`` only: her own text of a money cell that is not an amount, and the hand-typed
+    # columns whose text was cut to MANUAL_LIMITS (so the comparison never calls them equal).
+    cost_raw: str | None = None
+    pb_raw: str | None = None
+    cut: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -532,6 +538,13 @@ def _optional_money(value: object, label: str, row_no: int, warnings: _Warnings)
     return amount
 
 
+def _raw_amount(value: object) -> str | None:
+    """Her own text of a money cell that did not read as an amount (None for an empty cell)."""
+    if _is_blank(value):
+        return None
+    return clean_text(str(value))[:MAX_RAW_CHARS] or None
+
+
 def _build_ticket(
     cells: dict[str, Any], row_no: int, warnings: _Warnings, manual: bool = False
 ) -> ParsedTicket | None:
@@ -592,9 +605,21 @@ def _build_ticket(
     fop = field("form_of_payment", "FP")
     confirmed = field("confirmed", "CONFIRMED")
     pb = _optional_money(cells["pb"], "P.B", row_no, warnings) if manual else None
-    ag = field("ag", "AG") if manual else ""
-    clt = field("clt", "CLT") if manual else ""
-    ap = field("ap", "AP") if manual else ""
+    cut: list[str] = []
+
+    def manual_field(key: str, label: str) -> str:
+        if not manual:
+            return ""
+        text = _text(cells[key], label, row_no, warnings)
+        if len(text) > MANUAL_LIMITS[key]:
+            cut.append(key)
+        return _limited(text, key, label, row_no, flags, warnings)
+
+    ag = manual_field("ag", "AG")
+    clt = manual_field("clt", "CLT")
+    ap = manual_field("ap", "AP")
+    cost_raw = _raw_amount(cells["cost"]) if manual and cost is None else None
+    pb_raw = _raw_amount(cells["pb"]) if manual and pb is None else None
 
     return ParsedTicket(
         seq_no=seq_no,
@@ -616,4 +641,7 @@ def _build_ticket(
         ag=ag or None,
         clt=clt or None,
         ap=ap or None,
+        cost_raw=cost_raw,
+        pb_raw=pb_raw,
+        cut=tuple(cut),
     )

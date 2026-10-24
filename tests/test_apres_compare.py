@@ -246,3 +246,32 @@ def test_a_row_the_app_sold_nothing_for_compares_empty_cells() -> None:
 
 def test_the_columns_compared_are_the_twelve_of_the_export() -> None:
     assert tuple(export_apres.HEADERS) == apres_compare.COLUMNS
+
+
+def test_a_negative_zero_is_zero() -> None:
+    hers = edited(app_book(), put(FIRST, COLS["P.B"], -0.004))
+    base = edited(app_book(), put(FIRST, COLS["P.B"], 0))
+    assert run(base, hers).same
+
+
+def test_an_unreadable_amount_shows_her_own_text() -> None:
+    def change(ws: Any) -> None:
+        ws.cell(row=FIRST, column=COLS["P.B"]).value = "abc"
+        ws.cell(row=FIRST + 1, column=COLS["TOTAL DOC"]).value = "12 EUR"
+
+    diffs = run(app_book(), edited(app_book(), change)).differences
+    assert [(d.column, d.hers) for d in diffs] == [("TOTAL DOC", "12 EUR"), ("P.B", "abc")] or [
+        (d.column, d.hers) for d in diffs
+    ] == [("P.B", "abc"), ("TOTAL DOC", "12 EUR")]
+
+
+def test_a_truncated_cell_is_marked_and_never_equal() -> None:
+    long = "C" * 250
+    both = edited(app_book(), put(FIRST, COLS["CLT"], long))
+    result = run(both, both)
+    (diff,) = result.differences
+    assert (
+        diff.column == "CLT" and diff.hers.endswith("(tronqué)") and diff.app.endswith("(tronqué)")
+    )
+    only_hers = run(app_book(), both).differences
+    assert only_hers[0].hers.endswith("… (tronqué)") and not only_hers[0].app.endswith("(tronqué)")

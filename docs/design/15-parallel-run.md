@@ -37,7 +37,9 @@ the page says how many were dropped.
 For the rows on both sides, the 12 columns of the export are compared (SEQ NO, A/L, TOTAL DOC,
 PAX NAME, AS, TRNC, RLOC, P.B, AG, CLT, AP; DOC NUMBER is the key):
 
-* **Money** (TOTAL DOC, P.B) as a decimal number to the cent. `1500`, `1500.00` and `1 500,00`
+* **Money** (TOTAL DOC, P.B) as a decimal number **compared to the cent** (a negative zero such as
+  -0.004 is `0.00`). A non-empty money cell that is not an amount ("abc", "12 EUR") is shown as
+  her own text, never as empty, and differs from the app's value. `1500`, `1500.00` and `1 500,00`
   typed as text are equal in P.B (TOTAL DOC is read as in an Amadeus upload); one cent is a
   difference. **An empty cell is not a zero**: where the app
   writes `0.00` (the second ticket of a multi-ticket sale carries no P.B, decision 21) and she
@@ -53,6 +55,9 @@ PAX NAME, AS, TRNC, RLOC, P.B, AG, CLT, AP; DOC NUMBER is the key):
   headers, as in every Amadeus export and APRES. If her sheet is for another date than the day
   being compared, the page warns but still compares.
 
+* An AG, CLT or AP cell longer than 200 characters is cut when read; it is always shown as a
+  difference and marked "… (tronqué)", since two cut texts cannot be proven equal.
+
 Not compared: the totals row, the colours and comments, the Amadeus columns the export does not
 write (TAX, COMM, FP, CONFIRMED). A cancelled (CANX) line left in her sheet shows as "only in hers",
 because the app's APRES never has any.
@@ -62,8 +67,8 @@ because the app's APRES never has any.
 Same protection as the Amadeus upload: login and permission first (staff get a 403 and an audit
 event, nothing is read); Origin check; CSRF token (header or form field, checked before the file is
 looked at); the day must be closed, in the user's agency and have a stored export (otherwise 404);
-a rate limit of 20 comparisons an hour for each user (a wrong token or a busy sandbox gives the hit
-back). Only then the body is read, in memory. The bytes go through the same size, empty and zip
+a rate limit of 20 comparisons an hour for each user (a busy sandbox or a server fault gives the hit
+back; a wrong form token does not, because the body is already read). Only then the body is read, in memory. The bytes go through the same size, empty and zip
 checks as an upload (10 MB), then through the **sandboxed parser** (a child process with no
 secrets, time and memory limits, zip-bomb checks, strict validation of what it sends back). A busy
 sandbox is a 503; an unreadable file is a French message. Everything shown is escaped by the

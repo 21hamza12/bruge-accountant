@@ -482,20 +482,40 @@ def test_csrf_and_origin_are_checked_before_the_body_is_read(
     assert len(spy) == 1
 
 
-def test_there_is_a_rate_limit_and_a_wrong_token_gives_the_hit_back(
+def test_there_is_a_rate_limit_and_a_wrong_token_still_counts(
     closed: tuple[Env, TestClient, bytes], monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """A bad form token is not refunded: otherwise one user could push unmetered 10 MB bodies."""
     env, acc, stored = closed
     monkeypatch.setattr(
         ratelimit, "APRES_COMPARE_USER", ratelimit.Limit("apres_compare_user", 2, 3600)
     )
     token = csrf_for(acc, PATH)
-    assert submit(acc, stored, token="z" * 43).status_code == 403  # refunded
-    assert submit(acc, stored, token=token).status_code == 200
-    assert submit(acc, stored, token=token).status_code == 200
+    assert submit(acc, stored, token="z" * 43).status_code == 403  # counted
+    assert submit(acc, stored, token="z" * 43).status_code == 403  # counted
     r = submit(acc, stored, token=token)
     assert r.status_code == 429 and r.headers["retry-after"]
     assert submit(env.manager_a(), stored).status_code == 200  # a budget of its own
+
+
+def test_a_stored_export_that_cannot_be_read_back_is_a_french_page_and_a_refund(
+    closed: tuple[Env, TestClient, bytes], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from app.parsing.amadeus import ParseError
+
+    env, acc, stored = closed
+    monkeypatch.setattr(
+        ratelimit, "APRES_COMPARE_USER", ratelimit.Limit("apres_compare_user", 1, 3600)
+    )
+
+    def broken(_: bytes) -> Any:
+        raise ParseError("secret detail")
+
+    monkeypatch.setattr(compare_routes, "parse_apres", broken)
+    r = submit(acc, stored)
+    assert r.status_code == 503 and "enregistré" in shown(r) and "secret detail" not in r.text
+    monkeypatch.setattr(compare_routes, "parse_apres", parse_apres)
+    assert submit(acc, stored).status_code == 200  # the server fault did not use the budget
 
 
 # --- the number of statements -------------------------------------------------------------------

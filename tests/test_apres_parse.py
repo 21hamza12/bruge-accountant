@@ -113,3 +113,26 @@ def test_it_runs_in_the_sandbox_like_any_upload() -> None:
         apres_book([row()]), timeout_s=30, memory_mb=512, parse_target=parse_apres
     )
     assert parsed.tickets[0].pb == Decimal("1500.00") and parsed.tickets[0].clt == "Client X"
+
+
+def test_an_unreadable_amount_keeps_her_text_and_a_cut_cell_is_named() -> None:
+    long = "X" * (MANUAL_LIMITS["clt"] + 1)
+    (ticket,) = parse_apres(
+        apres_book([[*ticket_row(cost="12 EUR"), "abc", "BRUGE", long, ""]])
+    ).tickets
+    assert (ticket.cost, ticket.cost_raw, ticket.pb, ticket.pb_raw) == (None, "12 EUR", None, "abc")
+    assert ticket.cut == ("clt",)
+    clean = parse_apres(apres_book([row()])).tickets[0]
+    assert (clean.cost_raw, clean.pb_raw, clean.cut) == (None, None, ())
+    assert parse_report(apres_book([row(pb="abc")])).tickets[0].pb_raw is None
+
+
+def test_the_wire_checks_the_new_fields() -> None:
+    message = json.loads(encode_report(parse_apres(apres_book([row(pb="abc")]))))
+    assert decode_message(json.dumps(message).encode()).tickets[0].pb_raw == "abc"
+    for key, bad in (("pb_raw", 5), ("pb_raw", "x" * 500), ("cost_raw", "a\x00b"), ("cut", ["zz"]),
+                     ("cut", "clt")):  # fmt: skip
+        broken = json.loads(json.dumps(message))
+        broken["report"]["tickets"][0][key] = bad
+        with pytest.raises(ParseError):
+            decode_message(json.dumps(broken).encode())

@@ -17,12 +17,13 @@ Like ``POST /uploads`` the POST declares no body parameter and sits OUTSIDE the 
 5. one hit on the hourly limit (``APRES_COMPARE_USER``), counted and committed.
 
 Then the form is read (one file, a few small fields), the CSRF form field is checked when there was
-no header (a wrong token gives the hit back), and the bytes go through the same checks as an
+no header (a wrong token keeps its hit: the body is already read), and the bytes go through the
+same checks as an
 Amadeus upload (``check_bytes``: empty, not a zip, over 10 MB) and the same sandbox
 (``parse_in_sandbox`` with ``parse_apres``: size, zip-bomb and time limits, a child process with no
 secrets). Cells of formulas are read as their stored value (never evaluated). The app's side is the
 latest stored export of the day, parsed in-process (it is the app's own file). A sandbox that is
-busy is a 503 and gives the hit back. Everything shown is escaped by the templates.
+busy is a 503, and a server fault gives the hit back. Everything shown is escaped by the templates.
 """
 
 from __future__ import annotations
@@ -88,6 +89,9 @@ MSG_NO_FILE = "Choisissez un fichier .xlsx."
 MSG_EMPTY = "Le fichier est vide."
 MSG_NOT_XLSX = "Ce fichier n'est pas un classeur Excel (.xlsx)."
 MSG_PARSE = "Le fichier n'a pas pu être lu : {reason}"
+MSG_STORED_UNREADABLE = (
+    "Le TJQ APRES enregistré n'a pas pu être relu. Réessayez plus tard ou prévenez l'assistance."
+)
 MSG_UNREADABLE = "Le formulaire n'a pas pu être lu."
 
 
@@ -186,7 +190,7 @@ def _hit(db: Session, request: Request, auth: AuthContext, clock: Clock) -> None
 
 
 def _unhit(db: Session, auth: AuthContext, clock: Clock) -> None:
-    """Give the hit back (a wrong CSRF token, a busy sandbox, an unexpected failure). Never raises:
+    """Give the hit back (a busy sandbox, a server fault). Never raises:
     it must not hide the real outcome."""
     try:
         ratelimit.refund(db, ratelimit.APRES_COMPARE_USER, str(auth.user.id), clock())
@@ -237,7 +241,13 @@ def _compare(
     stored = export_apres.get_export(db, auth.user.agency_id, report_day_id, version)
     if stored is None:  # pragma: no cover - the stored exports are never deleted
         raise HTTPException(status_code=404)
-    result = apres_compare.compare(parse_apres(stored.content), hers)
+    try:
+        ours = parse_apres(stored.content)
+    except ParseError:  # the app's own file: a server fault, not the user's
+        log.error("stored export could not be read back", exc_info=True)
+        _unhit(db, auth, clock)
+        return refuse(MSG_STORED_UNREADABLE, 503)
+    result = apres_compare.compare(ours, hers)
     audit.record_and_commit(
         db,
         audit.APRES_COMPARED,
@@ -294,13 +304,9 @@ async def compare_submit(
             return await run_in_threadpool(_refused_form, db, auth, located)
         if not header_token:
             token = form.get(CSRF_FIELD)
-            try:
-                await verify_token(
-                    request, db, clock, auth, token if isinstance(token, str) else None
-                )
-            except HTTPException:
-                await run_in_threadpool(_unhit, db, auth, clock)
-                raise
+            # A wrong token is NOT refunded: the body is already read, and a refund would let one
+            # user send unmetered 10 MB bodies.
+            await verify_token(request, db, clock, auth, token if isinstance(token, str) else None)
         file = form.get("file")
         upload = file if isinstance(file, UploadFile) else None
         return await run_in_threadpool(_compare, db, request, clock, auth, parse, located, upload)

@@ -19,7 +19,8 @@ AI advice). Real agency files go in `intake/` (git-ignored, local only).
 | [11-screenshots.md](11-screenshots.md) | Reading Amadeus screenshots with Claude: measured results, models, fallback rule, privacy, budget | Built (phase D) |
 | [09-phase-b-plan.md](09-phase-b-plan.md) | Phase B step by step (B1–B11), conventions, approved defaults | Approved |
 | [12-chat-part1.md](12-chat-part1.md) | Phase E part 1: the in-app chat without AI (router, tool registry, storage, security) | Built |
-| [13-chat-ai.md](13-chat-ai.md) | Phase E part 2: the chat asks Claude when plain code does not understand (tools, budget share, escalation, injection model) | Built, not yet measured on the real API |
+| [13-chat-ai.md](13-chat-ai.md) | Phase E part 2: the chat asks Claude when plain code does not understand (tools, budget share, escalation, injection model) | Built; measured on the real API (24 Oct) |
+| [14-go-live.md](14-go-live.md) | Phase C: go live on Render, drills, the nine-item release checklist, Bruge set-up, training, parallel run; what the owner provides | Plan for approval |
 
 Still to come once the ticket samples arrive: how screenshots are read (plain code or AI), the
 reading test on the ~200 checked tickets, and the measured AI cost.

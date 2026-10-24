@@ -25,6 +25,7 @@ from typing import Any, NoReturn
 from app.parsing.amadeus import (
     FIELD_LIMITS,
     KNOWN_FLAGS,
+    MANUAL_LIMITS,
     MAX_NAME_CHARS,
     ParsedReport,
     ParsedTicket,
@@ -64,6 +65,10 @@ _TICKET_KEYS = frozenset(
         "comm",
         "form_of_payment",
         "confirmed",
+        "pb",
+        "ag",
+        "clt",
+        "ap",
     }
 )
 
@@ -101,6 +106,10 @@ def encode_report(report: ParsedReport) -> bytes:
                     "comm": None if t.comm is None else str(t.comm),
                     "form_of_payment": t.form_of_payment,
                     "confirmed": t.confirmed,
+                    "pb": None if t.pb is None else str(t.pb),
+                    "ag": t.ag,
+                    "clt": t.clt,
+                    "ap": t.ap,
                 }
                 for t in report.tickets
             ],
@@ -191,6 +200,10 @@ def _ticket(raw: object) -> ParsedTicket:
         comm=_cost(raw["comm"]),
         form_of_payment=_opt_str(raw["form_of_payment"], FIELD_LIMITS["form_of_payment"]),
         confirmed=_opt_str(raw["confirmed"], FIELD_LIMITS["confirmed"]),
+        pb=_cost(raw["pb"]),
+        ag=_opt_str(raw["ag"], MANUAL_LIMITS["ag"]),
+        clt=_opt_str(raw["clt"], MANUAL_LIMITS["clt"]),
+        ap=_opt_str(raw["ap"], MANUAL_LIMITS["ap"]),
     )
 
 

@@ -44,6 +44,12 @@ def can_export_day(user: User) -> bool:
     return user.role in _MANAGER_OR_ACCOUNTANT
 
 
+def can_compare_apres(user: User) -> bool:
+    """Compare the stored TJQ APRES of a closed day with the accountant's own sheet (the parallel
+    run, doc 15): the roles that may export it, manager and accountant."""
+    return can_export_day(user)
+
+
 def can_reopen_day(user: User) -> bool:
     return user.role in _MANAGER_ONLY
 

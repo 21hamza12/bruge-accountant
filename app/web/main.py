@@ -40,6 +40,7 @@ from app.web.errors import (
     validation_exception_handler,
 )
 from app.web.middleware import build_middleware
+from app.web.routes import apres_compare as apres_compare_routes
 from app.web.routes import auth as auth_routes
 from app.web.routes import chat as chat_routes
 from app.web.routes import days as day_routes
@@ -186,6 +187,7 @@ def create_app(
     app.include_router(sale_entry_routes.router)  # first: /sales/new before /sales/{sale_id}
     app.include_router(sales_routes.router)
     app.include_router(day_routes.router)
+    app.include_router(apres_compare_routes.router)
     app.include_router(staff_routes.router)
     app.include_router(flag_routes.router)
     app.include_router(flag_action_routes.router)

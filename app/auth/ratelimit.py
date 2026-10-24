@@ -68,6 +68,9 @@ COMPARISON_RUN_USER = Limit("comparison_run_user", 30, 3600)
 DAY_ACTION_USER = Limit("day_action_user", 60, 3600)
 # Downloads of the TJQ APRES (stored or draft): a light budget.
 EXPORT_USER = Limit("export_user", 120, 3600)
+# The parallel-run comparison (an upload of the accountant's APRES, parsed in the sandbox): once a
+# day is normal, 20 an hour for each user leaves room for retries.
+APRES_COMPARE_USER = Limit("apres_compare_user", 20, 3600)
 # Screenshots read by the AI: 60 images an hour for each user (each image counts once).
 SCREENSHOT_USER = Limit("screenshot_user", 60, 3600)
 # Chat messages (phase E): 60 an hour for each user, a person typing, not a script.

@@ -119,7 +119,7 @@ def _build_lines() -> list[dict[str, Any]]:
         elif special == "zero":
             rloc = ZERO_COST_RLOC
         if n == 7:
-            pax = "SYNTH07/PAX (CHD)"
+            pax = "SYNTH07/PAX".ljust(24) + "(CHD)"  # the report pads the mark to column 24
         lines.append(
             amadeus_line(
                 seq=f"{n:06d}",

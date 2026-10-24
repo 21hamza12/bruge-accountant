@@ -324,6 +324,46 @@ def test_canx_is_dropped_even_when_written_in_lowercase(w: World) -> None:
     assert [ln.trnc for ln in kept] == ["TKTT"]
 
 
+# --- the CHD / INF padding ----------------------------------------------------------------------
+
+
+def amadeus_row(name: str, pax_type: str) -> AmadeusLine:
+    return AmadeusLine(
+        seq_no="000001", airline="199", doc_number="1990000001", total_doc=Decimal(1),
+        pax_name=name, pax_type=pax_type, staff_sign="0004SV", trnc="TKTT", rloc="AAAAAA",
+    )  # fmt: skip
+
+
+@pytest.mark.parametrize("length", [1, 2, 11, 13, 15, 22, 23])
+@pytest.mark.parametrize("mark", ["CHD", "INF"])
+def test_the_mark_of_a_child_or_infant_starts_in_the_report_column(length: int, mark: str) -> None:
+    """The report prints the name left-aligned in a column of 24 characters, then the mark: the
+    mark always starts at the same position, whatever the length of the name."""
+    name = "S" * length
+    shown = export_apres._report_name(amadeus_row(name, mark))
+    assert shown == name + " " * (24 - length) + f"({mark})"
+    assert shown.index("(") == 24 and len(shown) == 29
+
+
+@pytest.mark.parametrize("length", [24, 25, 29, 40, 200])
+def test_a_long_name_keeps_one_space_before_the_mark(length: int) -> None:
+    name = "S" * length
+    assert export_apres._report_name(amadeus_row(name, "CHD")) == f"{name} (CHD)"
+
+
+def test_an_adult_name_is_never_padded() -> None:
+    assert export_apres._report_name(amadeus_row("SYNTH/PAX", "ADT")) == "SYNTH/PAX"
+
+
+def test_the_padded_name_reads_back_to_the_same_name_and_type() -> None:
+    """The report parser takes the mark off again: the round trip is exact."""
+    from app.parsing.amadeus import _PAX_SUFFIX_RE
+
+    shown = export_apres._report_name(amadeus_row("SYNTH/CHILD", "CHD"))
+    match = _PAX_SUFFIX_RE.search(shown)
+    assert match is not None and shown[: match.start()] == "SYNTH/CHILD"
+
+
 # --- formula injection --------------------------------------------------------------------------
 
 

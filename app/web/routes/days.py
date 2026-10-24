@@ -169,6 +169,7 @@ def day_view(
         exports=exports,
         can_preview=exportable and not closed and upload is not None,
         no_export_note=exportable and closed and not exports,
+        can_compare=closed and bool(exports) and permissions.can_compare_apres(user),
     )
 
 

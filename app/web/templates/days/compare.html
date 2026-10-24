@@ -1,0 +1,116 @@
+{% extends "base.html" %}
+{% block title %}{{ _("Comparer avec la feuille de la comptable") }}{% endblock %}
+{% block content %}
+<p><a class="card-link card-link-back" href="/days/{{ day.isoformat() }}">{{ _("Journée du %(date)s", date=day | date_fr) }}</a></p>
+<section class="card" aria-labelledby="compare-title">
+  <h2 class="card-title" id="compare-title">{{ _("Comparer avec la feuille de la comptable") }}</h2>
+  {% if error %}<p class="error-box" id="form-error" role="alert" tabindex="-1" autofocus>{{ error }}</p>{% endif %}
+  <p class="muted">{{ _("TJQ APRES enregistré : version %(n)s, du %(at)s. Choisissez le TJQ APRES de la comptable pour cette journée (fichier .xlsx, 10 Mo au maximum). Le fichier est lu puis oublié : rien n'est enregistré.", n=version, at=created_at | datetime_fr) }}</p>
+  <form class="form" method="post" action="/days/{{ day.isoformat() }}/compare" enctype="multipart/form-data">
+    {% include "_csrf.html" %}
+    <div class="field">
+      <label for="file">{{ _("Fichier Excel (.xlsx)") }}</label>
+      <input id="file" name="file" type="file" required{% if error %} aria-describedby="form-error"{% endif %} accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet">
+    </div>
+    <button class="btn btn-primary btn-lg" type="submit">{{ _("Comparer") }}</button>
+  </form>
+</section>
+
+{% if result %}
+<section class="card" aria-labelledby="result-title">
+  <h2 class="card-title" id="result-title">{{ _("Résultat") }}</h2>
+  {% if sheet_day %}<p class="error-box" id="sheet-day" role="status">{{ _("Attention : la feuille indique le %(sheet)s, la journée comparée est le %(day)s.", sheet=sheet_day | date_fr, day=day | date_fr) }}</p>{% endif %}
+  {% if result.same %}
+  <p class="pill pill-green" id="no-difference">{{ _("Aucune différence.") }}</p>
+  {% endif %}
+  <dl class="kv">
+    <dt>{{ _("Lignes communes") }}</dt><dd class="num">{{ result.matched }}</dd>
+    <dt>{{ _("Identiques") }}</dt><dd class="num">{{ result.identical }}</dd>
+    <dt>{{ _("Cellules différentes") }}</dt><dd class="num">{{ result.differing_cells }}</dd>
+    <dt>{{ _("Seulement dans sa feuille") }}</dt><dd class="num">{{ result.only_hers_count }}</dd>
+    <dt>{{ _("Seulement dans l'application") }}</dt><dd class="num">{{ result.only_app_count }}</dd>
+    <dt>{{ _("Lignes de sa feuille") }}</dt><dd class="num">{{ result.hers_rows }}</dd>
+    <dt>{{ _("Lignes de l'application") }}</dt><dd class="num">{{ result.app_rows }}</dd>
+  </dl>
+  {% if result.duplicates_hers or result.duplicates_app %}
+  <p class="muted">{{ _("Numéros de billet répétés (seule la première ligne est comparée) : %(h)s dans sa feuille, %(a)s dans l'application.", h=result.duplicates_hers, a=result.duplicates_app) }}</p>
+  {% endif %}
+  {% if warnings %}
+  <details>
+    <summary>{{ ngettext("%(num)d avertissement de lecture", "%(num)d avertissements de lecture", warnings | length + more_warnings) }}</summary>
+    <ul class="list-plain">
+      {% for w in warnings %}<li>{{ w }}</li>
+      {% endfor %}
+      {% if more_warnings %}<li>{{ _("… et %(n)s autres", n=more_warnings) }}</li>{% endif %}
+    </ul>
+  </details>
+  {% endif %}
+</section>
+
+{% if result.differences %}
+<section class="card" aria-labelledby="diff-title">
+  <h2 class="card-title" id="diff-title">{{ _("Cellules différentes") }}</h2>
+  {% if result.differences_cut %}<p class="muted">{{ _("Les %(n)s premières sont affichées.", n=result.differences | length) }}</p>{% endif %}
+  <div class="table-wrap" tabindex="0" role="region" aria-label="{{ _('Cellules différentes (défilement horizontal)') }}">
+    <table class="table" id="differences">
+      <caption class="visually-hidden">{{ _("Cellules différentes entre sa feuille et l'application") }}</caption>
+      <thead>
+        <tr>
+          <th scope="col">{{ _("Billet") }}</th>
+          <th scope="col">{{ _("SEQ NO") }}</th>
+          <th scope="col">{{ _("Colonne") }}</th>
+          <th scope="col">{{ _("Sa feuille") }}</th>
+          <th scope="col">{{ _("L'application") }}</th>
+        </tr>
+      </thead>
+      <tbody>
+      {% for d in result.differences %}
+        <tr>
+          <td class="mono">{{ d.doc_number }}</td>
+          <td class="mono">{{ d.seq_no }}</td>
+          <td>{{ d.column }}</td>
+          <td>{% if d.hers %}{{ d.hers }}{% else %}<span class="muted">{{ _("(vide)") }}</span>{% endif %}</td>
+          <td>{% if d.app %}{{ d.app }}{% else %}<span class="muted">{{ _("(vide)") }}</span>{% endif %}</td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+{% endif %}
+
+{% for title, rows, count, id in [
+  (_("Seulement dans sa feuille"), result.only_hers, result.only_hers_count, "only-hers"),
+  (_("Seulement dans l'application"), result.only_app, result.only_app_count, "only-app")] %}
+{% if rows %}
+<section class="card" aria-labelledby="{{ id }}-title">
+  <h2 class="card-title" id="{{ id }}-title">{{ title }}</h2>
+  {% if count > rows | length %}<p class="muted">{{ _("Les %(n)s premières lignes sont affichées sur %(total)s.", n=rows | length, total=count) }}</p>{% endif %}
+  <div class="table-wrap" tabindex="0" role="region" aria-label="{{ title }}">
+    <table class="table" id="{{ id }}">
+      <caption class="visually-hidden">{{ title }}</caption>
+      <thead>
+        <tr>
+          <th scope="col">{{ _("Billet") }}</th>
+          <th scope="col">{{ _("SEQ NO") }}</th>
+          <th scope="col">{{ _("PAX NAME") }}</th>
+          <th scope="col" class="col-end">{{ _("TOTAL DOC") }}</th>
+        </tr>
+      </thead>
+      <tbody>
+      {% for r in rows %}
+        <tr>
+          <td class="mono">{{ r.doc_number }}</td>
+          <td class="mono">{{ r.seq_no }}</td>
+          <td>{{ r.pax_name }}</td>
+          <td class="num col-end">{{ r.total_doc }}</td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+{% endif %}
+{% endfor %}
+{% endif %}
+{% endblock %}

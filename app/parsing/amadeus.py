@@ -82,6 +82,9 @@ FIELD_LIMITS = {
     "form_of_payment": 16,
     "confirmed": 32,
 }
+# Lengths of the accountant's hand-typed text columns (read only by ``parse_apres``; no table
+# holds them, so they are not in ``FIELD_LIMITS``, which mirrors the column lengths).
+MANUAL_LIMITS = {"ag": 200, "clt": 200, "ap": 200}
 COST_LIMIT = Decimal(10) ** 12  # Numeric(14, 2)
 _CENT = Decimal("0.01")
 
@@ -116,6 +119,9 @@ _OPTIONAL = {
     "FP": "form_of_payment",
     "CONFIRMED": "confirmed",
 }
+# The accountant's own hand-typed columns, read only by ``parse_apres`` (the parallel-run
+# comparison); an Amadeus upload leaves them unread.
+_MANUAL = {"P.B": "pb", "AG": "ag", "CLT": "clt", "AP": "ap"}
 # Columns that are deliberately not read, so they get no warning: Amadeus columns of the newer
 # export (FEE, AGENT, REPORT IND, NDC) and the accountant's own hand-typed columns, which are in
 # every working file (P.B, AG, CLT, AP).
@@ -150,6 +156,10 @@ class ParsedTicket:
     comm: Decimal | None = None
     form_of_payment: str | None = None
     confirmed: str | None = None
+    pb: Decimal | None = None  # the hand-typed columns: None unless read by ``parse_apres``
+    ag: str | None = None
+    clt: str | None = None
+    ap: str | None = None
 
 
 @dataclass(frozen=True)
@@ -186,12 +196,20 @@ def _short(value: object) -> str:
     return text[: WARNING_VALUE_CHARS - 3] + "..."
 
 
-def parse_report(source: Path | bytes | bytearray | BinaryIO) -> ParsedReport:
+def parse_apres(source: Path | bytes | bytearray | BinaryIO) -> ParsedReport:
+    """The accountant's APRES: the report with its hand-typed P.B, AG, CLT and AP columns read too.
+    A module-level function so the sandbox child can import it by name."""
+    return parse_report(source, manual_columns=True)
+
+
+def parse_report(
+    source: Path | bytes | bytearray | BinaryIO, *, manual_columns: bool = False
+) -> ParsedReport:
     data = _read_bytes(source)
     with _open_sheet(data) as ws:
         rows = _iter_rows(ws)
         head = list(itertools.islice(rows, HEADER_SCAN_ROWS))
-        header_row, columns, unknown, truncated = _locate_columns(head)
+        header_row, columns, unknown, truncated = _locate_columns(head, manual_columns)
         header = _parse_header(head[: header_row - 1])
 
         warnings = _Warnings()
@@ -203,7 +221,7 @@ def parse_report(source: Path | bytes | bytearray | BinaryIO) -> ParsedReport:
         if unknown:
             warnings.add(_unknown_columns_message(unknown))
         # Every known column has a key; a column the file lacks is read as an empty cell.
-        all_keys = (*_REQUIRED.values(), *_OPTIONAL.values())
+        all_keys = (*_REQUIRED.values(), *_OPTIONAL.values(), *_MANUAL.values())
         tickets: list[ParsedTicket] = []
         index_by_no: dict[str, int] = {}
         non_blank = 0
@@ -223,7 +241,7 @@ def parse_report(source: Path | bytes | bytearray | BinaryIO) -> ParsedReport:
             non_blank += 1
             if non_blank > MAX_DATA_ROWS:
                 raise ParseError(f"too many rows (more than {MAX_DATA_ROWS} data rows)")
-            ticket = _build_ticket(cells, row_no, warnings)
+            ticket = _build_ticket(cells, row_no, warnings, manual_columns)
             if ticket is None:
                 continue
             first = index_by_no.get(ticket.ticket_no)
@@ -318,6 +336,7 @@ def _norm(value: object) -> str:
 
 def _locate_columns(
     rows: list[tuple[Any, ...]],
+    manual: bool = False,
 ) -> tuple[int, dict[str, int], list[str], bool]:
     """The header row number, the column index of every known column, the header titles that
     are neither known nor deliberately ignored (cleaned, shortened, without duplicates), and
@@ -329,6 +348,8 @@ def _locate_columns(
             for idx, value in enumerate(row):
                 title = _norm(value)
                 key = _REQUIRED.get(title) or _OPTIONAL.get(title)
+                if key is None and manual:
+                    key = _MANUAL.get(title)
                 if key is not None:
                     columns.setdefault(key, idx)
                     continue
@@ -463,7 +484,7 @@ def _cost(value: object) -> tuple[Decimal | None, bool]:
 def _limited(
     text: str, key: str, label: str, row_no: int, flags: set[str], warnings: _Warnings
 ) -> str:
-    limit = FIELD_LIMITS[key]
+    limit = FIELD_LIMITS[key] if key in FIELD_LIMITS else MANUAL_LIMITS[key]
     if len(text) <= limit:
         return text
     flags.add(FLAG_FIELD_TOO_LONG)
@@ -511,7 +532,9 @@ def _optional_money(value: object, label: str, row_no: int, warnings: _Warnings)
     return amount
 
 
-def _build_ticket(cells: dict[str, Any], row_no: int, warnings: _Warnings) -> ParsedTicket | None:
+def _build_ticket(
+    cells: dict[str, Any], row_no: int, warnings: _Warnings, manual: bool = False
+) -> ParsedTicket | None:
     ticket_no = _text(cells["ticket_no"], "DOC NUMBER", row_no, warnings)
     if not ticket_no:
         warnings.add(f"row {row_no}: blank DOC NUMBER, row skipped")
@@ -568,6 +591,10 @@ def _build_ticket(cells: dict[str, Any], row_no: int, warnings: _Warnings) -> Pa
     comm = _optional_money(cells["comm"], "COMM", row_no, warnings)
     fop = field("form_of_payment", "FP")
     confirmed = field("confirmed", "CONFIRMED")
+    pb = _optional_money(cells["pb"], "P.B", row_no, warnings) if manual else None
+    ag = field("ag", "AG") if manual else ""
+    clt = field("clt", "CLT") if manual else ""
+    ap = field("ap", "AP") if manual else ""
 
     return ParsedTicket(
         seq_no=seq_no,
@@ -585,4 +612,8 @@ def _build_ticket(cells: dict[str, Any], row_no: int, warnings: _Warnings) -> Pa
         comm=comm,
         form_of_payment=fop or None,
         confirmed=confirmed or None,
+        pb=pb,
+        ag=ag or None,
+        clt=clt or None,
+        ap=ap or None,
     )

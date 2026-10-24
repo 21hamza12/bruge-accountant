@@ -65,6 +65,7 @@ DAY_CLOSED = "day_closed"
 DAY_REOPENED = "day_reopened"
 DAY_EXPORT_STORED = "day_export_stored"
 EXPORT_DOWNLOADED = "export_downloaded"
+APRES_COMPARED = "apres_compared"  # the parallel-run comparison (counts only)
 COMPARISON_RUN = "comparison_run"
 COMPARISON_SUPERSEDED = "comparison_flags_superseded"
 DAY_APPROVED = "day_approved"

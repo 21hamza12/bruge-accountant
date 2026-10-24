@@ -50,8 +50,8 @@ n'ai pas pu répondre complètement."), and does not go to the stronger model.
 
 - Each call carries the tools of the person's role, the cached system prompt, `tool_choice` `auto`
   (`none` on the last allowed call, so the turn always ends in words), `output_config` effort `low`,
-  `max_tokens` **300** (`chat_client.MAX_OUTPUT_TOKENS`: a chat answer is one to three sentences; this is
-  the cost cap). Never `thinking`, a sampling parameter, an assistant prefill or a forced
+  `max_tokens` **1 024** (`chat_client.MAX_OUTPUT_TOKENS`, the cost cap; Haiku 5.5 thinks first at low
+  effort and the thinking counts as output, so 300 was too tight to decline a question: see section 8). Never `thinking`, a sampling parameter, an assistant prefill or a forced
   `tool_choice` (`any` and `tool` are a 400 on Sonnet 5.5: `ChatRequest` refuses to be built with one).
   The SDK client is built with **no retry** (`AI_CHAT_MAX_RETRIES`, default 0: a retry doubles the cost
   and the wait of a call that is already slow) and an explicit `base_url` (section 7).
@@ -92,7 +92,7 @@ called is **not** unresolved (the model chose to answer in words). The stronger 
   number fewer than the cap (`budget.fallbacks_today`: one query over the
   `(agency_id, created_at)` index). A cap reached keeps the first model's partial result. (One
   escalated turn is up to 3 rows; a stronger-model call that was cut off or refused is recorded
-  `error`, not `fallback`, so it does not count against the cap; it is bounded by the 300-token limit.)
+  `error`, not `fallback`, so it does not count against the cap; it is bounded by the 1 024-token limit.)
 - Stronger model over budget: the first model's partial result stays: its lookup lines and "Je n'ai
   pas pu répondre complètement."
 - Stronger model unresolved too: its lookups **and the first pass's** are shown (lines are de-duplicated)
@@ -157,8 +157,8 @@ typed), partner names and aliases, pasted Amadeus text, another person's message
 - `input_tokens` of a row is every input token (uncached + cache writes + cache reads); the cost is
   priced exactly (`pricing.cost_with_cache_micro_usd`: input x1, cache write x1.25, cache read x0.10,
   output x1, rounded up). No new column.
-- **Estimate before a call**: 8 000 input tokens all written to the cache + 300 output
-  (`estimate_chat_micro_usd`: 1 150 micro-USD on Haiku, 23 000 on Sonnet), above any real call. The
+- **Estimate before a call**: 8 000 input tokens all written to the cache + 1 024 output
+  (`estimate_chat_micro_usd`: 1 512 micro-USD on Haiku, 30 240 on Sonnet), above any real call. The
   output estimate is the `max_tokens` of a chat call (a test pins the two together).
 - **Share**: the chat stops when `spent + estimate > budget x AI_CHAT_BUDGET_SHARE` (default **0.8**, bounds
   0.1 to 1). The last 20 % of the month is kept for screenshots, which stay checked against 100 %. This
@@ -243,10 +243,29 @@ agency's ticket reads like a missing one; hidden or unoffered tools run nothing;
 
 ## 8. Cost per turn
 
-**Not measured.** The 1 150 / 23 000 micro-USD estimates are conservative bounds, not measurements. The
-first measurement needs the owner's approval to send synthetic messages to the API: record the cache
-write, cache read, input and output tokens of 10 to 20 typical turns on both models, then replace this
-section and tune `CHAT_ESTIMATE_*` and the 0.8 share.
+**Measured on 24 Oct 2026** (owner's approval), Haiku 5.5, the made-up chat world of
+`tests/chat_support.py`, 8 questions from the manager, the accountant and an agent (blocking flags,
+"are my sales complete", a ticket's problem, tickets not sent, another agent's sales, a price):
+
+- The API accepted the strict tool schemas (all-required, nullable). Haiku picked the right lookup
+  every time, in 2 calls per question (the lookup, then the answer). No Sonnet retry was needed.
+- The cache works: system prompt + tools are about 1 600 to 1 800 tokens, written once per role
+  (cache write 1 584 tokens for the agent's tool list) and read on every later call (cache read
+  1 780 tokens). Uncached input per call: 130 to 630 tokens. Output: 27 to 170 tokens.
+- **Cost: 0.00011 to 0.00037 USD per question, about 0.00017 on average** (1 200 micro-USD for 7
+  questions; 0.0014 USD in all with an aborted first run). That is about **6 000 free questions a
+  month for 1 USD**; the 80 % share of a 5 USD budget covers some 23 000.
+- Isolation held: an agent asking for another agent's sales got "Aucune vente".
+- The guard replaced the model's sentence twice with "Voici ce que j'ai trouvé :" although it was
+  correct; the lookup lines underneath still gave the facts. It errs on the safe side by design.
+- The price question ran out of the old 300-token limit while Haiku was still thinking ("Je n'ai pas
+  pu répondre complètement"): the limit is now 1 024 (section 2). Re-run with 1 024: Haiku finished in
+  103 output tokens and declined; its sentence named a price word, so the guard showed "Je ne peux
+  répondre qu'avec les informations de l'application." and the help list. No price reached the
+  screen. The other answers were unchanged (0.0013 USD for the same 7 questions).
+
+The estimates (1 512 / 30 240 micro-USD per call) stay well above the measured calls (45 to 261).
+Sonnet was not measured (no escalation happened).
 
 ## 9. Files
 
@@ -263,10 +282,8 @@ migration `0016_ai_usage_chat_purpose.py`. Changed: `app/ai/{client,fake,pricing
 
 ## 10. Open items
 
-- Run the first real turns (owner approval), check that the **strict tool schemas are accepted** (the
-  one form sent is all-required with `"type": ["string", "null"]` and `additionalProperties: false`,
-  valid under strict mode whether or not it allows optional properties; `check_args` reads a null as
-  "not given") and fill section 8.
+- Measure a Sonnet retry (none happened in the first live run) and real questions from the agency
+  once it uses the chat.
 - Not built (out of scope, later `@tool`s): payments, partner statements, overdue balances, profit,
   weekly advice, Arabic/Hassaniya, streaming, an operator budget page, chat message retention, labelling
   AI prose on screen.

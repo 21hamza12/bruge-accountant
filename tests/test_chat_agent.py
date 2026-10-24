@@ -881,7 +881,7 @@ def test_the_turn_holds_today_the_role_and_three_earlier_messages_of_the_person(
         "Messages précédents de la personne (contexte) :\n- trois\n- quatre\n- cinq\n"
         "Message : et maintenant ?"
     )
-    assert fake.requests[0].max_tokens == 300 and fake.requests[0].effort == "low"
+    assert fake.requests[0].max_tokens == 1024 and fake.requests[0].effort == "low"
 
 
 def test_no_history_no_history_block(w: ChatWorld) -> None:

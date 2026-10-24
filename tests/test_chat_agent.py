@@ -695,7 +695,7 @@ def test_no_second_model_when_it_is_switched_off(w: ChatWorld) -> None:
 
 
 def test_the_stronger_model_over_budget_keeps_the_first_partial_result(w: ChatWorld) -> None:
-    # 20 000 micro-USD is 80 % of 0.025 USD: room for Haiku's estimate (1 150), not Sonnet's
+    # 20 000 micro-USD is 80 % of 0.025 USD: room for Haiku's estimate (1 512), not Sonnet's
     budget.set_limits(
         w.db, w.agency_id, budget_usd=Decimal("0.025"), enabled=None,
         default_budget_usd=Decimal(5), now=NOW,
@@ -881,7 +881,7 @@ def test_the_turn_holds_today_the_role_and_three_earlier_messages_of_the_person(
         "Messages précédents de la personne (contexte) :\n- trois\n- quatre\n- cinq\n"
         "Message : et maintenant ?"
     )
-    assert fake.requests[0].max_tokens == 300 and fake.requests[0].effort == "low"
+    assert fake.requests[0].max_tokens == 1024 and fake.requests[0].effort == "low"
 
 
 def test_no_history_no_history_block(w: ChatWorld) -> None:

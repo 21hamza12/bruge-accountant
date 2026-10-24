@@ -94,7 +94,7 @@ def test_the_request_carries_tools_cached_system_effort_and_nothing_forbidden() 
     client, messages = _real(_answer([_text("Bonjour")]))
     client.complete(request())
     sent = messages.kwargs
-    assert sent["model"] == HAIKU and sent["max_tokens"] == 300
+    assert sent["model"] == HAIKU and sent["max_tokens"] == 1024
     assert sent["tools"] == TOOLS and sent["tools"][0]["strict"] is True
     assert sent["tool_choice"] == {"type": "auto"}
     assert sent["system"] == [

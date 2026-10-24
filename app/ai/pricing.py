@@ -63,10 +63,10 @@ CACHE_WRITE_FACTOR = Decimal("1.25")
 CACHE_READ_FACTOR = Decimal("0.10")
 # What ONE chat call is estimated to cost before it is made: a prompt of 8 000 tokens (system,
 # tools, the question and the tool results of the turn: about 3 500 in practice) all written to the
-# cache, and the output limit of a call (300 tokens: a chat answer is one to three sentences).
+# cache, and the output limit of a call (1 024 tokens, thinking included).
 # Above any real call; the budget never under-counts.
 CHAT_ESTIMATE_INPUT_TOKENS = 8000
-CHAT_ESTIMATE_OUTPUT_TOKENS = 300  # = chat_client.MAX_OUTPUT_TOKENS (a test pins it)
+CHAT_ESTIMATE_OUTPUT_TOKENS = 1024  # = chat_client.MAX_OUTPUT_TOKENS (a test pins it)
 
 
 def cost_with_cache_micro_usd(

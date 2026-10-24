@@ -51,7 +51,8 @@ n'ai pas pu répondre complètement."), and does not go to the stronger model.
 - Each call carries the tools of the person's role, the cached system prompt, `tool_choice` `auto`
   (`none` on the last allowed call, so the turn always ends in words), `output_config` effort `low`,
   `max_tokens` **1 024** (`chat_client.MAX_OUTPUT_TOKENS`, the cost cap; Haiku 5.5 thinks first at low
-  effort and the thinking counts as output, so 300 was too tight to decline a question: see section 8). Never `thinking`, a sampling parameter, an assistant prefill or a forced
+  effort and the thinking counts as output, so 300 was too tight to decline a question: see section
+  8). Never `thinking`, a sampling parameter, an assistant prefill or a forced
   `tool_choice` (`any` and `tool` are a 400 on Sonnet 5.5: `ChatRequest` refuses to be built with one).
   The SDK client is built with **no retry** (`AI_CHAT_MAX_RETRIES`, default 0: a retry doubles the cost
   and the wait of a call that is already slow) and an explicit `base_url` (section 7).
@@ -244,8 +245,9 @@ agency's ticket reads like a missing one; hidden or unoffered tools run nothing;
 ## 8. Cost per turn
 
 **Measured on 24 Oct 2026** (owner's approval), Haiku 5.5, the made-up chat world of
-`tests/chat_support.py`, 8 questions from the manager, the accountant and an agent (blocking flags,
-"are my sales complete", a ticket's problem, tickets not sent, another agent's sales, a price):
+`tests/chat_support.py`, 7 questions (6 kinds, one asked twice to see the cache) from the manager,
+the accountant and an agent (blocking flags, "are my sales complete", a ticket's problem, tickets
+not sent, another agent's sales, a price):
 
 - The API accepted the strict tool schemas (all-required, nullable). Haiku picked the right lookup
   every time, in 2 calls per question (the lookup, then the answer). No Sonnet retry was needed.
@@ -262,7 +264,9 @@ agency's ticket reads like a missing one; hidden or unoffered tools run nothing;
   pu répondre complètement"): the limit is now 1 024 (section 2). Re-run with 1 024: Haiku finished in
   103 output tokens and declined; its sentence named a price word, so the guard showed "Je ne peux
   répondre qu'avec les informations de l'application." and the help list. No price reached the
-  screen. The other answers were unchanged (0.0013 USD for the same 7 questions).
+  screen. The other answers were unchanged: 1 296 micro-USD (0.0013 USD) for the same 7 questions,
+  against 1 200 before, because this run wrote the cache once more and the price answer now ran to
+  its end.
 
 The estimates (1 512 / 30 240 micro-USD per call) stay well above the measured calls (45 to 261).
 Sonnet was not measured (no escalation happened).

@@ -695,7 +695,7 @@ def test_no_second_model_when_it_is_switched_off(w: ChatWorld) -> None:
 
 
 def test_the_stronger_model_over_budget_keeps_the_first_partial_result(w: ChatWorld) -> None:
-    # 20 000 micro-USD is 80 % of 0.025 USD: room for Haiku's estimate (1 150), not Sonnet's
+    # 20 000 micro-USD is 80 % of 0.025 USD: room for Haiku's estimate (1 512), not Sonnet's
     budget.set_limits(
         w.db, w.agency_id, budget_usd=Decimal("0.025"), enabled=None,
         default_budget_usd=Decimal(5), now=NOW,

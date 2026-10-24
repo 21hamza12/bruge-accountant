@@ -23,7 +23,7 @@ from app.ai.client import API_BASE_URL, map_errors
 
 # The cost cap of one call. The answer is one to three sentences, but Haiku 5.5 thinks first (at
 # low effort) and the thinking counts as output: with 300, a question it declines (a price) ran out
-# before any answer in the first live test. Measured answers use 30 to 170 tokens.
+# before any answer in the first live test. Measured answers use 27 to 170 tokens.
 MAX_OUTPUT_TOKENS = 1024
 EFFORT = "low"
 ALLOWED_TOOL_CHOICES = ("auto", "none")

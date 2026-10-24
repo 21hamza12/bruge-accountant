@@ -26,4 +26,4 @@ USER 10001:10001
 EXPOSE 8000
 # Shell form so ${PORT} expands (Render injects it); exec so uvicorn is PID 1 and gets SIGTERM.
 # hadolint ignore=DL3025
-CMD exec uvicorn --factory app.web.main:create_app --host 0.0.0.0 --port ${PORT:-8000} --no-server-header --workers 1
+CMD exec uvicorn --factory app.web.main:create_app --host 0.0.0.0 --port ${PORT:-8000} --no-server-header --no-access-log --workers 1

@@ -1,7 +1,7 @@
 """Command line interface.
 
 ``python -m app <command>`` with command one of: init-db, add-agency, bootstrap-agency,
-reset-password, ai-budget, grant-app-role, purge-expired, import, seed-demo.
+reset-password, ai-budget, ai-smoke, grant-app-role, purge-expired, import, seed-demo.
 
 Exit codes: 0 success, 1 failure (database, file, parse), 2 usage or refusal (bad arguments, a
 name already taken, a role that may not be used), 130 interrupted at the password prompt.
@@ -26,9 +26,11 @@ from alembic.util.exc import CommandError
 from pydantic import ValidationError
 from sqlalchemy.exc import DBAPIError, IntegrityError, SQLAlchemyError
 
-from app import audit, db_roles
+from app import alerting, audit, db_roles
 from app.ai import budget as ai_budget
 from app.ai import pricing as ai_pricing
+from app.ai.chat_client import AnthropicChatClient, ChatRequest
+from app.ai.client import AiUnavailable
 from app.auth.passwords import hash_password, password_policy_error
 from app.auth.phone import InvalidPhoneError, mask_phone, normalize_phone
 from app.auth.ratelimit import purge_expired_windows
@@ -44,6 +46,7 @@ from app.demo import (
 )
 from app.formatting import money
 from app.ingest import IngestResult, check_bytes, ingest_report, sanitize_filename
+from app.observability import quiet_libraries
 from app.parsing.amadeus import MAX_FILE_BYTES, ParseError, parse_report
 from app.questions import build_questions
 from app.repository import (
@@ -174,6 +177,16 @@ def _build_parser() -> argparse.ArgumentParser:
     grant.add_argument("role", help="the role name (lowercase letters, digits, underscore)")
 
     sub.add_parser(
+        "ai-smoke",
+        help="check the configured Anthropic key with one tiny call (no database)",
+        description=(
+            "One minimal chat call with a fixed question and no data, to prove the key and the "
+            "model work. Prints ok or failed, the model and the token counts; never the key or "
+            "the answer. Run it in Render Shell. Not metered against any agency's budget."
+        ),
+    )
+
+    sub.add_parser(
         "purge-expired",
         parents=[db_option],
         help="delete expired sessions and temporary passwords and audit events past retention",
@@ -270,6 +283,7 @@ def _init_db(url: str) -> int:
     try:
         command.upgrade(cfg, "head")
     except CommandError as exc:
+        alerting.capture_exception(exc, job="init-db")
         return _fail(f"migration failed: {exc}", EXIT_FAILURE)
     print("database ready")
     return EXIT_OK
@@ -677,6 +691,94 @@ def _default_url_for(command_name: str) -> str:
     return settings.database_url.get_secret_value() or default_database_url()
 
 
+JOB_COMMANDS = frozenset({"init-db", "purge-expired"})  # run by Render: a failure must alert
+
+
+def _start_alerting() -> bool:
+    """Error alerts for a job, when SENTRY_DSN is set. A configuration that does not load has
+    already been reported by the command itself, so it simply stays off here."""
+    try:
+        return alerting.init_alerting(Settings())
+    except ValidationError:
+        return False
+
+
+def _config_problems(exc: ValidationError) -> str:
+    # Messages only: the offending values (URLs with passwords) are never echoed.
+    return "; ".join(f"{'.'.join(map(str, e['loc']))}: {e['msg']}" for e in exc.errors())
+
+
+SMOKE_QUESTION = "ping"
+SMOKE_MAX_TOKENS = 128
+
+
+def _ai_smoke() -> int:
+    try:
+        settings = Settings()
+    except ValidationError as exc:
+        return _fail(f"invalid configuration: {_config_problems(exc)}", EXIT_FAILURE)
+    if not settings.has_ai_key or settings.anthropic_api_key is None:
+        return _fail("ai-smoke: ANTHROPIC_API_KEY is not set", EXIT_FAILURE)
+    if settings.ai_enabled is False:
+        return _fail("ai-smoke: AI_ENABLED=false (the AI is switched off)", EXIT_FAILURE)
+    model = settings.ai_chat_model
+    client = AnthropicChatClient(
+        settings.anthropic_api_key.get_secret_value().strip(),
+        timeout_s=settings.ai_chat_timeout_s,
+        max_retries=settings.ai_chat_max_retries,
+    )
+    quiet_libraries()  # the SDK was just imported: it may have lowered its loggers
+    noop_tool = {
+        "name": "noop",
+        "description": "Unused: present only so the request has the same shape as the chat's.",
+        "input_schema": {
+            "type": "object",
+            "properties": {},
+            "required": [],
+            "additionalProperties": False,
+        },
+        "strict": True,
+    }
+    request = ChatRequest(
+        model=model,
+        system="This is a connectivity check. Answer with the single word: ok.",
+        tools=[noop_tool],
+        messages=[{"role": "user", "content": SMOKE_QUESTION}],
+        tool_choice={"type": "none"},
+        max_tokens=SMOKE_MAX_TOKENS,
+    )
+    try:
+        response = client.complete(request)
+    except AiUnavailable as exc:
+        return _fail(f"ai-smoke: failed kind={exc.kind} model={model}", EXIT_FAILURE)
+    # Only counts are printed: the answer is dropped on purpose.
+    print(
+        f"ai-smoke: ok model={model} input_tokens={response.input_tokens} "
+        f"output_tokens={response.output_tokens}"
+    )
+    return EXIT_OK
+
+
+def _dispatch(args: argparse.Namespace, url: str) -> int:
+    if args.command == "init-db":
+        return _init_db(url)
+    if args.command == "add-agency":
+        return _add_agency(url, args.slug, args.name)
+    if args.command == "bootstrap-agency":
+        return _bootstrap(url, args)
+    if args.command == "reset-password":
+        return _reset_password(url, args)
+    if args.command == "ai-budget":
+        return _ai_budget(url, args)
+    if args.command == "grant-app-role":
+        return _grant_app_role(url, args.role)
+    if args.command == "purge-expired":
+        return _purge_expired(url)
+    if args.command == "seed-demo":
+        return _seed_demo(url, args)
+    return _import(url, args.file, args.agency, args.date)
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     _use_utf8_output()
     raw_argv = sys.argv[1:] if argv is None else list(argv)
@@ -687,29 +789,24 @@ def main(argv: Sequence[str] | None = None) -> int:
         if refusal is not None:
             return _fail(refusal, EXIT_USAGE)
     args = _build_parser().parse_args(argv)
+    if args.command == "ai-smoke":
+        return _ai_smoke()
     try:
         url: str = args.db or _default_url_for(args.command)
     except ValidationError as exc:
         # Messages only: the offending values (URLs with passwords) are never echoed.
-        problems = "; ".join(f"{'.'.join(map(str, e['loc']))}: {e['msg']}" for e in exc.errors())
-        return _fail(f"invalid configuration: {problems}", EXIT_FAILURE)
+        return _fail(f"invalid configuration: {_config_problems(exc)}", EXIT_FAILURE)
+    alerting_on = args.command in JOB_COMMANDS and _start_alerting()
     try:
-        if args.command == "init-db":
-            return _init_db(url)
-        if args.command == "add-agency":
-            return _add_agency(url, args.slug, args.name)
-        if args.command == "bootstrap-agency":
-            return _bootstrap(url, args)
-        if args.command == "reset-password":
-            return _reset_password(url, args)
-        if args.command == "ai-budget":
-            return _ai_budget(url, args)
-        if args.command == "grant-app-role":
-            return _grant_app_role(url, args.role)
-        if args.command == "purge-expired":
-            return _purge_expired(url)
-        if args.command == "seed-demo":
-            return _seed_demo(url, args)
-        return _import(url, args.file, args.agency, args.date)
+        return _dispatch(args, url)
     except SQLAlchemyError as exc:
+        if alerting_on:
+            alerting.capture_exception(exc, job=args.command)
         return _database_failure(exc)
+    except Exception as exc:
+        if alerting_on:
+            alerting.capture_exception(exc, job=args.command)
+        raise
+    finally:
+        if alerting_on:
+            alerting.flush()

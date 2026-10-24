@@ -13,6 +13,7 @@ from starlette.requests import Request
 from starlette.responses import HTMLResponse, Response
 from starlette.types import ASGIApp, Receive, Scope, Send
 
+from app import alerting
 from app.observability import request_id_var
 from app.web.templating import render
 
@@ -114,9 +115,10 @@ class ErrorBoundaryMiddleware:
             if exc.status_code >= 500:
                 log.error("http %s ref=%s", exc.status_code, ref, extra=_context())
             await error_response(exc.status_code, ref, kept)(scope, receive, send)
-        except Exception:
+        except Exception as exc:
             ref = new_reference()
             log.error("unhandled exception ref=%s", ref, exc_info=True, extra=_context())
+            alerting.capture_exception(exc)
             if started:
                 raise
             await error_response(500, ref)(scope, receive, send)

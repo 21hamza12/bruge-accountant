@@ -57,7 +57,7 @@ Today, from the code and the tests only:
 | 5 | Rate limiting | in code | buckets in Postgres, shared across instances (`test_ratelimit.py`): login, temporary passwords, uploads, screenshots, chat | repeated logins from one address blocked on the live site |
 | 6 | Custom error screens | in code | French 401/403/404/500 and offline pages, no stack traces (`test_error_pages.py`) | runbook §7 smoke test |
 | 7 | Database indexes | in code | query plans checked on Postgres for the hot queries (`test_query_plans.py`) | none extra |
-| 8 | Logging and alerting | **fails today** | JSON logs and audit trail exist; **no error alerting, no uptime monitor, no durable log store** | C1 items 1–2, then one alert sent and received in C3 |
+| 8 | Logging and alerting | **built, to verify live** | JSON logs and audit trail; error alerts to Sentry behind `SENTRY_DSN` with scrubbing tested (`tests/test_alerting.py`); every log line one JSON object, uvicorn's access log off (`tests/test_observability.py`); runbook sections 6, 9, 10. **No uptime monitor, log stream or Sentry project exists yet** | one alert sent and received, one log search by request id, the uptime monitor firing and recovering (C3) |
 | 9 | Rollback | **unverified** | Render zero-downtime deploys (new version must pass `/healthz` before traffic moves) and one-click rollback; `test_rollback_invariant.py` | the rollback drilled twice (C3). Note: this is Render's zero-downtime switch, **not a strict blue/green** with two live copies; the report will say so |
 
 ## 4. Parallel run (C7)

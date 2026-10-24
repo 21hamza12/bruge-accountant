@@ -34,12 +34,65 @@ Set on the web service, **Environment** tab.
 |---|---|---|
 | `DATABASE_URL` | the **Internal** connection string of `bruge-db` | `sync: false`. Separate role: the `bruge_app` URL. Single-role mode: the owner URL (same as `MIGRATION_DATABASE_URL`); row-level security is then FORCEd but the web process holds owner rights (section 3 lists the residual risk). **No real agency data may be loaded before migration 0003 has run.** Never paste it into chat, tickets or the repo. |
 | `APP_DB_ROLE` | the app role name (e.g. `bruge_app`), or unset | Read only by migration 0003 (`init-db`, and its downgrade), never by the web process. Set: grants that role its privileges, and fails if the role is missing, a superuser or BYPASSRLS. Unset: single-role mode with a warning. Section 3. |
-| `SENTRY_DSN` | leave empty for now | `sync: false`. Sentry is wired in PR 5. |
-| `ANTHROPIC_API_KEY` | optional; add it in the dashboard to switch the screenshot reading on | Not in `render.yaml` on purpose (the feature is hidden without it). Add it to the web service only. `AI_ENABLED=true` without a key makes production refuse to start. Monthly budget per agency: `AI_MONTHLY_BUDGET_USD` (default 5), or per agency with `DATABASE_URL="$MIGRATION_DATABASE_URL" python -m app ai-budget <slug> --usd N [--disable]`. See `docs/design/11-screenshots.md`. The same key also feeds the chat's free questions (`AI_CHAT_ENABLED=false` switches only the chat off; `AI_CHAT_MODEL`, `AI_CHAT_FALLBACK_MODEL`, `AI_CHAT_BUDGET_SHARE`, `AI_CHAT_TIMEOUT_S`: see `docs/design/13-chat-ai.md`); migration 0016 must have run before the first chat question is asked. |
+| `SENTRY_DSN` | the project DSN from Sentry (Settings, Client Keys), entered in the dashboard of **both** the web service and the cron job `bruge-purge` | `sync: false`. Empty means no alerts and nothing is sent. Section 9 says what is sent (errors only, scrubbed) and how to test it. |
+| `ANTHROPIC_API_KEY` | the production key, entered **only in the dashboard** of the web service | Not in `render.yaml` on purpose (the feature is hidden without it), never in the repo, a ticket or the chat. All AI variables with their production values, and the key check after the first deploy (`python -m app ai-smoke`): "AI settings" below. Add it to the web service only. `AI_ENABLED=true` without a key makes production refuse to start. Monthly budget per agency: `AI_MONTHLY_BUDGET_USD` (default 5), or per agency with `DATABASE_URL="$MIGRATION_DATABASE_URL" python -m app ai-budget <slug> --usd N [--disable]`. See `docs/design/11-screenshots.md`. The same key also feeds the chat's free questions (`AI_CHAT_ENABLED=false` switches only the chat off; `AI_CHAT_MODEL`, `AI_CHAT_FALLBACK_MODEL`, `AI_CHAT_BUDGET_SHARE`, `AI_CHAT_TIMEOUT_S`: see `docs/design/13-chat-ai.md`); migration 0016 must have run before the first chat question is asked. |
 | `ALLOWED_HOSTS` | the real public host name(s), comma separated, e.g. `bruge-accountant.onrender.com` | `sync: false` in `render.yaml`, so the blueprint asks for it and a sync never resets it. If it is missing the app refuses to start; if it is wrong every request, health check included, is rejected with 400 and the deploy fails. No wildcards: production refuses `*` and `*.example.com`. |
 | `CORS_ALLOWED_ORIGINS` | leave unset | Same-origin app, so no CORS middleware is installed. Production refuses `*`. |
 | `MIGRATION_DATABASE_URL` | injected from the database | Do not edit. Render env vars apply to the running service, so this owner URL is present in the container; that is the accepted pilot trade-off (approved decision 2 in `docs/phase2-plan.md`). The web process never reads it; only `init-db` (the `preDeployCommand`) and the admin CLI do, and a test enforces that. |
 | `ENV`, `COOKIE_SECURE`, `TRUSTED_PROXY_HOPS` | already in `render.yaml` | `TRUSTED_PROXY_HOPS` is confirmed in section 4. |
+
+### AI settings (screenshots and chat)
+
+Only `ANTHROPIC_API_KEY` must be entered. Every other variable has the default shown, which is
+also the production value; set one only to change it (web service Environment tab). The cron job
+and `init-db` need none of them. Models must be names in `app/ai/pricing.py` (a typo fails at
+start-up, not on the first call).
+
+| Variable | Production value | What it does |
+|---|---|---|
+| `ANTHROPIC_API_KEY` | a **new key named `bruge-prod`** (not the dev key), with a monthly spend limit in the Anthropic Console (e.g. 20 USD) | Dashboard only, web service only. Never printed, logged or sent to Sentry. |
+| `AI_ENABLED` | `true` | Master switch. Unset means "on when there is a key". `true` without a key makes production refuse to start (a loud failure, preferred to a silently hidden feature). `false` hides screenshots and the chat's model calls. |
+| `AI_MONTHLY_BUDGET_USD` | `5` | Default budget per agency and month, in USD. One agency can differ: `DATABASE_URL="$MIGRATION_DATABASE_URL" python -m app ai-budget <slug> --usd N [--disable]`. Measured: about 0.0002 USD per chat question, 0.0008 per screenshot. |
+| `AI_SCREENSHOT_MODEL` | `claude-haiku-5-5` | The cheap model that reads a screenshot first. |
+| `AI_FALLBACK_MODEL` | `claude-sonnet-5-5` | The stronger model tried when the first could not read it. Empty switches the second try off. |
+| `AI_TIMEOUT_S`, `AI_MAX_RETRIES` | `30`, `1` | One screenshot call: timeout, and SDK retries on 429/5xx/network errors only. |
+| `AI_CHAT_ENABLED` | `true` | `false` switches only the chat's model off (the chat still answers from code). |
+| `AI_CHAT_MODEL` | `claude-haiku-5-5` | First model for a free chat question. Also the one `ai-smoke` uses. |
+| `AI_CHAT_FALLBACK_MODEL` | `claude-sonnet-5-5` | Stronger second model. Empty disables escalation. |
+| `AI_CHAT_BUDGET_SHARE` | `0.8` | The chat stops at this share of the month's budget; the rest is kept for screenshots. |
+| `AI_CHAT_TIMEOUT_S` | `20` | One chat API call. |
+| `AI_CHAT_MAX_RETRIES` | `0` | SDK retries inside a chat call. Zero on purpose: a retry doubles cost and wait; the turn deadline and the stronger model are the second chance. |
+| `AI_CHAT_TURN_DEADLINE_S` | `45` | A whole chat turn, all calls included. |
+| `AI_CHAT_FALLBACK_DAILY_CAP` | `20` | Calls to the stronger model one agency may cost in a UTC day. `0` never escalates. |
+
+**Refused in production.** `ANTHROPIC_BASE_URL` (the key and every question would go to another
+host), `ANTHROPIC_AUTH_TOKEN` (replaces the key) and `ANTHROPIC_LOG` (`debug` makes the SDK log
+request bodies, a base64 screenshot included). If any is set, the service and `ai-smoke` refuse
+to start and name the variable, never its value. Do not set them in the dashboard.
+
+**Check the key after the first deploy** (and after any key change). In Render Shell on the web
+service:
+
+```bash
+python -m app ai-smoke
+```
+
+It makes **one** tiny call (a fixed word, no database, no agency data, a few dozen tokens, well
+under a cent) through the same client the chat uses, and prints one line:
+
+- `ai-smoke: ok model=claude-haiku-5-5 input_tokens=N output_tokens=N`, exit 0;
+- `ai-smoke: failed kind=auth model=...`, exit 1. The kind is `auth` (wrong or revoked key),
+  `rate_limit`, `timeout`, `connection`, `server` or `request`. Or a configuration message when
+  the key is missing, `AI_ENABLED=false`, or a refused variable above.
+
+It never prints the key or the model's answer, and it is not counted against any agency's budget.
+It is unverified against the real API until run (the tests use a fake client). Then, in the
+browser, as a real user, ask one free chat question and read one screenshot (Bruge's own test
+ticket), and confirm the Anthropic Console usage page shows the calls.
+
+- [ ] `ai-smoke` prints `ok`. Record the date, the model and the token counts in Results.
+- [ ] One chat question and one screenshot work on the live site.
+- [ ] The Anthropic key has a monthly spend limit set in the Console.
 
 - [ ] The cron job `bruge-purge` needs the same `sync: false` variables, entered on **its** own
       Environment tab (a cron job does not share the web service's variables): `ALLOWED_HOSTS`,
@@ -317,6 +370,13 @@ DATABASE_URL="$MIGRATION_DATABASE_URL" APP_DB_ROLE=bruge_app python -m alembic d
       interval 5 minutes (free tier), keyword check `"status":"ok"`, alert by email to the founder.
 - [ ] Pause the service (or break `DATABASE_URL` on a scratch deploy) to trigger one alert, confirm
       the email arrives, then restore and confirm the recovery email. Record both times.
+- [ ] Check the keyword text before relying on it: `curl -s https://<host>/healthz` must print
+      exactly `{"status":"ok","version":"<sha>"}` (no spaces; a test pins the `"status":"ok"`
+      text, and HEAD answers 200 for monitors that default to it).
+- [ ] The monitor must call the **public** host name (it is in `ALLOWED_HOSTS`); one that calls
+      another name gets 400 and alerts falsely.
+- [ ] Alert contacts: the founder's e-mail and one second person or channel, so one inbox is not
+      a single point of failure. Record both in Results.
 - [ ] Turn on Render deploy-failure emails (Account, Notifications).
 
 ## 7. Smoke test after the first deploy
@@ -357,6 +417,111 @@ changes zero rows. Test it on a copy with at least two agencies.
       source is not empty (an empty restore is the RLS symptom), and that a login and an import
       work against it. Record the date and the counts in Results.
 
+## 9. Error alerts (Sentry)
+
+Release checklist item 8. The code is built and tested (`app/alerting.py`,
+`tests/test_alerting.py`); it is **unverified live** until the drill below is done.
+
+**What it does.** With `SENTRY_DSN` set, the web service sends one event for each unhandled
+exception, and the jobs `init-db` and `purge-expired` send one when they fail (tag `job`). With
+`SENTRY_DSN` empty nothing starts and nothing is sent (development, tests, any service without it).
+
+**What is sent.** The exception type, its message, the stack as file names, function
+names and line numbers, the route template (`/sales/{sale_id}`), the HTTP method, the release (the
+git commit, the same value `/healthz` shows) and the environment (`ENV`).
+
+**What is never sent.** Request bodies, cookies, headers, query strings, local variables, source
+lines, the user (not even the id), the host name, log records, breadcrumbs, SQL statements and
+their parameters, traces, profiles, sessions. A last scrubber (`before_send`) masks passwords,
+tokens, CSRF values, API keys (`sk-...`), e-mail addresses and numbers of 8 digits or more (phone
+and ticket numbers) in whatever text is left. This is tested with a fake transport; no test
+reaches Sentry.
+
+The event is built from an allow-list (event id, time, level, release, environment, route
+template, method, URL without query, the `job` tag, and per exception its type, message and stack
+as file, function and line); every other field is dropped. A database error is sent as its
+constraint name and SQLSTATE only, and a validation error as its field names and error types
+(drivers and pydantic quote the data, e.g. `DETAIL: Key (...)=(3, <name>)` or `input_value=`).
+Other messages are cut at `DETAIL`, `Failing row contains` and `input_value=` and scrubbed.
+Handled HTTP errors (a 503 with a `detail` text) and a failing `/healthz` send nothing: the
+request log has them, and the uptime monitor alerts on `/healthz` (one event per probe would
+exhaust the free quota in an outage).
+
+Residual risk: an exception message written by our own code could contain a name or other free
+text; messages are scrubbed for the patterns above only. Keep personal data out of exception
+messages (the rule for log lines too), and read the first real events with that in mind.
+
+- [ ] Sentry account (free), new project, platform **FastAPI** (or Python). Copy the DSN.
+- [ ] In Sentry, Project Settings, Security & Privacy: turn on **Data Scrubber** and **Prevent
+      Storing of IP Addresses**.
+- [ ] Paste the DSN in the Render Environment tab of `bruge-accountant` **and** `bruge-purge`
+      (`SENTRY_DSN`, `sync: false`). Redeploy the web service. The DSN only allows sending, but
+      it still stays out of the repo and the chat.
+- [ ] Alert rule: Alerts, new rule, "A new issue is created", notify the founder by e-mail (and
+      the second contact of section 6).
+- [ ] **Drill (C3): send one alert and receive it.** In Render Shell on the web service:
+
+```bash
+python - <<'PY'
+from app import alerting
+from app.settings import Settings
+alerting.init_alerting(Settings())
+alerting.capture_exception(RuntimeError("alert drill, ignore"), job="drill")
+alerting.flush()
+print("sent")
+PY
+```
+
+  Confirm the e-mail arrives, and that the event shows `release` equal to the commit on
+  `/healthz`, environment `production`, and **no** request, user, cookie or breadcrumb section.
+  Resolve the issue. Record the time in Results.
+- [ ] Failed job: trigger `bruge-purge` with a wrong `DATABASE_URL` on a scratch deploy; confirm
+      one event tagged `job: purge-expired`.
+
+## 10. Durable logs (Better Stack) and finding one request
+
+Release checklist item 8. Render keeps service logs only for a short time, so the JSON logs are
+streamed to a log service. Better Stack has a free tier; any service that accepts a Render log
+stream (syslog) works the same way.
+
+**Shape of a line.** Every line on stdout is one JSON object: `ts` (UTC, millisecond ISO 8601),
+`level`, `logger`, `message`, and `request_id` on every line written while a request is handled
+(lines outside a request, such as start-up and the cron job, have none). A request ends with one
+`app.request` line (`method`, `route` template, `status`, `duration_ms`; never the raw path or the
+query). An error adds `exception` (the traceback, inside the same line). uvicorn's own messages
+are JSON too; its access log is off (`--no-access-log` and the logger is disabled) because it
+prints the raw URL, query string included. Passwords, tokens, cookies, CSRF values, API keys and
+URL passwords are masked before the line is written, and request bodies are never logged (all in
+`tests/test_observability.py`).
+
+Setup (the Render and Better Stack screens below were **not verified**; names may differ):
+
+- [ ] Better Stack: create a source of type **Render** (or **Syslog** if it is not listed) and
+      note the endpoint (`host:port`) and source token. The token is a secret.
+- [ ] Render dashboard, Workspace Settings, **Log Streams**, add the Better Stack endpoint (and
+      the token where Render asks for it). One workspace stream covers the web service, the cron
+      job and the database. Render forwards new logs only; it does not backfill.
+- [ ] Send traffic (`curl -i https://<host>/healthz`) and check in Better Stack, Live tail, that
+      lines arrive with their fields parsed (`ts`, `level`, `logger`, `message`, `request_id`). If
+      the whole line arrives as one text field, add a JSON parsing step on the source.
+- [ ] Note the retention of the plan used, and add an alert on `level:ERROR` if the plan allows.
+- [ ] Region: pick the log service's EU region if offered. The lines hold route templates, status
+      codes and request ids, no personal data by design.
+
+**Finding every line of one request.** Every response carries `X-Request-ID` (the 500 page too).
+Browser: DevTools, Network, the request, Response Headers. Terminal:
+`curl -si https://<host>/healthz | grep -i x-request-id`.
+
+- Better Stack: Live tail or Search, filter `request_id:"<the 32 hex characters>"`. All lines of
+  that request appear in time order: the error with its traceback, then the closing `app.request`
+  line with the status and duration.
+- Render dashboard, service, Logs: search for the id as text (short retention only).
+- Sentry events carry no request id (no headers are sent). To go from an alert to the logs, use
+  the time of the event and the route, then look for the `ERROR` line in the log service.
+
+- [ ] Take the id of one real request, find its lines in the log service, and record the count and
+      the time in Results.
+
 ## Results
 
 Fill in as you go. Leave "not done" until you have really checked it.
@@ -382,3 +547,7 @@ Fill in as you go. Leave "not done" until you have really checked it.
 | `purge-expired` hourly cron (`bruge-purge`) triggered by hand, then once on schedule | | not done | section 3 |
 | `reset-password` rehearsed for a locked-out manager | | not done | section 3 |
 | Plan names in `render.yaml` still accepted (web, cron) | | not done | section 1 |
+| Sentry alert drill: event sent and e-mail received, no request/user data in it | | not done | section 9 |
+| Failed `bruge-purge` produces one Sentry event tagged `job` | | not done | section 9 |
+| Log stream to Better Stack working, one request found by `request_id` | | not done | section 10 |
+| `python -m app ai-smoke` prints ok; one chat question and one screenshot work | | not done | section 2, AI settings |

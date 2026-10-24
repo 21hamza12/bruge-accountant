@@ -130,29 +130,23 @@ def test_the_real_20_october_exports_like_the_accountants_file(
     ours = data_rows(open_sheet(got.content), len(tickets))
     theirs = _accountants_lines(APRES)
     assert len(ours) == len(theirs), f"{len(ours)} lines exported, {len(theirs)} in the real file"
-    # The report pads "(CHD)" / "(INF)" away from the name; the app keeps the name with single
-    # spaces (the parser cleans white space). That padding is the only difference tolerated, and
-    # only on the lines of a child or an infant.
+    # Every cell is compared as written, the CHD / INF padding of PAX NAME included.
     wrong = {title: 0 for title in COLUMNS}
-    padding = 0
     for mine, other in zip(ours, theirs, strict=True):
         for index, title in enumerate(COLUMNS):
-            if not _same(mine[index], other[index], spaces=title != "PAX NAME"):
+            if not _same(mine[index], other[index]):
                 wrong[title] += 1
-            elif title == "PAX NAME" and not _same(mine[index], other[index]):
-                padding += 1
     order_ok = [str(r[0]) for r in ours] == [str(r[0]) for r in theirs]
     total_ours = sum(dec(r[3]) for r in ours)
     total_theirs = sum(dec(r[3]) for r in theirs)
     with capsys.disabled():
         print(
             f"\nreal 20 Oct: {len(report.tickets)} report lines, {len(tickets)} exported, "
-            f"{cancelled} cancelled, {sum(wrong.values())} differing cells, {padding} names differ "
-            f"only by padding, order equal: {order_ok}"
+            f"{cancelled} cancelled, {sum(wrong.values())} differing cells, "
+            f"order equal: {order_ok}"
         )
     assert order_ok, "the SEQ NO order differs from the accountant's file"
     assert wrong == {title: 0 for title in COLUMNS}, f"differing cells per column: {wrong}"
-    assert padding <= sum(1 for t in tickets if t.pax_type != "ADT")
     assert total_ours == total_theirs, "the TOTAL DOC sums differ"
 
 

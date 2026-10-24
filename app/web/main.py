@@ -19,13 +19,14 @@ from fastapi import Depends, FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
+from sentry_sdk.transport import Transport
 from sqlalchemy import Engine, select
 from sqlalchemy.exc import SQLAlchemyError
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.middleware import Middleware
 from starlette.responses import Response
 
-from app import db_roles
+from app import alerting, db_roles
 from app.ai.chat_client import AnthropicChatClient, ChatModelClient
 from app.ai.client import AnthropicTranscriber, TranscribeClient
 from app.clock import Clock, utc_now
@@ -40,6 +41,7 @@ from app.web.errors import (
     validation_exception_handler,
 )
 from app.web.middleware import build_middleware
+from app.web.routes import apres_compare as apres_compare_routes
 from app.web.routes import auth as auth_routes
 from app.web.routes import chat as chat_routes
 from app.web.routes import days as day_routes
@@ -139,10 +141,12 @@ def create_app(
     clock: Clock | None = None,
     ai_client: TranscribeClient | None = None,
     chat_client: ChatModelClient | None = None,
+    alerting_transport: Transport | None = None,
 ) -> FastAPI:
     """Build the application. Nothing happens at import time; run it with ``uvicorn --factory``."""
     settings = settings or Settings()
     configure_logging()
+    alerting.init_alerting(settings, transport=alerting_transport)  # off without SENTRY_DSN
     engine = make_engine(
         settings.database_url.get_secret_value(),
         pool_size=settings.db_pool_size,
@@ -186,6 +190,7 @@ def create_app(
     app.include_router(sale_entry_routes.router)  # first: /sales/new before /sales/{sale_id}
     app.include_router(sales_routes.router)
     app.include_router(day_routes.router)
+    app.include_router(apres_compare_routes.router)
     app.include_router(staff_routes.router)
     app.include_router(flag_routes.router)
     app.include_router(flag_action_routes.router)

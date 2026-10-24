@@ -10,6 +10,7 @@ from pathlib import Path
 from unittest.mock import create_autospec
 
 import pytest
+import sentry_sdk
 from alembic import command
 from alembic.config import Config
 from fastapi import FastAPI
@@ -304,15 +305,28 @@ def no_sdk_environment(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture(autouse=True)
+def no_error_alerts(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+    """No test ever has a Sentry DSN from the shell, and none leaves a live client behind."""
+    monkeypatch.delenv("SENTRY_DSN", raising=False)
+    yield
+    sentry_sdk.get_client().close(timeout=0)
+    sentry_sdk.get_global_scope().set_client(None)
+
+
+@pytest.fixture(autouse=True)
 def restore_logging() -> Iterator[None]:
     """create_app() configures logging; undo it so tests stay independent."""
     root = logging.getLogger()
     handlers, level = list(root.handlers), root.level
-    access_disabled = logging.getLogger("uvicorn.access").disabled
+    uvicorn_loggers = [logging.getLogger(n) for n in ("uvicorn", "uvicorn.error", "uvicorn.access")]
+    saved = [(lg, list(lg.handlers), lg.propagate, lg.disabled) for lg in uvicorn_loggers]
     yield
     root.handlers[:] = handlers
     root.setLevel(level)
-    logging.getLogger("uvicorn.access").disabled = access_disabled
+    for lg, lg_handlers, propagate, disabled in saved:
+        lg.handlers[:] = lg_handlers
+        lg.propagate = propagate
+        lg.disabled = disabled
 
 
 @pytest.fixture

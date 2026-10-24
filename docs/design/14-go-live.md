@@ -31,9 +31,9 @@ C1 can start at once. C2 needs the Render account (§5).
 2. **Durable logs (item 8).** Render keeps logs only a short time. Send the JSON logs to a log
    service through a Render log stream (Better Stack free tier, or similar) and document the
    search for a request id. Secrets and bodies are already kept out of the logs (tested).
-3. **CHD/INF name padding in the TJQ APRES** (the one difference found by the B11 real-file check,
+3. **CHD/INF name padding in the TJQ APRES** (**built**, 24 Oct 2026; the real-file check now shows 0 differing cells; the one difference found by the B11 real-file check,
    `09-phase-b-plan.md` §3d): reproduce the Amadeus padding, so the parallel run compares equal.
-4. **Parallel-run comparison**: a manager/accountant upload of her APRES Excel for a closed day; the
+4. **Parallel-run comparison** (**built**, 24 Oct 2026, see [`15-parallel-run.md`](15-parallel-run.md)): a manager/accountant upload of her APRES Excel for a closed day; the
    app compares it with its own stored export (same 16 columns) and shows the cells that differ.
    Reuses the B11 comparison; nothing is changed by it.
 5. **Production AI settings**: `ANTHROPIC_API_KEY` stays out of `render.yaml` (entered in the
@@ -57,7 +57,7 @@ Today, from the code and the tests only:
 | 5 | Rate limiting | in code | buckets in Postgres, shared across instances (`test_ratelimit.py`): login, temporary passwords, uploads, screenshots, chat | repeated logins from one address blocked on the live site |
 | 6 | Custom error screens | in code | French 401/403/404/500 and offline pages, no stack traces (`test_error_pages.py`) | runbook §7 smoke test |
 | 7 | Database indexes | in code | query plans checked on Postgres for the hot queries (`test_query_plans.py`) | none extra |
-| 8 | Logging and alerting | **fails today** | JSON logs and audit trail exist; **no error alerting, no uptime monitor, no durable log store** | C1 items 1–2, then one alert sent and received in C3 |
+| 8 | Logging and alerting | **built, to verify live** | JSON logs and audit trail; error alerts to Sentry behind `SENTRY_DSN` with scrubbing tested (`tests/test_alerting.py`); every log line one JSON object, uvicorn's access log off (`tests/test_observability.py`); runbook sections 6, 9, 10. **No uptime monitor, log stream or Sentry project exists yet** | one alert sent and received, one log search by request id, the uptime monitor firing and recovering (C3) |
 | 9 | Rollback | **unverified** | Render zero-downtime deploys (new version must pass `/healthz` before traffic moves) and one-click rollback; `test_rollback_invariant.py` | the rollback drilled twice (C3). Note: this is Render's zero-downtime switch, **not a strict blue/green** with two live copies; the report will say so |
 
 ## 4. Parallel run (C7)

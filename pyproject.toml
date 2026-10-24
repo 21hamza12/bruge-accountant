@@ -17,6 +17,7 @@ dependencies = [
     "argon2-cffi>=25.1.0",
     "anthropic>=2.1.0",
     "pillow>=13.0.0",
+    "sentry-sdk>=2.73",
 ]
 
 [dependency-groups]

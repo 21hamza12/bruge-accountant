@@ -481,3 +481,106 @@ def test_static_requests_are_logged_with_the_static_route_label(
     (rec,) = request_records(caplog)
     assert rec.route == "static"  # type: ignore[attr-defined]
     assert "no-such-file" not in json.dumps(render(rec))
+
+
+# --- durable logs: every line is one JSON object (release item 8) ----------------------------
+
+LINE_FIELDS = {"ts", "level", "logger", "message"}
+
+
+def stdout_lines(capsys: pytest.CaptureFixture[str]) -> list[dict[str, Any]]:
+    """Every non-empty stdout line must be a whole JSON object (what a log service parses)."""
+    lines = [line for line in capsys.readouterr().out.splitlines() if line.strip()]
+    parsed = [json.loads(line) for line in lines]
+    assert all(isinstance(doc, dict) for doc in parsed)
+    return parsed
+
+
+def test_every_line_of_a_request_is_one_json_object_with_the_request_id(
+    web_settings: Settings, capsys: pytest.CaptureFixture[str]
+) -> None:
+    app = create_app(web_settings)
+
+    def boom() -> None:
+        raise RuntimeError("kaboom\nsecond line password=hunter2")
+
+    app.add_api_route("/t/boom", boom)
+    with TestClient(app, base_url="https://testserver", raise_server_exceptions=False) as c:
+        ok = c.get("/healthz")
+        missing = c.get("/nope?token=s3cr3t")
+        broken = c.get("/t/boom")
+    docs = stdout_lines(capsys)
+    assert docs
+    for doc in docs:
+        assert doc.keys() >= LINE_FIELDS
+        assert re.fullmatch(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}\+00:00", doc["ts"])
+        assert doc["level"] in {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}
+    ids = {r.headers["x-request-id"] for r in (ok, missing, broken)}
+    lines_by_id = {rid: [d for d in docs if d.get("request_id") == rid] for rid in ids}
+    for rid, request_docs in lines_by_id.items():
+        assert any(d["logger"] == "app.request" for d in request_docs), rid
+    # the failing request: the error line and the request line share the id, the traceback is one
+    # line, and no secret survived
+    broken_docs = lines_by_id[broken.headers["x-request-id"]]
+    assert {d["logger"] for d in broken_docs} >= {"app.request", "app.web.errors"}
+    assert "Traceback" in next(d for d in broken_docs if "exception" in d)["exception"]
+    blob = json.dumps(docs)
+    for leaked in ("hunter2", "s3cr3t", "token="):
+        assert leaked not in blob
+
+
+def test_a_multiline_message_stays_one_line(capsys: pytest.CaptureFixture[str]) -> None:
+    configure_logging()
+    logging.getLogger("t.multi").info("first\nsecond\r\nthird")
+    (doc,) = [d for d in stdout_lines(capsys) if d["logger"] == "t.multi"]
+    assert doc["message"] == "first\nsecond\r\nthird"
+
+
+def test_uvicorn_own_messages_are_json_too(capsys: pytest.CaptureFixture[str]) -> None:
+    """uvicorn sets up plain-text handlers before the factory runs; create_app() takes them over."""
+    err = logging.getLogger("uvicorn.error")
+    plain = logging.StreamHandler(sys.stdout)
+    plain.setFormatter(logging.Formatter("INFO:     %(message)s"))
+    err.addHandler(plain)
+    err.propagate = False
+    configure_logging()
+    err.info(
+        "Uvicorn running on %s", "http://0.0.0.0:10000", extra={"color_message": "\x1b[1mx\x1b[0m"}
+    )
+    (doc,) = stdout_lines(capsys)
+    assert doc["logger"] == "uvicorn.error"
+    assert doc["message"] == "Uvicorn running on http://0.0.0.0:10000"
+    assert "color_message" not in doc
+
+
+def test_the_uvicorn_access_log_prints_nothing_so_no_query_string_or_body(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    access = logging.getLogger("uvicorn.access")
+    plain = logging.StreamHandler(sys.stdout)  # what uvicorn installs by default
+    access.addHandler(plain)
+    configure_logging()
+    access.info(
+        '%s - "%s %s HTTP/%s" %d',
+        "203.0.113.9:5555",
+        "POST",
+        "/login?phone=22244556677&token=s3cr3t",
+        "1.1",
+        200,
+    )
+    assert capsys.readouterr().out == ""
+
+
+def test_uvicorn_is_started_without_its_access_log() -> None:
+    from pathlib import Path
+
+    dockerfile = (Path(__file__).resolve().parent.parent / "Dockerfile").read_text("utf-8")
+    assert "--no-access-log" in dockerfile
+
+
+def test_healthz_body_matches_the_uptime_monitor_keyword(obs_client: TestClient) -> None:
+    """runbook section 6: the monitor looks for the exact text "status":"ok" (GET, and HEAD for
+    monitors that default to it)."""
+    resp = obs_client.get("/healthz")
+    assert '"status":"ok"' in resp.text
+    assert obs_client.head("/healthz").status_code == 200

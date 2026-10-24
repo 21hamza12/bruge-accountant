@@ -25,7 +25,9 @@ from typing import Any, NoReturn
 from app.parsing.amadeus import (
     FIELD_LIMITS,
     KNOWN_FLAGS,
+    MANUAL_LIMITS,
     MAX_NAME_CHARS,
+    MAX_RAW_CHARS,
     ParsedReport,
     ParsedTicket,
     ParseError,
@@ -64,6 +66,13 @@ _TICKET_KEYS = frozenset(
         "comm",
         "form_of_payment",
         "confirmed",
+        "pb",
+        "ag",
+        "clt",
+        "ap",
+        "cost_raw",
+        "pb_raw",
+        "cut",
     }
 )
 
@@ -101,6 +110,13 @@ def encode_report(report: ParsedReport) -> bytes:
                     "comm": None if t.comm is None else str(t.comm),
                     "form_of_payment": t.form_of_payment,
                     "confirmed": t.confirmed,
+                    "pb": None if t.pb is None else str(t.pb),
+                    "ag": t.ag,
+                    "clt": t.clt,
+                    "ap": t.ap,
+                    "cost_raw": t.cost_raw,
+                    "pb_raw": t.pb_raw,
+                    "cut": list(t.cut),
                 }
                 for t in report.tickets
             ],
@@ -174,6 +190,9 @@ def _ticket(raw: object) -> ParsedTicket:
     ticket_no = _str(raw["ticket_no"], MAX_TICKET_NO_CHARS)
     if not ticket_no:
         raise _Invalid("empty ticket number")
+    cut = tuple(_str(c, 3) for c in _list(raw["cut"], 3))
+    if not set(cut) <= set(MANUAL_LIMITS):
+        raise _Invalid("unknown cut column")
     return ParsedTicket(
         seq_no=_str(raw["seq_no"], FIELD_LIMITS["seq_no"]),
         airline=_str(raw["airline"], FIELD_LIMITS["airline"]),
@@ -191,6 +210,13 @@ def _ticket(raw: object) -> ParsedTicket:
         comm=_cost(raw["comm"]),
         form_of_payment=_opt_str(raw["form_of_payment"], FIELD_LIMITS["form_of_payment"]),
         confirmed=_opt_str(raw["confirmed"], FIELD_LIMITS["confirmed"]),
+        pb=_cost(raw["pb"]),
+        ag=_opt_str(raw["ag"], MANUAL_LIMITS["ag"]),
+        clt=_opt_str(raw["clt"], MANUAL_LIMITS["clt"]),
+        ap=_opt_str(raw["ap"], MANUAL_LIMITS["ap"]),
+        cost_raw=_opt_str(raw["cost_raw"], MAX_RAW_CHARS),
+        pb_raw=_opt_str(raw["pb_raw"], MAX_RAW_CHARS),
+        cut=cut,
     )
 
 

@@ -54,6 +54,7 @@ _STANDARD_ATTRS = frozenset(logging.LogRecord("x", logging.INFO, "x", 0, "", (),
     "message",
     "asctime",
     "taskName",
+    "color_message",  # uvicorn's copy of the message with terminal colour codes
 }
 
 
@@ -165,8 +166,9 @@ def quiet_libraries() -> None:
 
 
 def configure_logging(level: int = logging.INFO) -> None:
-    """JSON lines on stdout. Safe to call repeatedly; uvicorn's access log is turned off
-    because it prints the raw URL (query string included)."""
+    """JSON lines on stdout, one object per line with ``ts``, ``level``, ``logger``, ``message``
+    and, inside a request, ``request_id``. Safe to call repeatedly; uvicorn's access log is turned
+    off because it prints the raw URL (query string included)."""
     root = logging.getLogger()
     for existing in [h for h in root.handlers if getattr(h, HANDLER_MARK, False)]:
         root.removeHandler(existing)
@@ -176,6 +178,12 @@ def configure_logging(level: int = logging.INFO) -> None:
     handler.addFilter(RedactionFilter())
     root.addHandler(handler)
     root.setLevel(level)
+    # uvicorn sets up plain-text handlers of its own before the factory runs; its server messages
+    # ("Uvicorn running on ...") go through the JSON handler on the root logger instead.
+    for name in ("uvicorn", "uvicorn.error", "uvicorn.access"):
+        uvicorn_logger = logging.getLogger(name)
+        uvicorn_logger.handlers.clear()
+        uvicorn_logger.propagate = True
     logging.getLogger("uvicorn.access").disabled = True
     # At DEBUG these print what they handle: Pillow the EXIF tags of an image (GPS, camera), the
     # Anthropic SDK and httpcore the request body (a base64 screenshot). Never below WARNING.

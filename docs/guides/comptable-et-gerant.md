@@ -114,11 +114,21 @@ ne donne jamais de prix et n'enregistre rien. Ne tapez pas le téléphone ou l'e
 La comptable continue sa feuille Excel APRES comme aujourd'hui. Chaque jour clôturé, on compare
 les deux feuilles.
 
-**En préparation** : sur la page d'une journée clôturée, un bouton « Comparer avec la feuille de la
-comptable » permettra d'envoyer sa feuille APRES. L'application montrera les **cellules qui
-diffèrent** entre sa feuille et celle de l'application, sans rien modifier. Chaque différence est
-expliquée et corrigée dans la semaine. Après **10 jours ouvrés de suite** sans différence
-inexpliquée, le gérant décide d'arrêter la feuille Excel quotidienne.
+Sur la page d'une journée **clôturée**, touchez « Comparer avec la feuille de la comptable »,
+choisissez sa feuille APRES (.xlsx), puis « Comparer ». La feuille n'est pas gardée et rien n'est
+modifié. Le « Résultat » donne :
+
+- les « Lignes communes » et celles qui sont « Identiques » ;
+- les « Cellules différentes » : pour chaque billet, la colonne, sa valeur et celle de
+  l'application ;
+- les lignes « Seulement dans sa feuille » et « Seulement dans l'application ».
+
+Les montants sont comparés au centime ; les espaces et les majuscules ne comptent pas. Gardez
+l'en-tête Amadeus en haut de sa feuille (« Report date range », « Current date »), sinon elle est
+refusée.
+
+Chaque différence est expliquée et corrigée dans la semaine. Après **10 jours ouvrés de suite**
+sans différence inexpliquée, le gérant décide d'arrêter la feuille Excel quotidienne.
 
 ## 10. Le budget IA
 

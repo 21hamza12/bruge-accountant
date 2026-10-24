@@ -153,11 +153,17 @@ Decisions taken overnight (not in the first approval):
    not block the close, but a manager or accountant who did not write them must have seen the list
    ("J'ai vu la liste"); a changed list or price must be seen again.
 
-Known difference with the accountant's file (found by the real-file check): for a child or an
-infant, the Amadeus report pads the `(CHD)` / `(INF)` mark away from the name; the app keeps the
-name with single spaces (the parser cleans white space) and writes ` (CHD)` after it. Everything
-else in the 8 Amadeus columns, the 34 lines and their order are identical. Reproducing the padding
-needs the raw name stored with the line (a migration), so it is left for a later step.
+Known difference with the accountant's file (found by the real-file check), now closed (phase C1,
+item 3): for a child or an infant, the Amadeus report pads the `(CHD)` / `(INF)` mark away from the
+name. The rule, read from the real report and file: the name is written left-aligned in a column of
+24 characters and the mark starts at character 25 (so the cell is 29 characters long whatever the
+name), i.e. the mark always starts at the same position. The parser still keeps the name with single
+spaces and `pax_type` apart, so the export rebuilds the cell (`export_apres._report_name`: the name
+padded with spaces to 24 characters, then `(CHD)` or `(INF)`); no stored raw name and no migration
+are needed. A name of 24 characters or more keeps one space before the mark (the report's rule for
+such names was not seen in the real data; nothing is ever cut). The local real-file check
+(`tests/test_real_20oct.py`) now compares every cell as written and shows 0 differing cells. Everything
+else in the 8 Amadeus columns, the 34 lines and their order were already identical.
 
 ## 4. Approved defaults
 

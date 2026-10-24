@@ -70,6 +70,7 @@ MONEY_FORMAT: Final = "#,##0.00"
 FORMULA_STARTS: Final = frozenset("=+-@\t\r\n\x0b\x0c\xa0")
 LEADING_BLANKS: Final = " \t\r\n\x0b\x0c\xa0"
 PHONE_E164: Final = re.compile(r"\+[0-9]{8,15}")
+MARK_COLUMN: Final = 24  # where the report prints "(CHD)" / "(INF)" in PAX NAME (0-based index)
 MAX_LINES: Final = 50_000  # the parser's limit
 MAX_VERSIONS: Final = 50
 MAX_BYTES: Final = 5_000_000
@@ -202,10 +203,16 @@ def _latest_upload(db: Session, agency_id: int, day: date) -> Upload | None:
 
 def _report_name(amadeus: AmadeusLine) -> str:
     """PAX NAME as the report prints it: the parser moved a trailing ``(CHD)`` / ``(INF)`` into
-    ``pax_type``, so it is put back."""
+    ``pax_type``, so it is put back where the report has it. The report writes the name left-aligned
+    in a column of ``MARK_COLUMN`` characters and the mark right after, so the mark starts at the
+    same position whatever the length of the name. A name that fills the column keeps one space
+    (the report's rule for such names is not known: nothing is cut)."""
     if amadeus.pax_type == "ADT":
         return amadeus.pax_name
-    return f"{amadeus.pax_name} ({amadeus.pax_type})"
+    name, mark = amadeus.pax_name, f"({amadeus.pax_type})"
+    if len(name) < MARK_COLUMN:
+        return name.ljust(MARK_COLUMN) + mark
+    return f"{name} {mark}"
 
 
 def _build_lines(amadeus: Sequence[AmadeusLine], views: Sequence[SaleView]) -> list[ApresLine]:

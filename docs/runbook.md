@@ -426,7 +426,7 @@ Release checklist item 8. The code is built and tested (`app/alerting.py`,
 exception, and the jobs `init-db` and `purge-expired` send one when they fail (tag `job`). With
 `SENTRY_DSN` empty nothing starts and nothing is sent (development, tests, any service without it).
 
-**What is sent.** The exception type, its message (scrubbed), the stack as file names, function
+**What is sent.** The exception type, its message, the stack as file names, function
 names and line numbers, the route template (`/sales/{sale_id}`), the HTTP method, the release (the
 git commit, the same value `/healthz` shows) and the environment (`ENV`).
 
@@ -436,6 +436,16 @@ their parameters, traces, profiles, sessions. A last scrubber (`before_send`) ma
 tokens, CSRF values, API keys (`sk-...`), e-mail addresses and numbers of 8 digits or more (phone
 and ticket numbers) in whatever text is left. This is tested with a fake transport; no test
 reaches Sentry.
+
+The event is built from an allow-list (event id, time, level, release, environment, route
+template, method, URL without query, the `job` tag, and per exception its type, message and stack
+as file, function and line); every other field is dropped. A database error is sent as its
+constraint name and SQLSTATE only, and a validation error as its field names and error types
+(drivers and pydantic quote the data, e.g. `DETAIL: Key (...)=(3, <name>)` or `input_value=`).
+Other messages are cut at `DETAIL`, `Failing row contains` and `input_value=` and scrubbed.
+Handled HTTP errors (a 503 with a `detail` text) and a failing `/healthz` send nothing: the
+request log has them, and the uptime monitor alerts on `/healthz` (one event per probe would
+exhaust the free quota in an outage).
 
 Residual risk: an exception message written by our own code could contain a name or other free
 text; messages are scrubbed for the patterns above only. Keep personal data out of exception

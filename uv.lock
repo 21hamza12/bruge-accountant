@@ -246,7 +246,7 @@ requires-dist = [
     { name = "psycopg", extras = ["binary"], specifier = ">=3.3.6" },
     { name = "pydantic-settings", specifier = ">=2.16.0" },
     { name = "python-multipart", specifier = ">=0.0.32" },
-    { name = "sentry-sdk", specifier = ">=2.0" },
+    { name = "sentry-sdk", specifier = ">=2.73" },
     { name = "sqlalchemy", specifier = ">=2.0" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.54.0" },
 ]

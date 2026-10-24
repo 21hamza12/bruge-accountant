@@ -225,7 +225,6 @@ def create_app(
                 )
         except (SQLAlchemyError, TimeoutError):
             log.exception("health check failed")
-            alerting.capture_exception(RuntimeError("health check failed"))
             return JSONResponse({"status": "error"}, status_code=503)
         return JSONResponse({"status": "ok", "version": settings.version})
 

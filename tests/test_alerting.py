@@ -9,19 +9,21 @@ import json
 import logging
 from collections.abc import Iterator
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
 import sentry_sdk
 from alembic import command
 from alembic.util.exc import CommandError
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
-from pydantic import SecretStr
+from pydantic import BaseModel, Field, SecretStr, ValidationError
 from sentry_sdk.envelope import Envelope
 from sentry_sdk.transport import Transport
+from sqlalchemy.exc import IntegrityError, OperationalError
 
 from app import alerting, cli
-from app.observability import REDACTED
 from app.settings import Settings
 from app.web.main import create_app
 
@@ -255,15 +257,13 @@ def test_scrubber_drops_request_details_and_user() -> None:
     out = alerting.scrub_event(event, {})
     assert out is not None
     assert out["request"] == {"method": "POST", "url": "https://x.test/sales/12"}
-    assert out["user"] == {}
-    assert "breadcrumbs" not in out
-    assert "server_name" not in out
-    assert out["extra"]["password"] == REDACTED
+    # allow-list: everything not explicitly kept is gone
+    for dropped in ("user", "breadcrumbs", "server_name", "extra", "contexts"):
+        assert dropped not in out
     assert PHONE not in blob(out)
     # identifiers made of digits are not phone numbers
     assert out["event_id"] == event["event_id"]
     assert out["release"] == "12345678ab"
-    assert out["contexts"]["trace"]["trace_id"] == "12345678123456781234567812345678"
 
 
 @pytest.mark.parametrize(
@@ -298,7 +298,7 @@ def test_sql_statements_and_parameters_are_cut_from_exception_text() -> None:
         "exception": {
             "values": [
                 {
-                    "type": "IntegrityError",
+                    "type": "RuntimeError",
                     "value": "(sqlite3.IntegrityError) UNIQUE constraint failed: users.phone\n"
                     "[SQL: INSERT INTO users (phone) VALUES (?)]\n[parameters: ('Awa Diop',)]",
                 }
@@ -314,7 +314,11 @@ def test_sql_statements_and_parameters_are_cut_from_exception_text() -> None:
 
 
 def test_scrubber_never_raises_on_odd_events() -> None:
-    event: Any = {"extra": {"o": object(), "n": None, "deep": [[[[[[[[[[1]]]]]]]]]]}}
+    event: Any = {
+        "extra": {"o": object()},
+        "exception": {"values": [None, {"value": object(), "stacktrace": {"frames": [1]}}]},
+        "request": "nope",
+    }
     assert alerting.scrub_event(event, {}) is not None
 
 
@@ -383,4 +387,274 @@ def test_commands_other_than_jobs_do_not_start_alerting(
     job_env: FakeTransport, db_url: str
 ) -> None:
     assert cli.main(["add-agency", "bad slug!", "X", "--db", db_url]) == 2
+    assert not sentry_sdk.get_client().is_active()
+
+
+# --- review fixes: names must never reach an event ------------------------------------------
+
+NAME = "Jane Doe"
+
+
+class PgOrig(Exception):
+    """Stands for a psycopg error: text with DETAIL, a SQLSTATE and a constraint name."""
+
+    def __init__(
+        self, text: str, constraint: str | None = None, sqlstate: str | None = None
+    ) -> None:
+        super().__init__(text)
+        self.sqlstate = sqlstate
+        self.diag = SimpleNamespace(constraint_name=constraint)
+
+
+def unique_violation() -> Exception:
+    orig = PgOrig(
+        'duplicate key value violates unique constraint "users_phone_key"\n'
+        f"DETAIL:  Key (agency_id, phone)=(3, {NAME}) already exists.",
+        "users_phone_key",
+        "23505",
+    )
+    return IntegrityError("INSERT INTO users (name) VALUES (%s)", (NAME,), orig)
+
+
+def not_null_violation() -> Exception:
+    orig = PgOrig(
+        'null value in column "phone" of relation "users" violates not-null constraint\n'
+        f"DETAIL:  Failing row contains (7, {NAME}, null).",
+        None,
+        "23502",
+    )
+    return IntegrityError("INSERT INTO users (name) VALUES (%s)", (NAME,), orig)
+
+
+class Person(BaseModel):
+    name: str = Field(max_length=2)
+
+
+def validation_error() -> Exception:
+    try:
+        Person(name=NAME)
+    except ValidationError as exc:
+        return exc
+    raise AssertionError("unreachable")
+
+
+def plain_detail() -> Exception:
+    return RuntimeError(f"boom\nDETAIL:  Key (name)=({NAME}) already exists.")
+
+
+def plain_failing_row() -> Exception:
+    return RuntimeError(f"Failing row contains (1, {NAME}, null)")
+
+
+def plain_input_value() -> Exception:
+    return RuntimeError(f"1 validation error [type=x, input_value='{NAME}', input_type=str]")
+
+
+def raised(exc: Exception) -> Exception:
+    """The exception with a real traceback."""
+    try:
+        raise exc
+    except Exception as caught:
+        return caught
+
+
+def as_cause(inner: Exception) -> Exception:
+    try:
+        try:
+            raise inner
+        except Exception as exc:
+            raise RuntimeError("could not save") from exc
+    except RuntimeError as outer:
+        return outer
+
+
+def as_context(inner: Exception) -> Exception:
+    try:
+        try:
+            raise inner
+        except Exception:
+            raise RuntimeError("while handling")  # noqa: B904
+    except RuntimeError as outer:
+        return outer
+
+
+NAME_CASES = [
+    unique_violation,
+    not_null_violation,
+    validation_error,
+    plain_detail,
+    plain_failing_row,
+    plain_input_value,
+]
+
+
+def send(transport: FakeTransport, exc: BaseException) -> dict[str, Any]:
+    alerting.init_alerting(settings_with(DSN), transport=transport)
+    alerting.capture_exception(exc)
+    sentry_sdk.flush(timeout=1)
+    (event,) = transport.events
+    return event
+
+
+@pytest.mark.parametrize("make", NAME_CASES)
+@pytest.mark.parametrize("shape", [raised, as_cause, as_context])
+def test_names_in_exception_text_never_reach_the_event(
+    make: Any, shape: Any, transport: FakeTransport
+) -> None:
+    event = send(transport, shape(make()))
+    text = blob(event)
+    assert "Jane" not in text
+    assert "Doe" not in text
+    assert "INSERT" not in text
+
+
+def test_a_database_error_keeps_the_constraint_and_sqlstate(transport: FakeTransport) -> None:
+    event = send(transport, as_cause(unique_violation()))
+    values = event["exception"]["values"]
+    db = next(v for v in values if v["type"] == "IntegrityError")
+    assert "users_phone_key" in db["value"]
+    assert "23505" in db["value"]
+    assert values[-1]["type"] == "RuntimeError"
+
+
+def test_a_validation_error_keeps_field_locations_and_types_only(
+    transport: FakeTransport,
+) -> None:
+    event = send(transport, raised(validation_error()))
+    (value,) = event["exception"]["values"]
+    assert value["type"] == "ValidationError"
+    assert "name" in value["value"]
+    assert "string_too_long" in value["value"]
+    assert "input_value" not in value["value"]
+
+
+def test_the_backstop_cuts_detail_failing_row_and_input_value() -> None:
+    cases = [
+        "a DETAIL:  Key (x)=(Jane Doe) exists.",
+        "Failing row contains (Jane Doe)",
+        "bad [type=x, input_value='Jane Doe', input_type=str] more",
+        "bad input_value={'n': 'Jane Doe'}]",
+    ]
+    for text in cases:
+        assert "Jane" not in alerting.scrub_exception_text(text)
+
+
+def test_only_allow_listed_event_fields_survive() -> None:
+    event: Any = {
+        "event_id": "a" * 32,
+        "level": "error",
+        "release": "r1",
+        "environment": "production",
+        "transaction": "/sales/{sale_id}",
+        "logentry": {"message": NAME},
+        "message": NAME,
+        "extra": {"x": NAME},
+        "tags": {"job": "purge-expired", "who": NAME},
+        "modules": {"a": "1"},
+        "fingerprint": [NAME],
+        "logger": NAME,
+        "exception": {
+            "values": [
+                {
+                    "type": "ValueError",
+                    "value": "plain",
+                    "mechanism": {"type": "asgi", "handled": False, "data": {"n": NAME}},
+                    "stacktrace": {
+                        "frames": [
+                            {
+                                "filename": "app/x.py",
+                                "abs_path": "C:/secret/app/x.py",
+                                "function": "f",
+                                "lineno": 12,
+                                "vars": {"n": NAME},
+                                "context_line": NAME,
+                            }
+                        ]
+                    },
+                }
+            ]
+        },
+    }
+    out = alerting.scrub_event(event, {})
+    assert out is not None
+    assert NAME not in blob(out)
+    allowed = {
+        "event_id", "level", "release", "environment", "transaction", "exception", "tags",
+        "request", "timestamp", "platform",
+    }  # fmt: skip
+    assert set(out) <= allowed
+    assert out["tags"] == {"job": "purge-expired"}
+    (frame,) = out["exception"]["values"][0]["stacktrace"]["frames"]
+    assert frame == {"filename": "app/x.py", "function": "f", "lineno": 12}
+
+
+def test_long_numbers_are_not_passed_through() -> None:
+    event: Any = {
+        "extra": {"phone": 22244556677},
+        "exception": {
+            "values": [
+                {
+                    "type": "E",
+                    "value": "x",
+                    "stacktrace": {"frames": [{"filename": "a.py", "lineno": 22244556677}]},
+                }
+            ]
+        },
+    }
+    out = alerting.scrub_event(event, {})
+    assert out is not None
+    assert "22244556677" not in blob(out)
+
+
+def test_only_the_job_tag_is_accepted(transport: FakeTransport) -> None:
+    alerting.init_alerting(settings_with(DSN), transport=transport)
+    alerting.capture_exception(RuntimeError("x"), job="purge-expired", user=NAME, phone=PHONE)
+    sentry_sdk.flush(timeout=1)
+    (event,) = transport.events
+    assert event["tags"] == {"job": "purge-expired"}
+    assert NAME not in blob(event)
+    assert PHONE not in blob(event)
+
+
+def test_a_health_check_failure_sends_no_event(
+    web_settings: Settings, transport: FakeTransport, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import app.web.main as web_main
+
+    def broken(engine: Any) -> None:
+        raise OperationalError("select 1", {}, Exception("db down"))
+
+    monkeypatch.setattr(web_main, "_ping", broken)
+    settings = web_settings.model_copy(update={"sentry_dsn": SecretStr(DSN)})
+    with TestClient(create_app(settings, alerting_transport=transport)) as c:
+        assert c.get("/healthz").status_code == 503
+    sentry_sdk.flush(timeout=1)
+    assert transport.envelopes == []
+
+
+def test_a_5xx_http_exception_detail_is_not_sent(
+    alert_client: TestClient, transport: FakeTransport
+) -> None:
+    def busy() -> None:
+        raise HTTPException(status_code=503, detail=f"busy for {NAME}")
+
+    alert_client.app.add_api_route("/t/busy", busy)  # type: ignore[attr-defined]
+    assert alert_client.get("/t/busy").status_code == 503
+    sentry_sdk.flush(timeout=1)
+    assert NAME not in blob(transport.events)
+
+
+def test_one_unhandled_route_error_is_exactly_one_event(
+    alert_client: TestClient, transport: FakeTransport
+) -> None:
+    assert alert_client.get("/t/boom").status_code == 500
+    sentry_sdk.flush(timeout=1)
+    assert len(transport.envelopes) == 1
+    assert len(transport.events) == 1
+
+
+def test_the_test_environment_never_has_a_dsn() -> None:
+    import os
+
+    assert "SENTRY_DSN" not in os.environ
     assert not sentry_sdk.get_client().is_active()

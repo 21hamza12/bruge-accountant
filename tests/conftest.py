@@ -10,6 +10,7 @@ from pathlib import Path
 from unittest.mock import create_autospec
 
 import pytest
+import sentry_sdk
 from alembic import command
 from alembic.config import Config
 from fastapi import FastAPI
@@ -301,6 +302,15 @@ def no_sdk_environment(monkeypatch: pytest.MonkeyPatch) -> None:
     developer's shell (or a coding agent's) may have them set, and no test depends on them."""
     for name in ("ANTHROPIC_BASE_URL", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_LOG"):
         monkeypatch.delenv(name, raising=False)
+
+
+@pytest.fixture(autouse=True)
+def no_error_alerts(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+    """No test ever has a Sentry DSN from the shell, and none leaves a live client behind."""
+    monkeypatch.delenv("SENTRY_DSN", raising=False)
+    yield
+    sentry_sdk.get_client().close(timeout=0)
+    sentry_sdk.get_global_scope().set_client(None)
 
 
 @pytest.fixture(autouse=True)

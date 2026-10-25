@@ -109,11 +109,25 @@ out.pasteFive = { files: names(p), status: p.els["shot-pasted"].textContent };
 // Dropped on the page (anywhere: the photo box is highlighted while dragging).
 p = run(src);
 const zone = p.els["shot-zone"];
-const over = p.document.fire("dragover", event({}));
+const over = p.document.fire("dragover", event({ dataTransfer: { types: ["Files"] } }));
 out.dragoverPrevented = over.prevented;
 out.dragoverClass = zone.classes.has("is-dragover");
-const drop = p.document.fire("drop", event({ dataTransfer: { files: [new FakeFile("d1.png", "image/png"), new FakeFile("n.txt", "text/plain")] } }));
+const drop = p.document.fire("drop", event({ dataTransfer: { types: ["Files"], files: [new FakeFile("d1.png", "image/png"), new FakeFile("n.txt", "text/plain")] } }));
 out.drop = { prevented: drop.prevented, files: names(p), cls: zone.classes.has("is-dragover") };
+
+// Dragging text (into a text box) is left to the browser.
+p = run(src);
+const textOver = p.document.fire("dragover", event({ dataTransfer: { types: ["text/plain"] } }));
+const textDrop = p.document.fire("drop", event({ dataTransfer: { types: ["text/plain"], files: [] } }));
+out.dragText = { over: textOver.prevented, drop: textDrop.prevented };
+
+// Cells copied from Excel carry text and a picture: pasted into a text box, they stay text.
+p = run(src);
+const both = clipboard({ kind: "string", type: "text/plain" }, { kind: "file", type: "image/png" });
+const intoBox = p.document.fire("paste", event({ target: { tagName: "TEXTAREA" }, clipboardData: both }));
+out.excelInTextBox = { prevented: intoBox.prevented, files: names(p).length };
+const elsewhere = p.document.fire("paste", event({ target: { tagName: "BODY" }, clipboardData: both }));
+out.excelElsewhere = { prevented: elsewhere.prevented, files: names(p).length };
 
 // The photo box replaced after setup (htmx swaps the chat panel): the new box is used.
 p = run(src);
@@ -124,7 +138,7 @@ out.afterSwap = names(p).length;
 // A page without the photo box: a paste or a drop does nothing.
 p = run(src, { withInput: false });
 e = p.document.fire("paste", event({ clipboardData: clipboard({ kind: "file", type: "image/png" }) }));
-const dropNoBox = p.document.fire("drop", event({ dataTransfer: { files: [] } }));
+const dropNoBox = p.document.fire("drop", event({ dataTransfer: { types: ["Files"], files: [] } }));
 out.noBox = { prevented: e.prevented, dropPrevented: dropNoBox.prevented };
 
 process.stdout.write(JSON.stringify(out));

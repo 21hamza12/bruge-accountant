@@ -45,23 +45,39 @@
       return true;
     }
 
+    function isTextField(target) {
+      var tag = target && target.tagName ? String(target.tagName).toUpperCase() : "";
+      return tag === "TEXTAREA" || tag === "INPUT" || Boolean(target && target.isContentEditable);
+    }
+
+    function carriesFiles(transfer) {
+      var types = (transfer && transfer.types) || [];
+      for (var i = 0; i < types.length; i++) if (types[i] === "Files") return true;
+      return false;
+    }
+
     doc.addEventListener("paste", function (event) {
       var data = event.clipboardData;
       if (!data || !data.items) return;
       var files = [];
+      var text = false;
       for (var i = 0; i < data.items.length; i++) {
         var item = data.items[i];
         if (item.kind === "file") {
           var file = item.getAsFile();
           if (file) files.push(file);
+        } else if (item.kind === "string" && item.type === "text/plain") {
+          text = true;
         }
       }
+      // Text copied with a picture of itself (Excel, Word) pasted into a text box stays text.
+      if (text && isTextField(event.target)) return;
       if (add(files)) event.preventDefault();
     });
 
     doc.addEventListener("dragover", function (event) {
       var b = box();
-      if (!b) return;
+      if (!b || !carriesFiles(event.dataTransfer)) return;
       event.preventDefault();
       if (b.zone) b.zone.classList.add("is-dragover");
     });
@@ -73,7 +89,7 @@
 
     doc.addEventListener("drop", function (event) {
       var b = box();
-      if (!b) return;
+      if (!b || !carriesFiles(event.dataTransfer)) return;
       event.preventDefault();
       if (b.zone) b.zone.classList.remove("is-dragover");
       add((event.dataTransfer && event.dataTransfer.files) || []);

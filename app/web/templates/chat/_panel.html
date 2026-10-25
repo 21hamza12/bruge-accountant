@@ -37,12 +37,6 @@
     <textarea id="chat-text" name="text" rows="2" maxlength="{{ max_paste_chars }}" required autocomplete="off" enterkeyhint="send" aria-describedby="chat-limits" placeholder="{{ _('Votre message…') }}">{{ draft }}</textarea>
     <button class="btn btn-primary" type="submit">{{ _("Envoyer") }}</button>
   </form>
-  {% if screenshot_enabled %}
-  <section class="chat-shot shot-zone" id="shot-zone" aria-labelledby="shot-title">
-    <h2 class="card-title" id="shot-title">{{ _("Envoyer une capture de l'écran Amadeus") }}</h2>
-    {% include "sales/_shot_form.html" %}
-  </section>
-  {% endif %}
   <p class="muted chat-note" id="chat-limits">{{ _("Un message de %(n)s caractères au plus ; un texte Amadeus collé peut aller jusqu'à %(kb)s Ko.", n=max_chars, kb=max_paste_kb) }}</p>
   <p class="muted chat-note">{{ _("N'écrivez pas de données personnelles de clients (téléphone, e-mail) : les questions libres sont lues par un service d'IA.") }}</p>
   <p class="muted chat-note">{{ _("Rien n'est enregistré ou annulé depuis la discussion : les boutons vous mènent aux écrans habituels.") }}</p>

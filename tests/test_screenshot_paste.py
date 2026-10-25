@@ -102,6 +102,9 @@ def test_paste_and_drop_behaviour() -> None:
     assert out["pasteFive"]["status"].startswith("4 images au plus")
     assert out["dragoverPrevented"] is True and out["dragoverClass"] is True
     assert out["drop"] == {"prevented": True, "files": ["d1.png"], "cls": False}
+    assert out["dragText"] == {"over": False, "drop": False}
+    assert out["excelInTextBox"] == {"prevented": False, "files": 0}
+    assert out["excelElsewhere"] == {"prevented": True, "files": 1}
     assert out["afterSwap"] == 1
     assert out["noBox"] == {"prevented": False, "dropPrevented": False}
 
@@ -118,13 +121,13 @@ def test_the_chat_has_the_photo_box_and_the_script_once(env: Env) -> None:
     assert "Envoyer une capture de l'écran Amadeus" in text_of(html)
 
 
-def test_the_script_is_outside_the_swapped_chat_panel(env: Env) -> None:
-    """htmx replaces the panel after each message: the script must not come back with it."""
+def test_the_photo_box_and_script_are_outside_the_swapped_chat_panel(env: Env) -> None:
+    """htmx replaces the panel after each message: pasted images must survive it, and the script
+    must not come back with it."""
     with_ai(env)
-    c = env.staff_a()
-    page = c.get("/chat").text
+    page = env.staff_a().get("/chat").text
     panel_end = page.index("</section>", page.index('id="chat"'))
-    assert page.index(TAG) > panel_end
+    assert page.index('id="shot-zone"') > panel_end and page.index(TAG) > panel_end
 
 
 def test_no_ai_no_photo_box_in_the_chat(env: Env) -> None:

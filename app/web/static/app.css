@@ -1926,3 +1926,20 @@ details.field summary {
 .chat-note {
   font-size: 0.8125rem;
 }
+
+/* The photo box in the chat, and the drop highlight of any photo box (screenshot-paste.js). */
+.chat-shot {
+  padding: 0.75rem;
+  border: 1px solid var(--border-input);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+}
+
+.shot-zone.is-dragover {
+  outline: 2px dashed var(--border-input);
+  outline-offset: 2px;
+}
+
+.shot-pasted:empty {
+  display: none;
+}

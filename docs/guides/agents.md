@@ -91,6 +91,8 @@ Sur le « Tableau de bord », touchez « Discussion ». Vous pouvez écrire, par
 - « billet 3940299439 » : où en est ce billet ;
 - « billets non envoyés » ;
 - coller le texte Amadeus : puis « Ouvrir la saisie préremplie » ;
+- coller une capture de l'écran Amadeus (Ctrl+V) ou une photo dans « Envoyer une capture de
+  l'écran Amadeus », puis « Lire la photo » : la vente s'ouvre préremplie, à vérifier ;
 - « aide » : tout ce que la Discussion sait faire.
 
 Les autres questions, libres, sont lues par une **intelligence artificielle (IA)**. Elle **ne fait

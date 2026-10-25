@@ -30,7 +30,9 @@ une vente par passager : touchez « Saisir cette vente » pour chacune.
 
 **b) Photo ou capture d'écran.** Si vous ne pouvez pas copier le texte : dans « Lire une photo de
 l'écran Amadeus », touchez « Prendre une photo », ou choisissez **jusqu'à 4 images** (une par page
-de la réservation), puis « Lire la photo ». L'application lit l'image et remplit la vente ; l'image
+de la réservation), puis « Lire la photo ». Sur un ordinateur, plus simple : faites une capture de
+l'écran Amadeus et **collez-la avec Ctrl+V** (ou glissez l'image sur la page), puis « Lire la
+photo ». Cela marche aussi dans la Discussion. L'application lit l'image et remplit la vente ; l'image
 n'est jamais gardée. Photo floue ou refusée : collez plutôt le texte. Sur iPhone, si le format
 « HEIC » est refusé, faites une capture d'écran.
 
@@ -91,6 +93,8 @@ Sur le « Tableau de bord », touchez « Discussion ». Vous pouvez écrire, par
 - « billet 3940299439 » : où en est ce billet ;
 - « billets non envoyés » ;
 - coller le texte Amadeus : puis « Ouvrir la saisie préremplie » ;
+- coller une capture de l'écran Amadeus (Ctrl+V) ou une photo dans « Envoyer une capture de
+  l'écran Amadeus », puis « Lire la photo » : la vente s'ouvre préremplie, à vérifier ;
 - « aide » : tout ce que la Discussion sait faire.
 
 Les autres questions, libres, sont lues par une **intelligence artificielle (IA)**. Elle **ne fait

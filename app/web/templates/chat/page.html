@@ -2,4 +2,13 @@
 {% block title %}{{ _("Discussion") }}{% endblock %}
 {% block content %}
 {% include "chat/_panel.html" %}
+{# Outside the panel: htmx swaps the panel after each message, which would drop pasted images and
+   run the script again. #}
+{% if screenshot_enabled %}
+<section class="chat-shot shot-zone" id="shot-zone" aria-labelledby="shot-title">
+  <h2 class="card-title" id="shot-title">{{ _("Envoyer une capture de l'écran Amadeus") }}</h2>
+  {% include "sales/_shot_form.html" %}
+</section>
+<script src="/static/screenshot-paste.js" defer></script>
+{% endif %}
 {% endblock %}

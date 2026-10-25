@@ -1,0 +1,18 @@
+{# The photo box: one form posting the screenshots of a booking to /sales/screenshot, used on the
+   sale form and in the chat. A screenshot can also be pasted (Ctrl+V) or dropped anywhere on the
+   page (static/screenshot-paste.js, loaded once by the page, outside any htmx swap). #}
+<form class="form form-wide" method="post" action="/sales/screenshot" enctype="multipart/form-data">
+  {% include "_csrf.html" %}
+  <div class="field">
+    <label for="shot_camera">{{ _("Prendre une photo") }}</label>
+    <input id="shot_camera" name="images" type="file" accept="image/*" capture="environment" aria-describedby="shot-help">
+  </div>
+  <div class="field">
+    <label for="shot_files">{{ _("Ou choisir des images (4 au plus : une par page de la réservation)") }}</label>
+    <input id="shot_files" name="images" type="file" accept="image/*" multiple aria-describedby="shot-help shot-paste-help">
+  </div>
+  <p class="help" id="shot-paste-help">{{ _("Sur un ordinateur : faites une capture de l'écran Amadeus, puis collez-la ici avec Ctrl+V, ou glissez l'image sur la page.") }}</p>
+  <p class="help shot-pasted" id="shot-pasted" role="status" aria-live="polite" data-one="{{ _('1 image prête : touchez « Lire la photo ».') }}" data-many="{{ _('{n} images prêtes : touchez « Lire la photo ».') }}" data-full="{{ _('4 images au plus : les suivantes sont ignorées.') }}"></p>
+  <p class="help" id="shot-help">{{ _("Photos JPEG, PNG ou WebP, 8 Mo au plus chacune. L'image est envoyée une seule fois à Anthropic pour être lue, puis oubliée : elle n'est jamais enregistrée. Vous relisez tout avant de confirmer.") }}</p>
+  <button class="btn" type="submit">{{ _("Lire la photo") }}</button>
+</form>

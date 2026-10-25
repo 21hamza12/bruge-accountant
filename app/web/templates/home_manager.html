@@ -9,6 +9,7 @@
   <h2 class="empty-title" id="empty-title">{{ _("Aucun rapport n'a encore été envoyé.") }}</h2>
   <p class="muted">{{ _("Envoyez le rapport quotidien des ventes Amadeus pour voir les chiffres du jour.") }}</p>
   <a class="btn btn-primary btn-lg" href="/uploads/new">{{ icon("upload", small=true) }}{{ _("Envoyer un rapport") }}</a>
+  <a class="btn btn-lg" href="/sales/new">{{ icon("ticket", small=true) }}{{ _("Saisir une vente") }}</a>
 </section>
 {% else %}
 <div class="toolbar">
@@ -17,6 +18,7 @@
   {% else %}
   <span class="muted">{{ _("Aucun billet pour cette date (%(date)s)", date=day|date_fr) }}</span>
   {% endif %}
+  <a class="btn btn-primary" href="/sales/new">{{ icon("ticket", small=true) }}{{ _("Saisir une vente") }}</a>
   <a class="btn" href="/sales?date={{ day.isoformat() }}">{{ icon("list", small=true) }}{{ _("Ventes du jour") }}</a>
   <a class="btn" href="/days/{{ day.isoformat() }}">{{ icon("stats", small=true) }}{{ _("Journée du %(date)s", date=day|date_fr) }}</a>
   <form class="date-form" method="get" action="/">

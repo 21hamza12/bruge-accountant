@@ -56,7 +56,7 @@ from app.web import sale_paste
 from app.web.csrf import csrf_protect
 from app.web.deps import AuthContext, client_ip, get_clock, get_session, require_permission
 from app.web.pages import page
-from app.web.sale_pages import posted_fields
+from app.web.sale_pages import posted_fields, screenshot_available
 from app.web.shell import ACTIVE_CHAT, shell_context
 from app.web.templating import render
 
@@ -117,6 +117,10 @@ def _context(
         "max_chars": store.MAX_INPUT_CHARS,
         "max_paste_kb": MAX_TEXT_BYTES // 1024,
         "max_paste_chars": MAX_TEXT_BYTES,
+        # The photo box of the sale form, in the chat too: it posts to /sales/screenshot, which
+        # opens the prefilled sale to confirm (nothing is read or stored by the chat itself).
+        "screenshot_enabled": permissions.can_use_sales_screens(auth.user)
+        and screenshot_available(db, auth.user),
     }
 
 

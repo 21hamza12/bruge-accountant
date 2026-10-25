@@ -41,23 +41,12 @@
   </form>
 </section>
 {% if screenshot_enabled %}
-<section class="card" aria-labelledby="shot-title">
+<section class="card shot-zone" id="shot-zone" aria-labelledby="shot-title">
   <h2 class="card-title" id="shot-title">{{ _("Lire une photo de l'écran Amadeus") }}</h2>
   {% if screenshot_error %}<p class="error-box" id="shot-error" role="alert">{{ screenshot_error }}</p>{% endif %}
-  <form class="form form-wide" method="post" action="/sales/screenshot" enctype="multipart/form-data">
-    {% include "_csrf.html" %}
-    <div class="field">
-      <label for="shot_camera">{{ _("Prendre une photo") }}</label>
-      <input id="shot_camera" name="images" type="file" accept="image/*" capture="environment" aria-describedby="shot-help">
-    </div>
-    <div class="field">
-      <label for="shot_files">{{ _("Ou choisir des images (4 au plus : une par page de la réservation)") }}</label>
-      <input id="shot_files" name="images" type="file" accept="image/*" multiple aria-describedby="shot-help">
-    </div>
-    <p class="help" id="shot-help">{{ _("Photos JPEG, PNG ou WebP, 8 Mo au plus chacune. L'image est envoyée une seule fois à Anthropic pour être lue, puis oubliée : elle n'est jamais enregistrée. Vous relisez tout avant de confirmer.") }}</p>
-    <button class="btn" type="submit">{{ _("Lire la photo") }}</button>
-  </form>
+  {% include "sales/_shot_form.html" %}
 </section>
+<script src="/static/screenshot-paste.js" defer></script>
 {% endif %}
 {% endif %}
 

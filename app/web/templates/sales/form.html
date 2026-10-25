@@ -67,6 +67,7 @@
   <input type="hidden" name="ag_proposed" value="{{ f.ag_proposed }}">
   <input type="hidden" name="ag_text" value="{{ f.ag_text }}">
   <input type="hidden" name="ag_match" value="{{ f.ag_match }}">
+  <input type="hidden" name="pb_read" value="{{ f.pb_read }}">
   {% for warning in f.notices %}<input type="hidden" name="pnr_warning" value="{{ warning }}">{% endfor %}
   {% endif %}
 
@@ -173,7 +174,7 @@
       {{ field_error(errors, "ag") }}
       {% if ask.kind != "none" %}
       <div class="field field-check">
-        <input id="ag_answer_yes" name="ag_answer" type="radio" value="yes"{% if f.ag_answer == "yes" %} checked{% endif %}>
+        <input id="ag_answer_yes" name="ag_answer" type="radio" value="yes"{% if ask.kind != "direct" %} data-partner{% endif %}{% if f.ag_answer == "yes" %} checked{% endif %}>
         <label for="ag_answer_yes">{% if ask.kind == "direct" %}{{ _("Oui, vente directe BRUGE") }}{% else %}{{ _("Oui, %(name)s", name=ask.partner_name) }}{% endif %}</label>
       </div>
       {% endif %}

@@ -275,3 +275,42 @@ def test_ticket_with_unreadable_cost_has_none_and_warning() -> None:
 def test_empty_reading_gives_no_sale() -> None:
     assert from_text("") == []
     assert from_text("garbage") == []
+
+
+# An agency on the AP line that is not (yet) a known partner: the sale may still turn out direct,
+# so the RM price is kept as P.B; it is only left out when a partner is recognised (its P.B is
+# computed: cost + fee).
+UNKNOWN_AGENCY_WITH_RM = """--- TST RLR ---
+RP/NKC262353/NKC262353            SV/SU  25OCT26/1501Z   SYN7QA
+  1.SYNTHX/PASSAGER
+  2  L6 121 D 30OCT 5 LPANKC HK1          2230 2310   *1A/E*
+  3 AP NKC +222 22000000 - AGENCE SYNTHESE VOYAGES - A.S.V. - A
+  4 RM 29000 MRU
+  5 FA PAX 495-3940299902/ETL6/MRU28803.00/25OCT26/NKC262353/51211845/S2
+  6 FP CASH
+>"""
+
+
+def test_an_unknown_agency_keeps_the_rm_price_as_pb() -> None:
+    (s,) = from_text(UNKNOWN_AGENCY_WITH_RM)
+    assert (s.ag_kind, s.partner_id, s.pb) == (None, None, d("29000"))
+    assert "agence inconnue : AGENCE SYNTHESE VOYAGES - A.S.V." in s.warnings
+
+
+def test_an_ambiguous_agency_keeps_the_rm_price_as_pb() -> None:
+    partners = [(1, "SYNTHESE VOYAGES NOUAKCHOTT"), (2, "SYNTHESE VOYAGES NOUADHIBOU")]
+    text = UNKNOWN_AGENCY_WITH_RM.replace("AGENCE SYNTHESE VOYAGES - A.S.V.", "SYNTHESE VOYAGES")
+    (s,) = from_text(text, partners=partners)
+    assert s.ag_kind is None and s.pb == d("29000")
+
+
+def test_a_recognised_partner_still_gets_no_rm_price() -> None:
+    text = UNKNOWN_AGENCY_WITH_RM.replace("AGENCE SYNTHESE VOYAGES - A.S.V.", "REND TOURISME")
+    (s,) = from_text(text)
+    assert (s.ag_kind, s.partner_id, s.pb) == (AG_PARTNER, 2, None)
+
+
+def test_an_unknown_agency_without_rm_says_the_price_is_missing() -> None:
+    (s,) = from_text(UNKNOWN_AGENCY_WITH_RM.replace("  4 RM 29000 MRU\n", ""))
+    assert s.pb is None
+    assert any("RM" in w for w in s.warnings)

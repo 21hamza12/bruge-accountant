@@ -1791,9 +1791,13 @@ details.field summary {
   font-weight: 600;
 }
 
-/* A partner sale's price is computed: hide the P.B input when a partner is chosen. Browsers
-   without :has() keep showing it (the server ignores a price typed for a partner sale). */
-.sale-card:has(#ag option:not([value="direct"]):checked) .field-pb {
+/* A partner sale's price is computed: hide the P.B input when a partner is chosen, in the AG list
+   or in the answer to the agency question ("Oui, <partner>" or "Non, choisir un autre partenaire").
+   While the question is open, or answered "Vente directe", P.B shows. Browsers without :has() keep
+   showing it (the server ignores a price typed for a partner sale). */
+.sale-card:has(select#ag option:not([value="direct"]):checked) .field-pb,
+.sale-card:has(#ag_answer_yes[data-partner]:checked) .field-pb,
+.sale-card:has(#ag_answer_other:checked) .field-pb {
   display: none;
 }
 

@@ -5,6 +5,8 @@ from __future__ import annotations
 
 import re
 
+from app.web.sale_pages import IGNORED_PRICE
+from tests.acceptance_support import fields_of, text_of
 from tests.page_support import Env
 from tests.test_sale_pages import env as env  # the fixture
 from tests.test_sale_pages import make_partner
@@ -39,3 +41,28 @@ def test_a_proposed_partner_marks_its_yes_answer_so_the_price_hides_when_chosen(
     make_partner(env, "REND", "500")
     html = paste(env, PASTE_UNKNOWN_AGENCY.replace("AGENCE SYNTHESE VOYAGES - A.S.V.", "REND"))
     assert re.search(r'<input id="ag_answer_yes"[^>]*\sdata-partner[\s>]', html)
+
+
+def readback_for_partner(env: Env, pb: str | None) -> str:
+    """Paste the unknown-agency booking, answer with a partner, optionally retype P.B, preview."""
+    pid = make_partner(env, "BADI", "500")
+    c = env.staff_a()
+    html = c.post(
+        "/sales/paste",
+        data={"pnr_text": PASTE_UNKNOWN_AGENCY, "csrf_token": csrf_for(c, "/sales/new")},
+    ).text
+    data = fields_of(html, "/sales/preview")
+    data.update({"ag_answer": ["other"], "ag_other": [str(pid)], "payment_method": ["cash"]})
+    if pb is not None:
+        data["pb"] = [pb]
+    r = c.post("/sales/preview", data=data)
+    assert r.status_code == 200, text_of(r.text)[:800]
+    return text_of(r.text)
+
+
+def test_choosing_a_partner_after_the_rm_price_raises_no_false_alarm(env: Env) -> None:
+    assert IGNORED_PRICE not in readback_for_partner(env, None)
+
+
+def test_a_price_the_agent_typed_for_a_partner_sale_is_still_called_out(env: Env) -> None:
+    assert IGNORED_PRICE in readback_for_partner(env, "31000")

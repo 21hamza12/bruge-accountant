@@ -110,6 +110,7 @@ class SaleForm:
     ag_other: str = ""
     ag_text: str = ""  # the agency text of the booking (AP agency, else the FP hint)
     ag_match: str = ""  # exact, packed, prefix, fp, close or none
+    pb_read: str = ""  # the P.B the reader took from the RM line (to tell it from a typed one)
     notices: list[str] = field(default_factory=list)  # what the reader warned about
 
     @property
@@ -149,6 +150,7 @@ class SaleForm:
                     ("ag_other", self.ag_other),
                     ("ag_text", self.ag_text),
                     ("ag_match", self.ag_match),
+                    ("pb_read", self.pb_read),
                 ]
             )
             pairs.extend(("pnr_warning", text) for text in self.notices)
@@ -212,6 +214,7 @@ def read(source: FormData, *, new_sale: bool = True) -> SaleForm:
         ag_other=one("ag_other").strip(),
         ag_text=one("ag_text")[:HIDDEN_CLIP] if new_sale else "",
         ag_match=one("ag_match").strip(),
+        pb_read=one("pb_read").strip()[:HIDDEN_CLIP] if new_sale else "",
         notices=[_text(v)[:HIDDEN_CLIP] for v in source.getlist("pnr_warning")][:MAX_NOTICES]
         if new_sale
         else [],

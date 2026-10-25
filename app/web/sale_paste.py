@@ -88,6 +88,7 @@ def form_from_sale(
         source=source,
         ag_proposed=proposed,
         ag_text=sale.agency_text or "",
+        pb_read=money(sale.pb) if sale.pb is not None else "",
         ag_match=match,
         notices=[*reader_warnings, *sale.warnings],
     )

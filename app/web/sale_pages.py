@@ -8,6 +8,7 @@ result to one of the builders here. Every page shows names and money: ``Cache-Co
 
 from __future__ import annotations
 
+import re
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import date
@@ -376,6 +377,13 @@ def form_page(
 IGNORED_PRICE = "Prix saisi ignoré : prix partenaire calculé."
 
 
+def _typed_price(form: SaleForm) -> bool:
+    """A P.B the agent typed, not the RM price the reader put there and the agent left alone (it
+    is still posted when the agency answer turns the sale into a partner sale)."""
+    typed = re.sub(r"\s", "", form.pb)
+    return bool(typed) and typed != re.sub(r"\s", "", form.pb_read)
+
+
 def readback_page(
     db: Session,
     auth: AuthContext,
@@ -405,7 +413,7 @@ def readback_page(
         if form.from_paste and sale is None
         else None
     )
-    if result.partner_id is not None and form.pb.strip():
+    if result.partner_id is not None and _typed_price(form):
         notes.append(IGNORED_PRICE)  # a typed price on a partner sale is not silently dropped
     return page(
         "sales/readback.html",

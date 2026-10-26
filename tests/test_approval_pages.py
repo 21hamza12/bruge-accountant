@@ -434,7 +434,10 @@ def test_a_validator_cannot_validate_their_own_answer(world: FlagWeb) -> None:
         )  # fmt: skip
         queue = c.get("/flags/validate")
         assert "Votre réponse" in queue.text
-        assert re.search(r"<button[^>]*disabled[^>]*>", queue.text)
+        # no dead button: the person who answered sees who must validate, not "Approuver"
+        assert f'action="/flags/{flag.id}/validate"' not in queue.text
+        assert "le gérant ou la comptable" in queue.text
+        assert "Émis le" in queue.text  # the ticket's issue date column (owner, 27 Oct)
         refused = post(c, f"/flags/{flag.id}/validate", "/flags/validate", decision="approve")
     assert refused.status_code == 403 and "votre propre réponse" in refused.text
     assert status_of(world, flag.id) == "answered"
@@ -539,7 +542,9 @@ def test_fee_overrides_are_listed_and_validated_or_rejected(world: FlagWeb) -> N
         world.upload(c)
         own = c.get("/flags/validate")
         assert "Remise accordée" in own.text and "Frais exceptionnels" in own.text
-        assert re.search(r"<button[^>]*disabled[^>]*>", own.text)  # the manager wrote it
+        # the manager wrote it: no Approuver for them, only who must validate (and Rejeter)
+        assert not re.search(r"<button[^>]*disabled[^>]*>", own.text)
+        assert 'name="decision" value="approve"' not in own.text.split("Frais exceptionnels")[1]
         refused = post(
             c, f"/flags/overrides/{sale_id}/validate", "/flags/validate", decision="approve"
         )

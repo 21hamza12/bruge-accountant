@@ -492,6 +492,22 @@ def _current(agency_id: int) -> Select[Sale, SaleVersion, date]:
     )
 
 
+def issue_dates_for(db: Session, agency_id: int, doc_numbers: Collection[str]) -> dict[str, date]:
+    """``{doc_number: issue date}`` of the numbers held by an active sale of the agency whose
+    ticket carries an issue date (two queries, whatever the count): for screens that list
+    tickets, such as the approvals queue."""
+    found = active_ticket_lookup(db, agency_id, doc_numbers)
+    sale_ids = {sale_id for sale_id, _ in found.values()}
+    if not sale_ids:
+        return {}
+    dates: dict[str, date] = {}
+    for head, version, day in db.execute(_current(agency_id).where(Sale.id.in_(sale_ids))):
+        for t in _view(head, version, day).tickets:
+            if t.issue_date is not None and t.doc_number in found:
+                dates[t.doc_number] = t.issue_date
+    return dates
+
+
 def _get_sale(db: Session, agency_id: int, sale_id: int) -> SaleView | None:
     row = db.execute(_current(agency_id).where(Sale.id == sale_id)).first()
     return None if row is None else _view(row[0], row[1], row[2])

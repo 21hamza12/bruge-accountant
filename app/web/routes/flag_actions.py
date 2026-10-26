@@ -171,6 +171,7 @@ def flag_enter(
 class QueueFlag:
     row: FlagRow
     day: date
+    issued: date | None  # the ticket's issue date, from its sale (None: no sale, or no date)
     answer: str  # what the agent chose
     reason: str
     by: str
@@ -216,6 +217,7 @@ def validate_page(
         {d.actor_user_id for d in agents.values() if d is not None}
         | {v.actor_user_id for v in queue.overrides},
     )
+    issued = sales.issue_dates_for(db, user.agency_id, {f.doc_number for f in queue.flags})
     flag_items: list[QueueFlag] = []
     for f in queue.flags:
         given = agents[f.id]
@@ -223,6 +225,7 @@ def validate_page(
             QueueFlag(
                 row=flag_row(f),
                 day=dates.get(f.report_day_id, date.min),
+                issued=issued.get(f.doc_number),
                 answer=CHOICE_LABELS.get(given.choice, "") if given else "",
                 reason=(given.reason or "") if given else "",
                 by=names.get(given.actor_user_id, "—") if given else "—",

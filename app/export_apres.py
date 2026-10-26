@@ -63,6 +63,10 @@ HEADERS: Final = (
     "SEQ NO", "A/L", "DOC NUMBER", "TOTAL DOC", "PAX NAME", "AS", "TRNC", "RLOC",
     "P.B", "AG", "CLT", "AP",
 )  # fmt: skip
+# After the 12 columns of the accountant's sheet (the ones the parallel run compares): the day each
+# ticket was issued, from its sale (owner's request, 27 Oct). Never compared.
+ISSUE_HEADER: Final = "DATE EMISSION"
+_COL_ISSUE: Final = len(HEADERS) + 1
 FIRST_ROW: Final = 6
 HEADER_ROW: Final = 5
 XLSX_MEDIA_TYPE: Final = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
@@ -112,6 +116,7 @@ class ApresLine:
     sale_id: int | None = None
     ticket_count: int = 0  # tickets of the sale
     duplicate: bool = False  # the number already appeared on an earlier line
+    issue_date: date | None = None  # the day the ticket was issued (its sale's ticket)
 
     @property
     def marker(self) -> str:
@@ -215,6 +220,13 @@ def _report_name(amadeus: AmadeusLine) -> str:
     return f"{name} {mark}"
 
 
+def _issue_date(view: SaleView, doc: str) -> date | None:
+    for t in view.tickets:
+        if (normalise_doc(t.doc_number, t.airline) or t.doc_number) == doc:
+            return t.issue_date
+    return None
+
+
 def _build_lines(amadeus: Sequence[AmadeusLine], views: Sequence[SaleView]) -> list[ApresLine]:
     """The lines (CANX already removed) with their sale's data. A sale ticket is used once; the
     sale's P.B sits on the first exported line of the sale and 0 on its other exported lines."""
@@ -251,6 +263,7 @@ def _build_lines(amadeus: Sequence[AmadeusLine], views: Sequence[SaleView]) -> l
                 sale_id=view.id if view else None,
                 ticket_count=len(view.tickets) if view else 0,
                 duplicate=duplicate,
+                issue_date=_issue_date(view, doc) if view else None,
             )
         )
     expected = sum((v.pb for v in views if v.id in priced), Decimal(0))
@@ -363,7 +376,7 @@ def build_apres_xlsx(report: ApresReport, *, corrections: Corrections = NO_CORRE
     _text(ws, 1, 2, report.agy_no)
     _text(ws, 1, 4, report.range_raw)
     _text(ws, 3, 4, report.current_date)
-    for col, title in enumerate(HEADERS, start=1):
+    for col, title in enumerate((*HEADERS, ISSUE_HEADER), start=1):
         head = ws.cell(row=HEADER_ROW, column=col, value=title)
         head.font, head.fill = Font(bold=True), _FILL_HEAD
         head.alignment = Alignment(horizontal="center")
@@ -385,6 +398,8 @@ def build_apres_xlsx(report: ApresReport, *, corrections: Corrections = NO_CORRE
         _text(ws, row, _COL_AG, line.ag)
         _text(ws, row, _COL_CLT, line.clt)
         _text(ws, row, _COL_AP, line.ap)
+        if line.issue_date is not None:
+            _text(ws, row, _COL_ISSUE, line.issue_date.strftime("%d/%m/%Y"))
         if line.sale_id is None:
             _fill_row(ws, row, _FILL_UNMATCHED)
             _note(ws, row, _COL_PB, DUPLICATE_NOTE if line.duplicate else UNMATCHED_NOTE)
@@ -406,7 +421,7 @@ def build_apres_xlsx(report: ApresReport, *, corrections: Corrections = NO_CORRE
         ws.cell(row=total_row, column=col).font = Font(bold=True)
     ws.freeze_panes = f"A{FIRST_ROW}"
     for letter, width in zip(
-        "ABCDEFGHIJKL", (10, 6, 14, 14, 30, 10, 8, 10, 14, 16, 24, 16), strict=True
+        "ABCDEFGHIJKLM", (10, 6, 14, 14, 30, 10, 8, 10, 14, 16, 24, 16, 14), strict=True
     ):
         ws.column_dimensions[letter].width = width
     buf = io.BytesIO()

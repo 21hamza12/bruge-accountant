@@ -128,7 +128,7 @@ def test_purge_cron_runs_the_purge_command_hourly_from_the_same_image(
 def test_purge_cron_mirrors_the_web_environment(web: dict[str, Any], purge: dict[str, Any]) -> None:
     web_env = {item["key"]: item for item in web["envVars"]}
     cron_env = {item["key"]: item for item in purge["envVars"]}
-    # same keys, same literal values, same dashboard-only keys; only the owner URL and the issue-date
+    # same keys and values, same dashboard-only keys; only the owner URL and the issue-date
     # signing key are left out (the purge reads neither, and a cron job should not hold more than
     # it needs; the key is generated for the web service alone)
     web_only = {"MIGRATION_DATABASE_URL", "ISSUE_SIGNING_KEY"}

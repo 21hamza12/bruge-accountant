@@ -33,12 +33,10 @@ from app.db import make_engine, make_session_factory
 from app.ingest import ingest_report
 from app.models import AiUsage, StaffSignLink, Ticket, Upload, User
 from app.repository import (
-    awaiting_counts_by_sign,
     get_upload,
     latest_report_date,
     recent_report_dates,
     recent_uploads,
-    tickets_awaiting_price,
     tickets_for_day,
     upload_ticket_dates,
 )
@@ -250,13 +248,6 @@ def hot_queries(w: World) -> list[Hot]:
             frozenset({"uq_users_phone"}),
         ),
         Hot(
-            "tickets awaiting price",
-            Scope(agency_id=a),
-            lambda s: tickets_awaiting_price(s, a, date(2026, 10, 1)),
-            "FROM tickets",
-            frozenset({"ix_tickets_agency_report_date_staff"}),
-        ),
-        Hot(
             "tickets for a day (all statuses)",
             Scope(agency_id=a),
             lambda s: tickets_for_day(s, a, date(2026, 10, 1)),
@@ -268,13 +259,6 @@ def hot_queries(w: World) -> list[Hot]:
             Scope(agency_id=a),
             lambda s: tickets_for_day(s, a, date(2026, 10, 1), ["0004SV"]),
             "FROM tickets",
-            frozenset({"ix_tickets_agency_report_date_staff"}),
-        ),
-        Hot(
-            "awaiting counts by sign",
-            Scope(agency_id=a),
-            lambda s: awaiting_counts_by_sign(s, a, date(2026, 10, 1)),
-            "count(DISTINCT",
             frozenset({"ix_tickets_agency_report_date_staff"}),
         ),
         Hot(
@@ -456,10 +440,8 @@ def facts(plans: list[dict[str, Any]]) -> tuple[set[str], list[str]]:
 CASE_NAMES = [
     "session by token hash",
     "user by phone",
-    "tickets awaiting price",
     "tickets for a day (all statuses)",
     "tickets for a day (some signs)",
-    "awaiting counts by sign",
     "latest report date",
     "latest report date (some signs)",
     "recent report dates",
@@ -488,4 +470,4 @@ def test_the_hot_query_uses_its_index(world: World, name: str) -> None:
 
 
 def test_every_hot_query_is_covered() -> None:
-    assert len(CASE_NAMES) == len(set(CASE_NAMES)) == 17
+    assert len(CASE_NAMES) == len(set(CASE_NAMES)) == 15  # the price questions page is gone

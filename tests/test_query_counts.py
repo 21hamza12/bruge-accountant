@@ -1,4 +1,4 @@
-"""The home and questions pages send the same number of SQL statements whatever the data's shape.
+"""The home pages send the same number of SQL statements whatever the data's shape.
 
 A page that asks the database once per staff sign (or per booking) is fine with two signs and slow
 with twenty; this pins that the number of statements does not grow with the number of signs, for a
@@ -70,8 +70,6 @@ def more_signs(env: Env, first: int, last: int) -> list[str]:
 PAGES = [
     "/",
     f"/?date={DAY}",
-    "/questions",
-    f"/questions?date={DAY}&status=all&limit=1000",
     "/chat",
 ]
 
@@ -95,8 +93,6 @@ def test_the_manager_pages_send_a_constant_number_of_statements(env: Env) -> Non
             more_signs(env, 1, MANY - FEW + 1)
 
         check(env, c, grow)
-        html = c.get("/questions?limit=1000").text
-    assert html.count('class="sign"') == MANY
 
 
 def test_the_staff_pages_send_a_constant_number_of_statements(env: Env) -> None:
@@ -110,5 +106,3 @@ def test_the_staff_pages_send_a_constant_number_of_statements(env: Env) -> None:
                 env.link(env.seeded.staff_a, sign)
 
         check(env, c, grow)
-        html = c.get("/questions?limit=1000").text
-    assert html.count('class="sign"') == MANY

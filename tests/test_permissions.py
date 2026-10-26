@@ -314,8 +314,7 @@ def test_the_dependency_is_named_after_its_permission() -> None:
 
 # --- the web ------------------------------------------------------------------------------------
 
-BADGE = re.compile(r'<span class="badge">(\d+)')
-AGENTS = re.compile(r'<ul class="agent-list">(.*?)</ul>', re.S)
+SIDE_HREFS = re.compile(r'<a class="nav-link" href="(/[^"]*)"')
 USER_ROLE = re.compile(r'<span class="user-role">([^<]*)</span>')
 
 
@@ -326,14 +325,11 @@ def test_accountant_sees_all_signs_in_shell(env: Env) -> None:
         manager_html = m.get("/").text
     with env.as_user(ACCOUNTANT_PHONE, PASSWORD_S) as c:
         html = c.get("/").text
-    # The same totals and the same agent list as the manager's: derived, not hardcoded.
-    manager_badge = BADGE.search(manager_html)
-    assert manager_badge is not None and int(manager_badge.group(1)) > 0
-    assert BADGE.search(html) is not None
-    assert BADGE.search(html).group(1) == manager_badge.group(1)  # type: ignore[union-attr]
-    manager_agents, agents = AGENTS.search(manager_html), AGENTS.search(html)
-    assert manager_agents is not None and agents is not None
-    assert agents.group(1) == manager_agents.group(1)
+    # The same menu as the manager's, derived and not hardcoded, minus the staff management.
+    manager_links, links = SIDE_HREFS.findall(manager_html), SIDE_HREFS.findall(html)
+    assert "/questions" not in links
+    assert "/staff" in manager_links
+    assert links == [h for h in manager_links if h != "/staff"]
     assert 'href="/staff"' not in html  # but no staff management
     role = USER_ROLE.search(html)
     assert role is not None and role.group(1) == "Comptable"

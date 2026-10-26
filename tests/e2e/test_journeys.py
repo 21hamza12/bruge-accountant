@@ -51,7 +51,7 @@ _BODY = re.compile(r'data-csrf-token="([^"]+)"')
 _SECRET = re.compile(r'class="secret"><code>([A-Za-z0-9]+)</code>')
 _ADDED = re.compile(r"Ajoutés\s*:\s*<strong>(\d+)</strong>")
 _UPDATED = re.compile(r"Mis à jour\s*:\s*<strong>(\d+)</strong>")
-_SIGNS = re.compile(r'class="sign-code">([^<]*)<')
+_AGENT_CODES = re.compile(r'class="agent-code">([^<]*)<')
 
 
 class Browser:
@@ -266,7 +266,7 @@ def test_3_the_result_page_and_the_list(manager_a: Browser, uploaded: Uploaded) 
     page = manager_a.http.get(f"/uploads/{uploaded.second_id}")
     assert "1OCT.xlsx" in page.text
     assert REPORT_DAY in page.text
-    assert f'href="/questions?date={REPORT_DAY}"' in page.text
+    assert f'href="/days/{REPORT_DAY}"' in page.text
     assert f'href="/uploads/{uploaded.second_id}"' in manager_a.http.get("/uploads").text
 
 
@@ -291,34 +291,28 @@ def test_3_a_file_that_is_not_a_workbook_is_a_friendly_400(uploader: Browser) ->
     assert "Traceback" not in response.text
 
 
-# --- 4. the questions page ----------------------------------------------------------------------
+# --- 4. the home page and the removed questions page -------------------------------------------
 
 
 def test_4_manager_sees_every_sign_and_staff_see_their_own(
     manager_a: Browser, uploaded: Uploaded
 ) -> None:
-    page = manager_a.http.get(f"/questions?date={REPORT_DAY}")
+    page = manager_a.http.get(f"/?date={REPORT_DAY}")
     assert page.status_code == 200
-    assert _SIGNS.findall(page.text) == ["0004SV", "0009ER"]
-    assert page.text.count('<details class="booking"') == 33  # 25 + 8
+    assert _AGENT_CODES.findall(page.text) == ["0004SV", "0009ER"]
 
     er = signed_in(PHONE_STAFF_ER)
-    sv = signed_in(PHONE_STAFF_SV)
     try:
-        own = er.http.get(f"/questions?date={REPORT_DAY}")
-        assert _SIGNS.findall(own.text) == ["0009ER"]
-        assert own.text.count('<details class="booking"') == 8
+        own = er.http.get(f"/?date={REPORT_DAY}")
+        assert own.status_code == 200
+        assert "14 billets dans le rapport" in own.text
         assert "0004SV" not in own.text
-        other = sv.http.get(f"/questions?date={REPORT_DAY}")
-        assert _SIGNS.findall(other.text) == ["0004SV"]
-        assert other.text.count('<details class="booking"') == 25
     finally:
         er.close()
-        sv.close()
 
 
-def test_4_an_invalid_date_is_a_400(manager_a: Browser) -> None:
-    assert manager_a.http.get("/questions?date=nonsense").status_code == 400
+def test_4_the_price_questions_page_is_gone(manager_a: Browser) -> None:
+    assert manager_a.http.get(f"/questions?date={REPORT_DAY}").status_code == 404
 
 
 # --- 5. another agency -------------------------------------------------------------------------

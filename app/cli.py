@@ -48,7 +48,6 @@ from app.formatting import money
 from app.ingest import IngestResult, check_bytes, ingest_report, sanitize_filename
 from app.observability import quiet_libraries
 from app.parsing.amadeus import MAX_FILE_BYTES, ParseError, parse_report
-from app.questions import build_questions
 from app.repository import (
     AlreadyExistsError,
     ResetRefusedError,
@@ -57,7 +56,6 @@ from app.repository import (
     get_agency_by_slug,
     purge_expired,
     reset_user_password,
-    tickets_awaiting_price,
 )
 from app.settings import Settings, environment_is_production
 from app.tenancy import bind_tenant
@@ -625,14 +623,6 @@ def _import(url: str, file: Path, slug: str, override: date | None) -> int:
                 session, agency.id, data, file.name, report_date_override=override
             )
             report_date = result.report_date
-            # Tickets that already existed keep the day they were first stored on, so the
-            # questions are those of the days the tickets really belong to (normally just
-            # ``report_date``).
-            days = [day for day, _count in result.ticket_dates] or [report_date]
-            awaiting = [
-                ticket for day in days for ticket in tickets_awaiting_price(session, agency.id, day)
-            ]
-            staff = build_questions(awaiting)
             _emit(
                 {
                     "agency": agency.slug,
@@ -643,7 +633,6 @@ def _import(url: str, file: Path, slug: str, override: date | None) -> int:
                     "inserted": result.inserted,
                     "updated": result.updated,
                     "warnings": list(result.warnings),
-                    "staff": [dataclasses.asdict(s) for s in staff],
                 }
             )
     except ParseError as exc:

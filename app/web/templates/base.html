@@ -44,10 +44,6 @@
           <span class="nav-label">{{ icon("list") }}{{ _("Mes ventes") }}</span>
         </a>
         {% endif %}
-        <a class="nav-link" href="/questions"{% if shell.active == "questions" %} aria-current="page"{% endif %}>
-          <span class="nav-label">{{ icon("questions") }}{{ _("Questions de prix") }}</span>
-          {% if shell.badge %}<span class="badge">{{ shell.badge }}<span class="visually-hidden"> {{ _("en attente") }}</span></span>{% endif %}
-        </a>
         {% if shell.can_see_day_sales %}
         <a class="nav-link" href="/sales/new"{% if shell.active == "sale_new" %} aria-current="page"{% endif %}>
           <span class="nav-label">{{ icon("ticket") }}{{ _("Saisir une vente") }}</span>
@@ -85,22 +81,6 @@
         {% endif %}
       </nav>
 
-      {% if shell.sees_all and shell.agents %}
-      <nav class="side-section" aria-label="{{ _('Agents') }}">
-        <span class="side-title" aria-hidden="true">{{ _("Agents") }}</span>
-        <ul class="agent-list">
-          {% for agent in shell.agents %}
-          <li>
-            <a class="agent-link" href="/questions{% if shell.latest_day %}?date={{ shell.latest_day.isoformat() }}{% endif %}#agent-{{ agent.staff_sign }}">
-              <span class="agent-name">{% if agent.owner %}{{ agent.owner }}{% else %}{{ _("Non attribué") }}{% endif %} <span class="agent-code">{{ agent.staff_sign }}</span></span>
-              <span class="agent-count">{{ agent.waiting }}<span class="visually-hidden"> {{ _("en attente") }}</span></span>
-            </a>
-          </li>
-          {% endfor %}
-        </ul>
-      </nav>
-      {% endif %}
-
       <div class="side-foot">
         <a class="nav-link" href="/password/change"{% if shell.active == "profile" %} aria-current="page"{% endif %}>
           <span class="nav-label">{{ icon("user") }}{{ _("Compte") }}</span>
@@ -126,12 +106,6 @@
           <h1 class="page-title">{% block heading %}{{ self.title() }}{% endblock %}</h1>
         </div>
         <div class="topbar-tools">
-          <form class="search" role="search" method="get" action="/questions">
-            {{ icon("search", small=true) }}
-            <label class="visually-hidden" for="q">{{ _("Rechercher") }}</label>
-            <input id="q" name="q" type="search" maxlength="100" value="{{ q or '' }}" placeholder="{{ _('Rechercher un billet, une réservation…') }}" autocomplete="off">
-            {% block search_hidden %}{% endblock %}
-          </form>
           <a class="btn btn-primary upload-cta" href="/uploads/new">{{ icon("upload", small=true) }}{{ _("Envoyer un rapport") }}</a>
         </div>
       </header>
@@ -153,13 +127,13 @@
   </div>
 
   <nav class="tabbar" aria-label="{{ _('Navigation') }}">
-    <a class="tab" href="/"{% if shell.active == "home" %} aria-current="page"{% endif %}><span class="tab-badge">{{ icon("dashboard") }}{% if shell.badge and not shell.bottom_bar_questions %}<span class="badge">{{ shell.badge }}<span class="visually-hidden"> {{ _("en attente") }}</span></span>{% endif %}</span><span class="tab-label">{{ _("Tableau de bord") }}</span></a>
+    <a class="tab" href="/"{% if shell.active == "home" %} aria-current="page"{% endif %}>{{ icon("dashboard") }}<span class="tab-label">{{ _("Tableau de bord") }}</span></a>
+    {% if shell.bottom_bar_sale_entry %}
+    <a class="tab" href="/sales/new"{% if shell.active == "sale_new" %} aria-current="page"{% endif %}>{{ icon("ticket") }}<span class="tab-label">{{ _("Saisir une vente") }}</span></a>
+    {% endif %}
     {% if shell.bottom_bar_sales %}
     <a class="tab" href="/sales/new"{% if shell.active == "sale_new" %} aria-current="page"{% endif %}>{{ icon("ticket") }}<span class="tab-label">{{ _("Saisir une vente") }}</span></a>
     <a class="tab" href="/sales"{% if shell.active == "sales" %} aria-current="page"{% endif %}>{{ icon("list") }}<span class="tab-label">{{ _("Mes ventes") }}</span></a>
-    {% endif %}
-    {% if shell.bottom_bar_questions %}
-    <a class="tab" href="/questions"{% if shell.active == "questions" %} aria-current="page"{% endif %}><span class="tab-badge">{{ icon("questions") }}{% if shell.badge %}<span class="badge">{{ shell.badge }}<span class="visually-hidden"> {{ _("en attente") }}</span></span>{% endif %}</span><span class="tab-label">{{ _("Questions") }}</span></a>
     {% endif %}
     <a class="tab" href="/uploads/new"{% if shell.active in ("upload_new", "uploads") %} aria-current="page"{% endif %}>{{ icon("upload") }}<span class="tab-label">{{ _("Envoyer un rapport") }}</span></a>
     {% if shell.bottom_bar_partners %}

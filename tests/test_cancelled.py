@@ -1,8 +1,8 @@
-"""Cancelled Amadeus lines (TRNC = CANX): stored, but never counted and never asked about.
+"""Cancelled Amadeus lines (TRNC = CANX): stored, but never counted.
 
 The accountant removes every CANX line before working on a day, so a CANX is not a sale: it adds
-nothing to the cost, the ticket and booking counts, the airline and agent totals or the price
-questions. It is still imported (no data is dropped) and shown apart, as a cancelled count.
+nothing to the cost, the ticket count, the airline and agent totals or the list of tickets
+to enter. It is still imported (no data is dropped) and shown apart, as a cancelled count.
 
 A CANX whose booking reference and amount match a ticket issued the same day is a cancel and
 reissue: the line is listed as cancelled with the ticket that replaced it.
@@ -14,13 +14,13 @@ sign       PNR     ticket      TRNC   cost    note
 =========  ======  ==========  =====  ======  ===============================================
 0004SV     CNX001  3940000100  CANX   50 000  reissued as 3940000101 (same PNR, same amount)
 0004SV     CNX001  3940000101  TKTT   50 000
-0004SV     CNX002  3940000102  CANX   30 000  the whole booking was cancelled: no question
+0004SV     CNX002  3940000102  CANX   30 000  the whole booking was cancelled
 0009ER     CNX003  1470000103  TKTT   20 000
 0009ER     CNX003  1470000104  TKTT   10 000
 0009ER     CNX003  1470000105  canx    7 000  a different amount: not a reissue
 =========  ======  ==========  =====  ======  ===============================================
 
-Counted: 3 tickets, 2 bookings, 80 000. Cancelled: 3 lines, 87 000.
+Counted: 3 tickets, 80 000. Cancelled: 3 lines, 87 000.
 """
 
 from __future__ import annotations
@@ -34,8 +34,8 @@ import pytest
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.dashboard import cancelled_tickets, summarize
-from app.models import PRICE_STATUS_AWAITING, Ticket, Upload
+from app.dashboard import cancelled_tickets, is_cancelled, summarize
+from app.models import Ticket, Upload
 from app.parsing.amadeus import (
     FLAG_CANCELLED,
     FLAG_UNKNOWN_TRNC,
@@ -43,12 +43,9 @@ from app.parsing.amadeus import (
     ParsedReport,
     parse_report,
 )
-from app.questions import build_questions, is_cancelled
 from app.repository import (
-    awaiting_counts_by_sign,
     create_agency,
     import_report,
-    tickets_awaiting_price,
     tickets_for_day,
 )
 from tests.builders import build_workbook, ticket_row
@@ -107,7 +104,6 @@ class T:
     pax_type: str = "ADT"
     cost: Decimal | None = Decimal(100)
     flags: tuple[str, ...] = field(default_factory=tuple)
-    price_status: str = PRICE_STATUS_AWAITING
 
 
 def canx(ticket_no: str, **kw: Any) -> T:
@@ -151,26 +147,9 @@ def test_a_cancelled_line_is_flagged_cancelled_not_unknown(parsed: ParsedReport)
 # --- the pure aggregates -------------------------------------------------------------------------
 
 
-def test_questions_leave_out_cancelled_lines(parsed: ParsedReport) -> None:
-    result = build_questions(parsed.tickets)
-    asked = {p.ticket_no for s in result for q in s.questions for p in q.passengers}
-    assert asked.isdisjoint(CANCELLED_NOS)
-    by_sign = {s.staff_sign: s for s in result}
-    sv, er = by_sign["0004SV"], by_sign["0009ER"]
-    # CNX002 had only a cancelled line, so there is nothing to price.
-    assert [q.booking_ref for q in sv.questions] == ["CNX001"]
-    assert (sv.ticket_count, sv.total_cost) == (1, Decimal(50000))
-    assert (er.ticket_count, er.group_count, er.total_cost) == (2, 1, Decimal(30000))
-    assert all(FLAG_CANCELLED not in q.flags for s in result for q in s.questions)
-
-
-def test_a_staff_sign_with_only_cancelled_lines_gets_no_questions() -> None:
-    assert build_questions([canx("1"), canx("2", booking_ref="")]) == []
-
-
 def test_the_day_summary_counts_only_live_tickets(parsed: ParsedReport) -> None:
     s = summarize(as_day_tickets(parsed))
-    assert (s.ticket_count, s.booking_count, s.awaiting_count) == (3, 2, 2)
+    assert s.ticket_count == 3
     assert s.total_cost == Decimal(80000)
     assert s.missing_cost_count == 0
     assert [(a.code, a.ticket_count, a.total_cost) for a in s.airlines] == [
@@ -197,9 +176,9 @@ def test_the_day_summary_shows_the_cancelled_lines_apart(parsed: ParsedReport) -
 
 def test_a_day_of_only_cancelled_lines_counts_nothing() -> None:
     s = summarize([canx("1", cost=Decimal(5)), canx("2", cost=None)])
-    assert (s.ticket_count, s.booking_count, s.missing_cost_count) == (0, 0, 0)
+    assert (s.ticket_count, s.missing_cost_count) == (0, 0)
     assert s.total_cost == Decimal(0)
-    assert s.airlines == () and s.agents == () and s.bookings == ()
+    assert s.airlines == () and s.agents == ()
     assert s.cancelled_count == 2
     assert s.cancelled_cost == Decimal(5)  # the known amounts only
 
@@ -279,30 +258,8 @@ def test_cancelled_lines_are_stored(session: Session, loaded: int) -> None:
 
 def test_the_stored_day_counts_only_live_tickets(session: Session, loaded: int) -> None:
     s = summarize(tickets_for_day(session, loaded, DAY))
-    assert (s.ticket_count, s.booking_count, s.total_cost) == (3, 2, Decimal(80000))
+    assert (s.ticket_count, s.total_cost) == (3, Decimal(80000))
     assert (s.cancelled_count, s.cancelled_cost) == (3, Decimal(87000))
-
-
-def test_the_awaiting_badge_leaves_out_cancelled_lines(session: Session, loaded: int) -> None:
-    counts = awaiting_counts_by_sign(session, loaded, DAY)
-    assert counts == {"0004SV": 1, "0009ER": 1}
-    summary = summarize(tickets_for_day(session, loaded, DAY))
-    assert counts == {a.staff_sign: a.booking_count for a in summary.agents}
-
-
-def test_the_awaiting_badge_skips_a_sign_with_only_cancelled_lines(
-    session: Session, loaded: int
-) -> None:
-    extra = parse_report(
-        build_workbook([ticket_row(doc="3940000900", staff="0777ZZ", trnc="CANX", rloc="")])
-    )
-    import_report(session, loaded, extra, "01OCT-b.xlsx", OTHER_SHA)
-    assert "0777ZZ" not in awaiting_counts_by_sign(session, loaded, DAY)
-
-
-def test_the_tickets_to_price_leave_out_cancelled_lines(session: Session, loaded: int) -> None:
-    found = {t.ticket_no for t in tickets_awaiting_price(session, loaded, DAY)}
-    assert found == {"3940000101", "1470000103", "1470000104"}
 
 
 def test_a_row_stored_before_the_cancelled_flag_is_still_left_out(
@@ -329,8 +286,9 @@ def test_a_row_stored_before_the_cancelled_flag_is_still_left_out(
         )
     )
     session.commit()
-    assert "0777ZZ" not in awaiting_counts_by_sign(session, loaded, DAY)
-    assert "3940000777" not in {t.ticket_no for t in tickets_awaiting_price(session, loaded, DAY)}
+    assert is_cancelled(
+        next(t for t in tickets_for_day(session, loaded, DAY) if t.ticket_no == "3940000777")
+    )
     s = summarize(tickets_for_day(session, loaded, DAY))
     assert (s.ticket_count, s.total_cost, s.cancelled_count) == (3, Decimal(80000), 4)
 
@@ -358,21 +316,12 @@ def test_the_dashboard_counts_live_tickets_and_lists_the_cancelled_ones(env: Env
     assert "3940000101" in cancelled  # the reissue is named next to the line it replaced
 
 
-def test_the_questions_page_never_asks_about_a_cancelled_line(env: Env) -> None:
-    with env.manager_a() as c:
-        html = c.get(f"/questions?date={DAY_TEXT}").text
-    for no in CANCELLED_NOS:
-        assert no not in html
-    assert "CNX002" not in html
-
-
-def test_a_staff_member_is_never_asked_about_a_cancelled_line(env: Env) -> None:
+def test_a_staff_member_is_never_told_to_enter_a_cancelled_line(env: Env) -> None:
     env.link(env.seeded.staff_a, "0004SV")
     with env.staff_a() as c:
         home = c.get(f"/?date={DAY_TEXT}").text
-        questions = c.get(f"/questions?date={DAY_TEXT}").text
     assert fr(50000) in home  # 3940000101 only, not the cancelled 3940000100 and 3940000102
     assert fr(50000 + 50000 + 30000) not in home
+    assert "3940000101" in home
     for no in ("3940000100", "3940000102"):
-        assert no not in questions
-    assert "3940000101" in questions
+        assert no not in home

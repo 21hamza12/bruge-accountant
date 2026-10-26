@@ -15,7 +15,11 @@ Python 3.12+ · FastAPI · SQLAlchemy 2 + Alembic · PostgreSQL (SQLite for Phas
 Later UI: server-rendered Jinja + htmx, PWA (manifest + service worker + Web Push), RTL via `dir="rtl"`, Babel i18n.
 Deploy: one Docker container + managed Postgres.
 
-## Phase 1 — Amadeus import → per-staff price questions (current)
+> Note (October 2026): the price questions of this phase (`app/questions.py`, the `/questions` page,
+> the « À tarifer » card) were removed. Sales are entered through « Saisir une vente » and compared
+> with the report. The `tickets.price_status` column stays, unused.
+
+## Phase 1 — Amadeus import → per-staff price questions (historical)
 
 1. **Parser** `app/parsing/amadeus.py` — `parse_report(file) -> ParsedReport(header, tickets, warnings)`
    - locate header row by column names; read only Amadeus columns A–H (SEQ NO, A/L, DOC NUMBER, TOTAL DOC, PAX NAME, AS, TRNC, RLOC)

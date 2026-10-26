@@ -55,12 +55,12 @@
   {% if ticket_dates %}
   <h2 class="card-title" id="days-title">{{ _("Jours des billets") }}</h2>
   <ul class="list-plain">
-    {% for day, count in ticket_dates %}<li><a href="/questions?date={{ day.isoformat() }}">{{ day|date_fr }}</a> : {{ ticket_count(count) }}</li>
+    {% for day, count in ticket_dates %}<li><a href="/days/{{ day.isoformat() }}">{{ day|date_fr }}</a> : {{ ticket_count(count) }}</li>
     {% endfor %}
   </ul>
   {% else %}
-  <h2 class="card-title" id="days-title">{{ _("Questions de prix") }}</h2>
-  <p><a class="btn btn-primary" href="/questions?date={{ upload.report_date.isoformat() }}">{{ _("Voir les questions de prix de ce jour") }}</a></p>
+  <h2 class="card-title" id="days-title">{{ _("Journée du rapport") }}</h2>
+  <p><a class="btn btn-primary" href="/days/{{ upload.report_date.isoformat() }}">{{ _("Voir la journée") }}</a></p>
   {% endif %}
   <p><a class="card-link" href="/uploads/new">{{ _("Envoyer un autre rapport") }}</a></p>
 </section>

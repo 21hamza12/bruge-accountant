@@ -1,6 +1,6 @@
 {% extends "base.html" %}
 {% from "_icons.html" import icon %}
-{% from "_bookings.html" import status_pill, lead, airlines, ticket_count, fraction %}
+{% from "_bookings.html" import ticket_count %}
 {% block title %}{{ _("Tableau de bord") }}{% endblock %}
 {% block heading %}{{ _("Bonjour, %(name)s", name=shell.user.display_name or shell.user.phone) }}{% endblock %}
 {% block content %}
@@ -14,7 +14,7 @@
 {% elif day is none %}
   <section class="card empty">
     <h2 class="empty-title">{{ _("Aucun rapport n'a encore été envoyé.") }}</h2>
-    <p class="muted">{{ _("Dès qu'un rapport sera envoyé, vos réservations à tarifer apparaîtront ici.") }}</p>
+    <p class="muted">{{ _("Dès qu'un rapport sera envoyé, vos billets du jour apparaîtront ici.") }}</p>
     <a class="btn btn-primary btn-lg" href="/uploads/new">{{ icon("upload", small=true) }}{{ _("Envoyer un rapport") }}</a>
   </section>
 {% else %}
@@ -27,45 +27,46 @@
   {% else %}
   <section class="card todo" aria-labelledby="todo-title">
     <div class="card-head">
-      <h2 class="card-title" id="todo-title">{% if is_today %}{{ _("À tarifer aujourd'hui") }}{% else %}{{ _("À tarifer") }}{% endif %}</h2>
-      {% if summary.awaiting_count %}<span class="pill pill-amber">{{ _("%(count)s en attente", count=summary.awaiting_count) }}</span>{% else %}<span class="pill pill-green">{{ _("Tout est confirmé") }}</span>{% endif %}
+      <h2 class="card-title" id="todo-title">{{ _("Ma journée") }}</h2>
+      {% if missing_count %}<span class="pill pill-amber">{{ _("%(count)s à saisir", count=missing_count) }}</span>{% else %}<span class="pill pill-green">{{ _("Tout est saisi") }}</span>{% endif %}
     </div>
     <div class="todo-count">
-      <span class="todo-number">{{ summary.awaiting_count }}</span>
-      <span class="muted">{{ _("réservations") }} · {{ ticket_count(waiting_tickets) }}</span>
+      <span class="todo-number">{{ sale_count }}</span>
+      <span class="muted">{{ ngettext("vente saisie", "ventes saisies", sale_count) }} · {{ ticket_count(summary.ticket_count) }} {{ _("dans le rapport") }}</span>
     </div>
-    <progress class="progress" max="{{ summary.booking_count }}" value="{{ summary.confirmed_count }}" aria-label="{{ _('Prix confirmés') }}"></progress>
-    <p class="muted num progress-note">{{ _("Prix confirmés") }} : {{ fraction(summary.confirmed_count, summary.booking_count) }}</p>
-    {% if summary.awaiting_count %}
-    <a class="btn btn-primary btn-lg btn-block" href="/questions?date={{ day.isoformat() }}">{{ _("Commencer") }}</a>
-    {% else %}
-    <p class="status-line">{{ icon("check", small=true) }}{{ _("Tous les prix sont confirmés.") }}</p>
+    <a class="btn btn-primary btn-lg btn-block" href="/sales/new">{{ icon("ticket", small=true) }}{{ _("Saisir une vente") }}</a>
+    <p class="muted"><a class="card-link" href="/sales?date={{ day.isoformat() }}">{{ _("Mes ventes") }}</a></p>
+    {% if not missing_count %}
+    <p class="status-line">{{ icon("check", small=true) }}{{ _("Tous vos billets du rapport ont une vente.") }}</p>
     {% endif %}
   </section>
 
   <div class="mini-tiles">
     <div class="card mini-tile"><span class="mini-label">{{ _("Coût de mes billets") }}</span><span class="mini-value">{{ summary.total_cost|money_fr }}</span></div>
-    <div class="card mini-tile"><span class="mini-label">{{ _("Prix confirmés") }}</span><span class="mini-value">{{ summary.confirmed_count }}</span></div>
+    <div class="card mini-tile"><span class="mini-label">{{ _("Ventes saisies") }}</span><span class="mini-value">{{ sale_count }}</span></div>
   </div>
 
+  {% if missing_count %}
   <section class="card card-flush" aria-labelledby="mine-title">
-    <h2 class="my-list-title" id="mine-title">{{ _("Mes réservations") }}</h2>
-    {% for b in listed %}
-    <a class="my-row" href="/questions?date={{ day.isoformat() }}&amp;status=all#b-{{ b.staff_sign }}-{{ b.question.booking_ref or b.question.passengers[0].ticket_no }}">
+    <h2 class="my-list-title" id="mine-title">{{ _("Billets du rapport sans vente saisie") }}</h2>
+    <ul class="list-plain">
+    {% for t in missing %}
+    <li class="my-row">
       <span class="my-main">
-        <span class="my-name">{{ lead(b.question) }}</span>
-        <span class="my-sub"><span class="mono">{{ b.question.booking_ref or "—" }}</span> · {{ airlines(b.question) }}</span>
+        <span class="my-name">{{ t.passenger_name }}</span>
+        <span class="my-sub"><span class="mono">{{ t.ticket_no }}</span> · {{ t.airline|airline }}</span>
       </span>
       <span class="my-side">
-        <span class="my-cost">{{ b.question.known_cost_total|money_fr }}</span>
-        {{ status_pill(b, small=true) }}
+        <span class="my-cost">{% if t.cost is none %}<span class="faint">{{ _("Prix manquant") }}</span>{% else %}{{ t.cost|money_fr }}{% endif %}</span>
       </span>
-    </a>
+    </li>
     {% endfor %}
+    </ul>
     {% if hidden_count %}
-    <a class="more-link" href="{{ all_url }}">{{ _("Afficher les %(count)s autres réservations", count=hidden_count) }}</a>
+    <p class="muted more-link"><a href="/days/{{ day.isoformat() }}">{{ _("Et %(count)s autres billets : voir la journée", count=hidden_count) }}</a></p>
     {% endif %}
   </section>
+  {% endif %}
   {% endif %}
 {% endif %}
 </div>

@@ -346,6 +346,9 @@ DATABASE_URL="$MIGRATION_DATABASE_URL" APP_DB_ROLE=bruge_app python -m alembic d
   To go forward again, redeploy the new release (`init-db` upgrades to head).
 - A rollback between two releases that both include 0003 is an ordinary redeploy: nothing to
   downgrade. Later migrations must be expand-only (plan step 36).
+- The « Questions de prix » page was removed without a migration: `tickets.price_status` (and its
+  CHECK) stay in the schema, written as `awaiting_price` by the import, and nothing reads them. A
+  rollback to the release before is therefore safe.
 - Proof: `tests/test_rollback_invariant.py` shows an unbound session seeing 0 rows after 0003,
   and working again after `downgrade 0002`, in both deployment modes.
 

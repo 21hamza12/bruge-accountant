@@ -278,17 +278,13 @@ def test_no_role_has_more_than_five_bottom_tabs(env: Env) -> None:
         assert 3 <= len(_tabs(client.get("/").text)) <= 5
 
 
-def test_the_pending_questions_stay_visible_on_the_staff_dashboard_tab(env: Env) -> None:
+def test_no_dashboard_tab_carries_a_pending_badge_any_more(env: Env) -> None:
     env.load()
     env.link(env.seeded.staff_a, "0009ER")
-    html = env.staff_a().get("/").text
-    bar = html.split('<nav class="tabbar"')[1].split("</nav>")[0]
-    home = bar.split("</a>")[0]
-    assert 'class="badge"' in home and "en attente" in home
-    assert 'href="/questions"' not in bar
-    # the managers keep their Questions tab and its badge
-    manager_bar = env.manager_a().get("/").text.split('<nav class="tabbar"')[1]
-    assert manager_bar.count('class="badge"') == 1
+    for html in (env.staff_a().get("/").text, env.manager_a().get("/").text):
+        bar = html.split('<nav class="tabbar"')[1].split("</nav>")[0]
+        assert 'href="/questions"' not in bar
+        assert "en attente" not in bar
 
 
 def test_the_sales_tabs_have_their_own_icon_not_the_cash_one(env: Env) -> None:

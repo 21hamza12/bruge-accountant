@@ -1,17 +1,15 @@
-"""View data for the home pages and the questions page.
+"""View data for the home pages.
 
 Pure functions over tickets (the ORM rows and the parsed tickets both fit), so the numbers can be
 tested without a database or a request. The tickets come from ``repository.tickets_for_day``,
 already limited to what the viewer may see; nothing here looks at who is asking.
 
-A *booking* is one price question of ``app.questions`` (a staff sign plus a booking reference; a
-ticket without a reference is a booking of its own). It is *confirmed* when every one of its
-tickets has left the awaiting-price status, which cannot happen before Phase 3 but is already
-counted correctly.
+Cancelled lines (TRNC ``CANX``) are not sales: every count and total leaves them out. They are
+listed apart (``DaySummary.cancelled``), each with the ticket that reissued it when a live ticket
+of the same day has the same booking reference, passenger and amount.
 
-Cancelled lines (TRNC ``CANX``) are not sales: every count, total and booking leaves them out.
-They are listed apart (``DaySummary.cancelled``), each with the ticket that reissued it when a
-live ticket of the same day has the same booking reference, passenger and amount.
+(The old « Questions de prix » grouping of tickets into bookings to price is gone: sales are
+entered through « Saisir une vente » and compared with the report.)
 """
 
 from __future__ import annotations
@@ -20,32 +18,41 @@ from collections import defaultdict, deque
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from decimal import Decimal
-from typing import Final, Protocol
+from typing import Protocol
 
 from app.airlines import airline_name
-from app.models import PRICE_STATUS_AWAITING
-from app.questions import PriceQuestion, TicketLike, build_questions, is_cancelled
-
-STATUS_AWAITING: Final = "awaiting"
-STATUS_CONFIRMED: Final = "confirmed"
-STATUS_ALL: Final = "all"
+from app.parsing.amadeus import TRNC_CANCELLED
 
 PAX_ADULT, PAX_CHILD, PAX_INFANT = "ADT", "CHD", "INF"
 
 
-class DayTicket(TicketLike, Protocol):
-    """A ticket of one report day: everything ``TicketLike`` has plus its price status. Both the
-    ORM ``Ticket`` row and a parsed ticket given a status satisfy it."""
+class TicketLike(Protocol):
+    """What the summary needs; satisfied by ``ParsedTicket`` and the ORM ``Ticket``."""
 
     @property
-    def price_status(self) -> str: ...
+    def staff_sign(self) -> str: ...
+    @property
+    def booking_ref(self) -> str: ...
+    @property
+    def airline(self) -> str: ...
+    @property
+    def ticket_no(self) -> str: ...
+    @property
+    def passenger_name(self) -> str: ...
+    @property
+    def pax_type(self) -> str: ...
+    @property
+    def cost(self) -> Decimal | None: ...
+    @property
+    def transaction_type(self) -> str: ...
 
 
-@dataclass(frozen=True)
-class Booking:
-    staff_sign: str
-    question: PriceQuestion
-    confirmed: bool
+def is_cancelled(ticket: TicketLike) -> bool:
+    """A cancelled document (TRNC ``CANX``): stored, but never counted or totalled.
+
+    Relies on ``transaction_type`` being stored upper case (the parser and the wire both
+    normalise it), as do the SQL filters of ``app.repository``."""
+    return ticket.transaction_type == TRNC_CANCELLED
 
 
 @dataclass(frozen=True)
@@ -64,14 +71,11 @@ class PaxCounts:
 
 
 @dataclass(frozen=True)
-class AgentGroup:
+class AgentTotal:
     staff_sign: str
-    booking_count: int
-    confirmed_count: int
     ticket_count: int
     total_cost: Decimal  # the known costs only
     missing_cost_count: int
-    bookings: tuple[Booking, ...]
 
 
 @dataclass(frozen=True)
@@ -91,15 +95,11 @@ class CancelledTicket:
 @dataclass(frozen=True)
 class DaySummary:
     ticket_count: int
-    booking_count: int
-    confirmed_count: int
-    awaiting_count: int
     total_cost: Decimal  # the known costs only
     missing_cost_count: int
     airlines: tuple[AirlineTotal, ...]  # costliest first
     pax: PaxCounts
-    agents: tuple[AgentGroup, ...]  # by staff sign
-    bookings: tuple[Booking, ...]
+    agents: tuple[AgentTotal, ...]  # by staff sign
     cancelled: tuple[CancelledTicket, ...]  # by ticket number; in none of the numbers above
 
     @property
@@ -111,52 +111,24 @@ class DaySummary:
         """The known amounts of the cancelled lines (shown apart, never in ``total_cost``)."""
         return sum((c.cost for c in self.cancelled if c.cost is not None), Decimal(0))
 
-    def top_waiting(self, count: int) -> tuple[Booking, ...]:
-        """The ``count`` bookings still awaiting a price that cost the most."""
-        waiting = [b for b in self.bookings if not b.confirmed]
-        waiting.sort(
-            key=lambda b: (
-                -b.question.known_cost_total,
-                b.question.booking_ref,
-                b.question.passengers[0].ticket_no,
-            )
-        )
-        return tuple(waiting[:count])
 
-
-def build_bookings(tickets: Iterable[DayTicket]) -> list[Booking]:
-    """Every booking of these tickets, by staff sign then booking reference."""
-    items = list(tickets)
-    settled = {t.ticket_no for t in items if t.price_status != PRICE_STATUS_AWAITING}
-    return [
-        Booking(group.staff_sign, q, all(p.ticket_no in settled for p in q.passengers))
-        for group in build_questions(items)
-        for q in group.questions
-    ]
-
-
-def group_by_agent(bookings: Sequence[Booking]) -> tuple[AgentGroup, ...]:
-    """One ``AgentGroup`` per staff sign (sorted by sign) with that sign's totals and its
-    bookings in the order given. Totals count only the bookings passed in, so grouping a
-    filtered list gives the totals of what is left."""
-    by_sign: dict[str, list[Booking]] = defaultdict(list)
-    for booking in bookings:
-        by_sign[booking.staff_sign].append(booking)
+def agent_totals(tickets: Sequence[TicketLike]) -> tuple[AgentTotal, ...]:
+    """One ``AgentTotal`` per staff sign (sorted by sign)."""
+    by_sign: dict[str, list[TicketLike]] = defaultdict(list)
+    for ticket in tickets:
+        by_sign[ticket.staff_sign].append(ticket)
     return tuple(
-        AgentGroup(
+        AgentTotal(
             staff_sign=sign,
-            booking_count=len(items),
-            confirmed_count=sum(1 for b in items if b.confirmed),
-            ticket_count=sum(b.question.ticket_count for b in items),
-            total_cost=sum((b.question.known_cost_total for b in items), Decimal(0)),
-            missing_cost_count=sum(b.question.missing_cost_count for b in items),
-            bookings=tuple(items),
+            ticket_count=len(items),
+            total_cost=sum((t.cost for t in items if t.cost is not None), Decimal(0)),
+            missing_cost_count=sum(1 for t in items if t.cost is None),
         )
         for sign, items in sorted(by_sign.items())
     )
 
 
-def _airlines(tickets: Sequence[DayTicket]) -> tuple[AirlineTotal, ...]:
+def _airlines(tickets: Sequence[TicketLike]) -> tuple[AirlineTotal, ...]:
     counts: dict[str, int] = defaultdict(int)
     costs: dict[str, Decimal] = defaultdict(lambda: Decimal(0))
     for t in tickets:
@@ -208,21 +180,16 @@ def cancelled_tickets(tickets: Iterable[TicketLike]) -> tuple[CancelledTicket, .
     return tuple(result)
 
 
-def summarize(tickets: Iterable[DayTicket]) -> DaySummary:
+def summarize(tickets: Iterable[TicketLike]) -> DaySummary:
     """Every number of one report day from its tickets: counts, costs (known costs only, with
-    the number of missing ones), per-airline and per-agent totals, passenger types and the
-    bookings, all without the cancelled lines, which are listed apart. Pure and independent of
+    the number of missing ones), per-airline and per-agent totals and passenger types, all
+    without the cancelled lines, which are listed apart. Pure and independent of
     the order of ``tickets``; no tickets gives zeroes."""
     everything = list(tickets)
     items = [t for t in everything if not is_cancelled(t)]
-    bookings = build_bookings(items)
     pax_types = [t.pax_type for t in items]
-    confirmed = sum(1 for b in bookings if b.confirmed)
     return DaySummary(
         ticket_count=len(items),
-        booking_count=len(bookings),
-        confirmed_count=confirmed,
-        awaiting_count=len(bookings) - confirmed,
         total_cost=sum((t.cost for t in items if t.cost is not None), Decimal(0)),
         missing_cost_count=sum(1 for t in items if t.cost is None),
         airlines=_airlines(items),
@@ -231,33 +198,9 @@ def summarize(tickets: Iterable[DayTicket]) -> DaySummary:
             children=pax_types.count(PAX_CHILD),
             infants=pax_types.count(PAX_INFANT),
         ),
-        agents=group_by_agent(bookings),
-        bookings=tuple(bookings),
+        agents=agent_totals(items),
         cancelled=cancelled_tickets(everything),
     )
-
-
-def matches_search(booking: Booking, query: str | None) -> bool:
-    """Case-insensitive substring over the booking reference, passenger names and ticket numbers.
-
-    Plain text matching in Python: the query is never a pattern and never reaches SQL.
-    """
-    needle = (query or "").strip().casefold()
-    if not needle:
-        return True
-    q = booking.question
-    if needle in q.booking_ref.casefold():
-        return True
-    return any(
-        needle in p.name.casefold() or needle in p.ticket_no.casefold() for p in q.passengers
-    )
-
-
-def filter_bookings(
-    bookings: Iterable[Booking], status: str = STATUS_ALL, query: str | None = None
-) -> list[Booking]:
-    wanted = {STATUS_AWAITING: (False,), STATUS_CONFIRMED: (True,)}.get(status, (False, True))
-    return [b for b in bookings if b.confirmed in wanted and matches_search(b, query)]
 
 
 @dataclass(frozen=True)

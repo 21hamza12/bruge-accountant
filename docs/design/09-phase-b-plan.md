@@ -104,7 +104,8 @@ first), `GET/POST /sales/{id}/edit`, `POST /sales/{id}/preview-edit`, `POST /sal
 none: the confirm step validates and prices again (agency, sale id, partner P.B ignored). An edit
 carries `version_no`; a sale that moved on is "rechargez la page" (`expected_version` in
 `edit_sale`/`void_sale`). Sale writes share one limit per user: `ratelimit.SALE_WRITE_USER`, 300 an
-hour. Bottom bar: staff get "Saisir une vente" and "Mes ventes" in place of "Questions" (five tabs);
+hour. Bottom bar: staff get "Saisir une vente" and "Mes ventes" in place of "Questions" (five tabs; the « Questions » page itself was removed in October 2026, and
+manager and accountant now have « Saisir une vente » where « Questions » was);
 manager and accountant keep their five and reach "Ventes du jour" from the sidebar and the dashboard.
 
 ## 3d. Phase B as built (B1 to B11)

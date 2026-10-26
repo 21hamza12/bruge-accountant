@@ -1,26 +1,4 @@
-{#- Small pieces shared by the dashboard, the staff home and the questions page. -#}
-{% macro status_pill(booking, small=false) -%}
-{% if booking.confirmed %}<span class="pill pill-green{% if small %} pill-sm{% endif %}">{{ _("Confirmé") }}</span>{% else %}<span class="pill pill-amber{% if small %} pill-sm{% endif %}">{{ _("En attente") }}</span>{% endif %}
-{%- endmacro %}
-
-{#- The lead passenger; "+2" is read "et 2 autres". -#}
-{% macro lead(question) -%}
-{{ question.passengers[0].name }}{% if question.ticket_count > 1 %} <span class="b-more"><span aria-hidden="true">+{{ question.ticket_count - 1 }}</span><span class="visually-hidden">{{ ngettext("et %(num)d autre", "et %(num)d autres", question.ticket_count - 1) }}</span></span>{% endif %}
-{%- endmacro %}
-
-{% macro airlines(question) -%}
-{% for code in question.airlines %}{{ code|airline }}{% if not loop.last %}, {% endif %}{% endfor %}
-{%- endmacro %}
-
-{% macro cost(question) -%}
-{{ question.known_cost_total|money_fr }}{% if question.missing_cost_count %} <span class="faint">({{ _("partiel") }})</span>{% endif %}
-{%- endmacro %}
-
+{#- Small pieces shared by the dashboard, the staff home and the upload pages. -#}
 {% macro ticket_count(n) -%}
 {{ ngettext("%(num)d billet", "%(num)d billets", n) }}
-{%- endmacro %}
-
-{#- "0 / 33" for the eye, "0 confirmés sur 33" for a screen reader. -#}
-{% macro fraction(done, total) -%}
-<span aria-hidden="true">{{ done }}<span class="frac-total"> / {{ total }}</span></span><span class="visually-hidden">{{ _("%(done)s confirmés sur %(total)s", done=done, total=total) }}</span>
 {%- endmacro %}

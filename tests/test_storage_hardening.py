@@ -28,12 +28,11 @@ from app import repository
 from app.db import Base, make_engine, make_session_factory
 from app.models import Agency, AmadeusLine, Ticket, Upload
 from app.parsing.amadeus import FIELD_LIMITS, ParsedReport, parse_report
-from app.questions import build_questions
 from app.repository import (
     create_agency,
     get_agency_by_slug,
     import_report,
-    tickets_awaiting_price,
+    tickets_for_day,
 )
 from app.tenancy import rebind_tenant
 from tests.builders import build_workbook, ticket_row
@@ -159,10 +158,9 @@ def test_report_date_never_moves_on_reimport(session: Session) -> None:
     new = session.scalars(select(Ticket).filter_by(ticket_no="3940000003")).one()
     assert new.report_date == date(2026, 10, 2)
 
-    first_day = tickets_awaiting_price(session, agency.id, date(2026, 10, 1))
+    first_day = tickets_for_day(session, agency.id, date(2026, 10, 1))
     assert {t.ticket_no for t in first_day} == {"3940000001", "3940000002"}
-    assert [q.booking_ref for s in build_questions(first_day) for q in s.questions] == ["AAAAAA"]
-    second_day = tickets_awaiting_price(session, agency.id, date(2026, 10, 2))
+    second_day = tickets_for_day(session, agency.id, date(2026, 10, 2))
     assert {t.ticket_no for t in second_day} == {"3940000003"}
 
 

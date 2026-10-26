@@ -1,7 +1,7 @@
 """The dashboard aggregates: pure functions over tickets, and the two queries that feed them.
 
 The numbers are those of the synthetic fixture ``tests/fixtures/1OCT.xlsx`` (48 tickets, 33
-bookings, 1 118 857 in total; the real file has the same airline codes and totals).
+tickets, 1 118 857 in total; the real file has the same airline codes and totals).
 """
 
 from __future__ import annotations
@@ -17,23 +17,15 @@ from sqlalchemy.orm import Session
 from app.dashboard import (
     CHART_MAX_HEIGHT,
     CHART_MIN_HEIGHT,
-    STATUS_ALL,
-    STATUS_AWAITING,
-    STATUS_CONFIRMED,
     AirlineTotal,
-    Booking,
-    build_bookings,
     chart_bars,
-    filter_bookings,
-    group_by_agent,
-    matches_search,
+    is_cancelled,
     summarize,
 )
 from app.db import make_engine, make_session_factory
-from app.models import PRICE_STATUS_AWAITING, Ticket, Upload
+from app.models import Ticket, Upload
 from app.parsing.amadeus import ParsedReport
 from app.repository import (
-    awaiting_counts_by_sign,
     create_agency,
     import_report,
     latest_report_date,
@@ -58,7 +50,6 @@ class T:
     pax_type: str = "ADT"
     cost: Decimal | None = Decimal("100")
     flags: tuple[str, ...] = field(default_factory=tuple)
-    price_status: str = PRICE_STATUS_AWAITING
     transaction_type: str = "TKTT"
 
 
@@ -78,19 +69,14 @@ def fixture_tickets(parsed: ParsedReport) -> list[T]:
     ]
 
 
-def refs(items: object) -> list[str]:
-    return sorted(b.question.booking_ref for b in items)  # type: ignore[attr-defined]
-
-
 # --- the fixture's numbers ----------------------------------------------------------------------
 
 
 def test_the_fixture_totals(parsed_fixture: ParsedReport) -> None:
     s = summarize(fixture_tickets(parsed_fixture))
-    assert (s.ticket_count, s.booking_count) == (48, 33)
+    assert s.ticket_count == 48
     assert s.total_cost == Decimal("1118857")
     assert s.missing_cost_count == 0
-    assert (s.confirmed_count, s.awaiting_count) == (0, 33)
 
 
 def test_the_fixture_per_airline_in_descending_cost(parsed_fixture: ParsedReport) -> None:
@@ -111,25 +97,11 @@ def test_the_fixture_passenger_types(parsed_fixture: ParsedReport) -> None:
 
 def test_the_fixture_per_agent(parsed_fixture: ParsedReport) -> None:
     s = summarize(fixture_tickets(parsed_fixture))
-    got = [
-        (a.staff_sign, a.booking_count, a.confirmed_count, a.ticket_count, a.total_cost)
-        for a in s.agents
-    ]
+    got = [(a.staff_sign, a.ticket_count, a.total_cost, a.missing_cost_count) for a in s.agents]
     assert got == [
-        ("0004SV", 25, 0, 34, Decimal("746423")),
-        ("0009ER", 8, 0, 14, Decimal("372434")),
+        ("0004SV", 34, Decimal("746423"), 0),
+        ("0009ER", 14, Decimal("372434"), 0),
     ]
-
-
-def test_the_top_five_waiting_bookings_are_the_costliest(parsed_fixture: ParsedReport) -> None:
-    s = summarize(fixture_tickets(parsed_fixture))
-    top = s.top_waiting(5)
-    assert len(top) == 5
-    costs = [b.question.known_cost_total for b in top]
-    assert costs == sorted(costs, reverse=True)
-    every = sorted((b.question.known_cost_total for b in s.bookings), reverse=True)
-    assert costs == every[:5]
-    assert all(not b.confirmed for b in top)
 
 
 # --- edge cases ---------------------------------------------------------------------------------
@@ -137,11 +109,10 @@ def test_the_top_five_waiting_bookings_are_the_costliest(parsed_fixture: ParsedR
 
 def test_no_tickets_gives_zeroes_not_errors() -> None:
     s = summarize([])
-    assert (s.ticket_count, s.booking_count, s.confirmed_count, s.awaiting_count) == (0, 0, 0, 0)
+    assert s.ticket_count == 0
     assert s.total_cost == Decimal(0)
-    assert s.airlines == () and s.agents == () and s.bookings == ()
+    assert s.airlines == () and s.agents == ()
     assert (s.pax.adults, s.pax.children, s.pax.infants) == (0, 0, 0)
-    assert s.top_waiting(5) == ()
 
 
 def test_a_missing_cost_is_counted_not_summed() -> None:
@@ -149,27 +120,6 @@ def test_a_missing_cost_is_counted_not_summed() -> None:
     assert s.total_cost == Decimal("50")
     assert s.missing_cost_count == 1
     assert s.airlines[0].total_cost == Decimal("50")
-
-
-def test_a_booking_is_confirmed_only_when_every_ticket_is() -> None:
-    tickets = [
-        T("1", booking_ref="AAAAAA", price_status="confirmed"),
-        T("2", booking_ref="AAAAAA", price_status="confirmed"),
-        T("3", booking_ref="BBBBBB", price_status="confirmed"),
-        T("4", booking_ref="BBBBBB"),  # one ticket still waits
-        T("5", booking_ref="CCCCCC"),
-    ]
-    s = summarize(tickets)
-    by_ref = {b.question.booking_ref: b.confirmed for b in s.bookings}
-    assert by_ref == {"AAAAAA": True, "BBBBBB": False, "CCCCCC": False}
-    assert (s.confirmed_count, s.awaiting_count, s.booking_count) == (1, 2, 3)
-    agent = s.agents[0]
-    assert (agent.confirmed_count, agent.booking_count) == (1, 3)
-
-
-def test_tickets_without_a_booking_reference_are_their_own_bookings() -> None:
-    s = summarize([T("1", booking_ref=""), T("2", booking_ref="")])
-    assert s.booking_count == 2
 
 
 def test_the_airline_order_is_stable_on_ties() -> None:
@@ -192,70 +142,10 @@ def test_ten_thousand_tickets_are_summarised() -> None:
     tickets = [T(f"{i:010d}", booking_ref=f"R{i % 3000:05d}") for i in range(10_000)]
     s = summarize(tickets)
     assert s.ticket_count == 10_000
-    assert s.booking_count == 3000
     assert s.total_cost == Decimal(1_000_000)
 
 
-# --- filtering, grouping and search -------------------------------------------------------------
-
-
-def _bookings() -> list[Booking]:
-    return build_bookings(
-        [
-            T("1", booking_ref="AAAAAA", passenger_name="ALPHA/ONE MR", price_status="confirmed"),
-            T("2", booking_ref="BBBBBB", passenger_name="BRAVO/TWO MRS", staff_sign="0009ER"),
-            T("3", booking_ref="CCCCCC", passenger_name="CHARLIE/THREE MR"),
-        ]
-    )
-
-
-def test_filter_by_status() -> None:
-    bookings = _bookings()
-    assert refs(filter_bookings(bookings, STATUS_AWAITING)) == ["BBBBBB", "CCCCCC"]
-    assert refs(filter_bookings(bookings, STATUS_CONFIRMED)) == ["AAAAAA"]
-    assert len(filter_bookings(bookings, STATUS_ALL)) == 3
-
-
-def test_filter_by_search_across_ref_passenger_and_ticket_number() -> None:
-    bookings = _bookings()
-
-    def found(q: str | None) -> list[str]:
-        return refs(filter_bookings(bookings, STATUS_ALL, q))
-
-    assert found("bbbb") == ["BBBBBB"]  # booking reference, case-insensitive
-    assert found("charlie") == ["CCCCCC"]  # passenger
-    assert found("  Three ") == ["CCCCCC"]  # trimmed
-    assert found("2") == ["BBBBBB"]  # ticket number
-    assert found("nothing like this") == []
-    assert len(found("")) == 3
-    assert len(found(None)) == 3
-
-
-def test_search_treats_wildcards_and_quotes_literally() -> None:
-    bookings = _bookings()
-    assert filter_bookings(bookings, STATUS_ALL, "%") == []
-    assert filter_bookings(bookings, STATUS_ALL, "_") == []
-    assert not matches_search(bookings[0], "' OR 1=1 --")
-
-
-def test_group_by_agent_keeps_the_agent_order_and_the_totals() -> None:
-    groups = group_by_agent(
-        build_bookings(
-            [
-                T("1", booking_ref="AAAAAA", price_status="confirmed"),
-                T("2", booking_ref="BBBBBB"),
-                T("3", booking_ref="CCCCCC", staff_sign="0009ER"),
-            ]
-        )
-    )
-    assert [g.staff_sign for g in groups] == ["0004SV", "0009ER"]
-    sv = groups[0]
-    assert (sv.booking_count, sv.confirmed_count, sv.ticket_count) == (2, 1, 2)
-    assert sv.total_cost == Decimal(200)
-    assert len(sv.bookings) == 2
-
-
-# --- the queries --------------------------------------------------------------------------------
+# --- the query ---------------------------------------------------------------------------------
 
 
 @pytest.fixture
@@ -289,13 +179,6 @@ def test_tickets_for_day_refuses_another_agency(session: Session, loaded: int) -
         tickets_for_day(session, loaded + 1, DAY)
 
 
-def test_awaiting_counts_by_sign(session: Session, loaded: int) -> None:
-    assert awaiting_counts_by_sign(session, loaded, DAY) == {"0004SV": 25, "0009ER": 8}
-    assert awaiting_counts_by_sign(session, loaded, DAY, staff_signs=["0009ER"]) == {"0009ER": 8}
-    assert awaiting_counts_by_sign(session, loaded, DAY, staff_signs=[]) == {}
-    assert awaiting_counts_by_sign(session, loaded, date(2026, 9, 1)) == {}
-
-
 def _add_ticket(session: Session, agency_id: int, upload_id: int, day: date, **fields: str) -> None:
     """One awaiting ticket written straight to the table (a hand-made day or booking)."""
     values: dict[str, str] = {
@@ -322,71 +205,7 @@ def _add_ticket(session: Session, agency_id: int, upload_id: int, day: date, **f
     )
 
 
-def test_awaiting_counts_agree_with_the_grouped_questions(session: Session, loaded: int) -> None:
-    upload_id = session.scalars(select(Upload.id)).one()
-    for i in range(2):  # two tickets without a booking reference are two questions
-        _add_ticket(session, loaded, upload_id, DAY, ticket_no=f"777000000{i}")
-    session.commit()
-    counts = awaiting_counts_by_sign(session, loaded, DAY)
-    summary = summarize(tickets_for_day(session, loaded, DAY))
-    assert counts == {a.staff_sign: a.booking_count for a in summary.agents}
-    assert counts["0004SV"] == 27
-
-
-def test_awaiting_counts_agree_with_the_python_path_when_some_tickets_are_settled(
-    session: Session, loaded: int
-) -> None:
-    """A mixed awaiting/settled day: the SQL count must equal the Python "not confirmed" count.
-
-    The ``price_status`` CHECK constraint only allows ``awaiting_price`` until Phase 3, so a
-    settled ticket cannot be stored. The database therefore holds the awaiting tickets (the only
-    rows the SQL count is meant to see), and the settled ones exist only on the Python side, as
-    plain values next to the rows read back from the table. That is the whole truth the SQL must
-    reproduce: a booking with at least one awaiting ticket counts once, a booking whose tickets
-    are all settled does not count, and a settled ticket without a reference is no question.
-    """
-    upload_id = session.scalars(select(Upload.id)).one()
-    rows = [
-        # MIXED1: one awaiting ticket in the database, one settled next to it (still a question)
-        ("7770000001", "0004SV", "MIXED1"),
-        # a lone awaiting ticket without a reference
-        ("7770000003", "0004SV", ""),
-        # a sign that has only mixed work
-        ("7770000005", "0777ZZ", "MIXED2"),
-    ]
-    for ticket_no, sign, ref in rows:
-        _add_ticket(
-            session, loaded, upload_id, DAY, ticket_no=ticket_no, staff_sign=sign, booking_ref=ref
-        )
-    session.commit()
-    settled = [
-        T("7770000002", booking_ref="MIXED1", price_status="confirmed"),
-        T("7770000004", booking_ref="DONE01", price_status="confirmed"),  # fully settled booking
-        T("7770000006", booking_ref="DONE01", price_status="confirmed"),
-        T("7770000007", booking_ref="", price_status="confirmed"),  # settled, no reference
-        T("7770000008", staff_sign="0555QQ", booking_ref="DONE02", price_status="confirmed"),
-        T("7770000009", staff_sign="0777ZZ", booking_ref="MIXED2", price_status="confirmed"),
-    ]
-    stored = tickets_for_day(session, loaded, DAY)
-    summary = summarize([*stored, *settled])
-    expected = {
-        a.staff_sign: a.booking_count - a.confirmed_count
-        for a in summary.agents
-        if a.booking_count > a.confirmed_count
-    }
-    counts = awaiting_counts_by_sign(session, loaded, DAY)
-    assert counts == expected
-    assert counts["0004SV"] == 25 + 2  # the 25 fixture bookings, MIXED1, the lone no-reference one
-    assert counts["0777ZZ"] == 1
-    assert "0555QQ" not in counts  # a sign whose work is all settled has no entry
-    assert {b.question.booking_ref for b in summary.bookings if b.confirmed} == {
-        "DONE01",
-        "DONE02",
-        "",
-    }
-
-
-def test_the_two_queries_never_see_another_agency(
+def test_the_day_query_never_sees_another_agency(
     session: Session, loaded: int, parsed_fixture: ParsedReport
 ) -> None:
     other = create_agency(session, "b", "B")
@@ -398,20 +217,15 @@ def test_the_two_queries_never_see_another_agency(
     )
     import_report(session, other.id, small, "b.xlsx", SHA)
     expected_other = summarize(tickets_for_day(session, other.id, DAY))
-    assert 0 < expected_other.booking_count <= 3
-    mine = {"0004SV": 25, "0009ER": 8}
+    assert 0 < expected_other.ticket_count < 48
 
     rebind_tenant(session, other.id)
-    other_counts = awaiting_counts_by_sign(session, other.id, DAY)
-    assert other_counts == {a.staff_sign: a.booking_count for a in expected_other.agents}
-    assert other_counts != mine
     assert len(tickets_for_day(session, other.id, DAY)) == expected_other.ticket_count
     # asking for the first agency's id from the second agency's session is refused, not answered
     with pytest.raises(TenantBindingError):
-        awaiting_counts_by_sign(session, loaded, DAY)
+        tickets_for_day(session, loaded, DAY)
 
     rebind_tenant(session, loaded)
-    assert awaiting_counts_by_sign(session, loaded, DAY) == mine  # not 25 + the other's tickets
     assert len(tickets_for_day(session, loaded, DAY)) == 48
     assert (
         session.scalar(select(func.count()).select_from(Ticket)) == 48 + expected_other.ticket_count
@@ -452,10 +266,8 @@ def test_the_queries_respect_row_level_security(
         with make_session_factory(app)() as s:
             bind_tenant(s, a)
             assert len(tickets_for_day(s, a, DAY)) == 48
-            assert awaiting_counts_by_sign(s, a, DAY) == {"0004SV": 25, "0009ER": 8}
             rebind_tenant(s, b)
             assert tickets_for_day(s, b, DAY) == []
-            assert awaiting_counts_by_sign(s, b, DAY) == {}
     finally:
         app.dispose()
 
@@ -485,3 +297,8 @@ def test_a_tiny_airline_keeps_a_visible_bar() -> None:
     big = AirlineTotal("147", "Royal Air Maroc", 9, Decimal(1_000_000))
     tiny = AirlineTotal("199", "Tunisair", 1, Decimal(1))
     assert chart_bars([big, tiny])[1].height == CHART_MIN_HEIGHT
+
+
+def test_a_cancelled_line_is_recognised_by_its_transaction_type() -> None:
+    assert is_cancelled(T("1", transaction_type="CANX"))
+    assert not is_cancelled(T("2", transaction_type="TKTT"))

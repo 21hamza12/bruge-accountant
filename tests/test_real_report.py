@@ -14,7 +14,6 @@ from pathlib import Path
 import pytest
 
 from app.parsing.amadeus import parse_report
-from app.questions import build_questions
 
 REAL_REPORT = Path(__file__).parent / "fixtures" / "real" / "1OCT.xlsx"
 
@@ -37,9 +36,10 @@ def test_real_report_matches_acceptance_numbers() -> None:
         "INF",
     ]
 
-    staff = {s.staff_sign: s for s in build_questions(report.tickets)}
-    assert (staff["0004SV"].ticket_count, staff["0004SV"].group_count) == (34, 25)
-    assert staff["0004SV"].total_cost == Decimal("746423")
-    assert (staff["0009ER"].ticket_count, staff["0009ER"].group_count) == (14, 8)
-    assert staff["0009ER"].total_cost == Decimal("372434")
-    assert sum(s.group_count for s in staff.values()) == 33
+    per_sign: dict[str, list[Decimal]] = {}
+    for t in report.tickets:
+        per_sign.setdefault(t.staff_sign, []).append(t.cost or Decimal(0))
+    assert {sign: (len(costs), sum(costs)) for sign, costs in per_sign.items()} == {
+        "0004SV": (34, Decimal("746423")),
+        "0009ER": (14, Decimal("372434")),
+    }

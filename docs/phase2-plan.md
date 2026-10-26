@@ -161,7 +161,8 @@ User decisions: host on **Render** (Frankfurt, Docker web service plus managed P
       303 to the result page.
 28. Upload result page plus recent uploads; XSS test with `<script>` in a passenger name; another
     agency's upload returns 404.
-29. Questions page (`/questions?date=`):
+29. Questions page (`/questions?date=`) — *removed in October 2026 (now 404); the home page shows
+    the day instead*:
     - Managers see all signs; staff see their own; unlinked signs are flagged.
     - It shows the fixture's numbers.
 30. Hot-query EXPLAIN tests under RLS (sessions, phone lookup, questions, uploads, rate limits).

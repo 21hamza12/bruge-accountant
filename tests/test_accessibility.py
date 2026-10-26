@@ -14,7 +14,6 @@ from pathlib import Path
 import pytest
 
 from app.web.templating import TEMPLATES_DIR, render
-from tests.builders import build_workbook, ticket_row
 from tests.page_support import DAY, Env
 from tests.web_support import (
     PHONE_A,
@@ -194,16 +193,6 @@ def test_the_sidebar_is_not_a_complementary_landmark(env: Env) -> None:
     assert '<div class="sidebar">' in html
 
 
-def test_the_agents_are_a_named_navigation_with_a_list(env: Env) -> None:
-    env.load()
-    with env.manager_a() as c:
-        side = sidebar(c.get("/").text)
-    nav = re.search(r'<nav class="side-section" aria-label="Agents">(.*?)</nav>', side, re.S)
-    assert nav
-    assert nav.group(1).count("<li>") == 2 and "<ul" in nav.group(1)
-    assert 'aria-hidden="true">Agents<' in nav.group(1)  # the visible title is not read twice
-
-
 def test_the_home_is_called_tableau_de_bord_everywhere(env: Env) -> None:
     env.load()
     env.link(env.seeded.staff_a, "0009ER")
@@ -248,106 +237,24 @@ def test_the_bottom_bar_has_five_tabs_for_a_manager(env: Env) -> None:
         squash(label) for label in re.findall(r'<span class="tab-label">(.*?)</span>', bar)
     ] == [
         "Tableau de bord",
-        "Questions",
+        "Saisir une vente",
         "Envoyer un rapport",
         "Équipe",
         "Compte",
     ]
 
 
-def test_the_questions_page_groups_are_named_groups_with_a_heading(env: Env) -> None:
-    env.load()
-    env.link(env.seeded.staff_a, "0009ER")
-    with env.manager_a() as c:
-        html = c.get(f"/questions?date={DAY}").text
-    assert '<section class="sign"' not in html
-    groups = re.findall(
-        r'<div class="sign" id="agent-([^"]+)" role="group" aria-labelledby="([^"]+)">', html
-    )
-    assert [g[0] for g in groups] == ["0004SV", "0009ER"]
-    for _, label_id in groups:
-        heading = re.search(rf'<h3 class="group-name" id="{label_id}">(.*?)</h3>', html, re.S)
-        assert heading, label_id
-    assert len({label_id for _, label_id in groups}) == 2
-    assert 'aria-label="0004SV"' not in html
-
-
-def test_the_filter_tabs_mark_the_current_one_with_aria_current_true(env: Env) -> None:
-    env.load()
-    with env.manager_a() as c:
-        html = c.get(f"/questions?date={DAY}&status=all").text
-    tabs = html.split('<nav class="tabs"')[1].split("</nav>")[0]
-    assert tabs.count('aria-current="true"') == 1
-    assert re.search(r'aria-current="true"[^>]*>\s*Toutes', tabs)
-    assert 'aria-current="page"' not in tabs
-
-
-def test_headings_do_not_skip_a_level_on_the_questions_page(env: Env) -> None:
-    env.load()
-    with env.manager_a() as c:
-        html = c.get(f"/questions?date={DAY}").text
-    levels = [int(n) for n in re.findall(r"<h([1-6])[ >]", html)]
-    assert levels[0] == 1 and levels.count(1) == 1
-    assert all(b - a <= 1 for a, b in zip(levels, levels[1:], strict=False))
-
-
 # --- numbers a screen reader can understand -----------------------------------------------------
 
 
-def test_the_confirmed_fraction_is_read_as_confirmes_sur(env: Env) -> None:
-    env.load()
-    env.link(env.seeded.staff_a, "0009ER")
-    with env.manager_a() as m, env.staff_a() as s:
-        manager, staff = m.get("/").text, s.get("/").text
-    assert '<span aria-hidden="true">0<span class="frac-total"> / 33</span></span>' in manager
-    assert '<span class="visually-hidden">0 confirmés sur 33</span>' in manager
-    assert '<span class="visually-hidden">0 confirmés sur 25</span>' in manager  # per agent
-    assert '<span class="visually-hidden">0 confirmés sur 8</span>' in staff
-
-
-def test_the_amber_pill_of_the_staff_home_says_pending_not_a_bare_fraction(env: Env) -> None:
+def test_the_staff_home_pill_says_what_is_left_to_enter_not_a_bare_number(env: Env) -> None:
     env.load()
     env.link(env.seeded.staff_a, "0009ER")
     with env.staff_a() as c:
         html = c.get("/").text
     card = html.split('aria-labelledby="todo-title"')[1].split("</section>")[0]
     pill = re.search(r'<span class="pill pill-amber">(.*?)</span>', card)
-    assert pill and pill.group(1) == "8 en attente"
-    assert not re.search(r'pill-amber">\s*\d+ / \d+', card)
-
-
-def test_extra_passengers_are_read_as_et_n_autres(env: Env) -> None:
-    env.load(
-        data=build_workbook(
-            [
-                ticket_row(doc="3940000001", rloc="ONE111", name="ALPHA/A"),
-                ticket_row(doc="3940000002", rloc="ONE111", name="ALPHA/B"),
-                ticket_row(doc="3940000003", rloc="TWO222", name="BETA/A"),
-                ticket_row(doc="3940000004", rloc="TWO222", name="BETA/B"),
-                ticket_row(doc="3940000005", rloc="TWO222", name="BETA/C"),
-            ]
-        )
-    )
-    with env.manager_a() as c:
-        html = c.get(f"/questions?date={DAY}").text
-    one = html.split('id="b-0004SV-ONE111"')[1].split("</summary>")[0]
-    two = html.split('id="b-0004SV-TWO222"')[1].split("</summary>")[0]
-    assert (
-        '<span aria-hidden="true">+1</span><span class="visually-hidden">et 1 autre</span>' in one
-    )
-    assert (
-        '<span aria-hidden="true">+2</span><span class="visually-hidden">et 2 autres</span>' in two
-    )
-
-
-def test_the_unavailable_profit_has_a_dash_for_the_eye_and_words_for_the_ear(env: Env) -> None:
-    env.load()
-    with env.manager_a() as c:
-        html = c.get("/").text
-    assert (
-        '<span class="kpi-value kpi-value-empty"><span aria-hidden="true">—</span>'
-        '<span class="visually-hidden">Non disponible</span></span>' in html
-    )
+    assert pill and pill.group(1) == "14 à saisir"
 
 
 def test_the_chart_is_a_named_group_and_each_bar_says_its_ticket_count(env: Env) -> None:
@@ -370,7 +277,7 @@ def test_the_chart_is_a_named_group_and_each_bar_says_its_ticket_count(env: Env)
 def test_scrollable_wrappers_are_focusable_named_regions_and_tables_are_named(env: Env) -> None:
     env.load()
     with env.manager_a() as c:
-        pages = {"home": c.get("/").text, "uploads": c.get("/uploads").text}
+        pages = {"uploads": c.get("/uploads").text}
         staff = c.get("/staff").text
     pages["staff"] = staff
     for name, html in pages.items():
@@ -473,8 +380,7 @@ def test_visible_dates_are_french_and_iso_only_in_attributes(env: Env) -> None:
         assert match
         upload_id = match.group(1)
         detail = c.get(f"/uploads/{upload_id}").text
-        questions = c.get(f"/questions?date={DAY}").text
-    for html in (listing, detail, questions):
+    for html in (listing, detail):
         text = squash(re.sub(r"<(?:input|time|a)\b[^>]*>", "<x>", html))
         assert not re.search(r"\b20\d\d-\d\d-\d\d\b", text), text[:200]
     assert "1 octobre 2026" in squash(listing) and "1 octobre 2026" in squash(detail)
@@ -487,12 +393,10 @@ def test_visible_dates_are_french_and_iso_only_in_attributes(env: Env) -> None:
 def test_the_date_field_has_a_visible_french_reading_next_to_it(env: Env) -> None:
     env.load()
     with env.manager_a() as c:
-        questions = c.get(f"/questions?date={DAY}").text
         home = c.get(f"/?date={DAY}").text
-    for html in (questions, home):
-        field = re.search(r'<input id="date"[^>]*>', html)
-        assert field and 'aria-describedby="date-readout"' in field.group(0)
-        assert '<span class="date-readout" id="date-readout">1 octobre 2026</span>' in html
+    field = re.search(r'<input id="date"[^>]*>', home)
+    assert field and 'aria-describedby="date-readout"' in field.group(0)
+    assert '<span class="date-readout" id="date-readout">1 octobre 2026</span>' in home
 
 
 # --- single translatable strings ----------------------------------------------------------------
@@ -503,9 +407,6 @@ def test_phrases_with_numbers_are_whole_strings_with_placeholders(env: Env) -> N
     env.link(env.seeded.staff_a, "0009ER")
     with env.manager_a() as m, env.staff_a() as s:
         home = squash(m.get("/").text)
-        more = squash(m.get(f"/questions?date={DAY}&limit=3").text)
         staff = squash(s.get("/").text)
-    assert "Voir les 33 en attente" in home
     assert "Rapport du 1 octobre 2026 importé · 48 billets" in home
-    assert "Afficher les 22 autres réservations" in more
     assert "Bonjour, Staff A" in staff

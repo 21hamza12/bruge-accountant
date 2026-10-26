@@ -17,6 +17,13 @@
 </div>
 {% endif %}
 
+{% if f.from_paste and not sale %}
+<p class="notice price-read" id="price-read" role="status">
+  {% if f.pb_read_amount is not none %}{{ _("P.B lu sur la ligne RM : %(pb)s %(cur)s", pb=f.pb_read_amount|money_fr, cur=agency.currency) }}{% else %}{{ _("P.B : aucun prix sur la ligne RM, à saisir") }}{% endif %}
+  · {% if f.cost_read is not none %}{{ _("Coût Amadeus : %(cost)s %(cur)s", cost=f.cost_read|money_fr, cur=agency.currency) }}{% else %}{{ _("Coût Amadeus : à vérifier") }}{% endif %}
+</p>
+{% endif %}
+
 <p><a class="card-link card-link-back" href="{{ back_url }}">{% if sale %}{{ _("Retour à la vente") }}{% else %}{% if shell.sees_all %}{{ _("Ventes du jour") }}{% else %}{{ _("Mes ventes") }}{% endif %}{% endif %}</a></p>
 
 {% if sign_mode == "none" %}
@@ -67,6 +74,7 @@
   <input type="hidden" name="ag_proposed" value="{{ f.ag_proposed }}">
   <input type="hidden" name="ag_text" value="{{ f.ag_text }}">
   <input type="hidden" name="ag_match" value="{{ f.ag_match }}">
+  <input type="hidden" name="pb_read" value="{{ f.pb_read }}">
   {% for warning in f.notices %}<input type="hidden" name="pnr_warning" value="{{ warning }}">{% endfor %}
   {% endif %}
 
@@ -173,7 +181,7 @@
       {{ field_error(errors, "ag") }}
       {% if ask.kind != "none" %}
       <div class="field field-check">
-        <input id="ag_answer_yes" name="ag_answer" type="radio" value="yes"{% if f.ag_answer == "yes" %} checked{% endif %}>
+        <input id="ag_answer_yes" name="ag_answer" type="radio" value="yes"{% if ask.kind != "direct" %} data-partner{% endif %}{% if f.ag_answer == "yes" %} checked{% endif %}>
         <label for="ag_answer_yes">{% if ask.kind == "direct" %}{{ _("Oui, vente directe BRUGE") }}{% else %}{{ _("Oui, %(name)s", name=ask.partner_name) }}{% endif %}</label>
       </div>
       {% endif %}

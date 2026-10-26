@@ -148,11 +148,16 @@ def test_the_price_block_is_hidden_by_css_when_a_partner_is_chosen(env: Env) -> 
     assert 'class="field field-pb"' in html and 'class="card sale-card"' in html
     assert 'aria-describedby="pb-help"' in html and 'id="pb-help"' in html
     rule = re.search(
-        r"\.sale-card:has\(#ag option:not\(\[value=\"direct\"\]\):checked\)"
-        r" \.field-pb\s*\{([^}]*)\}",
+        r"\.sale-card:has\(select#ag option:not\(\[value=\"direct\"\]\):checked\)"
+        r" \.field-pb,\s*"
+        r"\.sale-card:has\(#ag_answer_yes\[data-partner\]:checked\) \.field-pb,\s*"
+        r"\.sale-card:has\(#ag_answer_other:checked\) \.field-pb\s*\{([^}]*)\}",
         CSS,
     )
     assert rule and "display: none" in rule.group(1)
+    # The agency question is a fieldset (id "ag") holding the "Autre partenaire" list, whose empty
+    # "Choisir…" option is selected: a rule on "#ag option" hid P.B there, even for a direct sale.
+    assert ".sale-card:has(#ag option" not in CSS
 
 
 def test_a_price_typed_for_a_partner_sale_is_called_out_not_dropped_silently(env: Env) -> None:

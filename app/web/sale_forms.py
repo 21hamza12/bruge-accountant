@@ -22,11 +22,13 @@ import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import date
+from decimal import Decimal
 
 from starlette.datastructures import FormData
 
 from app.formatting import money
 from app.models import AG_DIRECT, AG_PARTNER, SaleVersion
+from app.money import MoneyError, parse_amount
 from app.sales import FieldError, SaleInput, SaleView, TicketInput
 from app.sales_rules import MAX_TICKETS_PER_SALE
 from app.web.params import parse_db_id
@@ -110,12 +112,30 @@ class SaleForm:
     ag_other: str = ""
     ag_text: str = ""  # the agency text of the booking (AP agency, else the FP hint)
     ag_match: str = ""  # exact, packed, prefix, fp, close or none
+    pb_read: str = ""  # the P.B the reader took from the RM line (to tell it from a typed one)
     notices: list[str] = field(default_factory=list)  # what the reader warned about
 
     @property
     def from_paste(self) -> bool:
         """Prefilled by the reader (pasted text or a screenshot): the agency question applies."""
         return self.source in (SOURCE_PASTE, SOURCE_SCREENSHOT)
+
+    @property
+    def cost_read(self) -> Decimal | None:
+        """The Amadeus cost of the tickets as read (sum of TOTAL DOC), for the line at the top of
+        a prefilled sale; ``None`` when a ticket has no readable cost."""
+        total = Decimal(0)
+        for row in self.tickets:
+            amount = _amount_or_none(row.total_doc)
+            if amount is None:
+                return None
+            total += amount
+        return total
+
+    @property
+    def pb_read_amount(self) -> Decimal | None:
+        """The P.B the reader took from the RM line, as an amount (``None``: no RM price)."""
+        return _amount_or_none(self.pb_read)
 
     @property
     def hidden_pairs(self) -> list[tuple[str, str]]:
@@ -149,6 +169,7 @@ class SaleForm:
                     ("ag_other", self.ag_other),
                     ("ag_text", self.ag_text),
                     ("ag_match", self.ag_match),
+                    ("pb_read", self.pb_read),
                 ]
             )
             pairs.extend(("pnr_warning", text) for text in self.notices)
@@ -164,6 +185,13 @@ class Built:
     day: date | None
     rows: list[int]
     problems: list[FieldError]
+
+
+def _amount_or_none(text: str) -> Decimal | None:
+    try:
+        return parse_amount(text)
+    except MoneyError:
+        return None
 
 
 def _text(value: object) -> str:
@@ -212,6 +240,7 @@ def read(source: FormData, *, new_sale: bool = True) -> SaleForm:
         ag_other=one("ag_other").strip(),
         ag_text=one("ag_text")[:HIDDEN_CLIP] if new_sale else "",
         ag_match=one("ag_match").strip(),
+        pb_read=one("pb_read").strip()[:HIDDEN_CLIP] if new_sale else "",
         notices=[_text(v)[:HIDDEN_CLIP] for v in source.getlist("pnr_warning")][:MAX_NOTICES]
         if new_sale
         else [],

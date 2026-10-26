@@ -25,8 +25,9 @@ Suggested AG (``ag_kind``):
 Warnings echo only the AP agency text (cut to 40 characters) and registered partner names, never
 the FP hint, which can be a client's name.
 
-P.B is suggested for direct sales only (the RM price of the passenger's type); a partner's price
-is computed later by the sales rules. The client is the FP hint unless it is ``CLIENT``, BRUGE or
+P.B is the RM price of the passenger's type unless a partner is recognised (also when the agency
+is unknown or ambiguous: the agent may answer "direct"); a partner's price is computed later by
+the sales rules. The client is the FP hint unless it is ``CLIENT``, BRUGE or
 names an agency (exact or packed match with a partner, a loose prefix match with the
 partner already chosen, or the AP agency). The phone is the first
 AP phone. FE non-refundable amounts are only noted in a warning, never used as a cost or a
@@ -339,7 +340,10 @@ def proposed_sales(
     agency = _suggest_agency(reading, partners, known)
     client = _suggest_client(reading, known, agency.partner_id)
     phone = reading.ap_phones[0] if reading.ap_phones else None
-    direct = agency.ag_kind == _DIRECT
+    # The RM price is P.B unless a partner is recognised (its P.B is cost + fee). An agency that
+    # is unknown or ambiguous may still be a direct sale once the agent answers, so its RM price
+    # is kept too; the server ignores a P.B for a partner sale.
+    priced = agency.ag_kind != _PARTNER
 
     def build(
         name: str,
@@ -351,7 +355,7 @@ def proposed_sales(
         warnings = [*agency.warnings, *extra]
         rows = tuple(_ticket_row(t, name, pax_type, reading.rloc, warnings) for t in tickets)
         pb: Decimal | None = None
-        if direct and not orphan:
+        if priced and not orphan:
             if reading.rm_prices is None:
                 warnings.append(W_RM_UNREADABLE if reading.rm_raw else W_RM_MISSING)
             else:

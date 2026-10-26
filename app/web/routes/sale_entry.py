@@ -161,8 +161,13 @@ def _read_outcome(
     if len(result.proposals) == 1:
         return form_page(db, auth, clock, result.proposals[0].form)
     names = {p.id: p.name for p in partners.list_active(db, auth.user.agency_id)}
-    items = [
-        {"sale": p.sale, "pairs": p.form.hidden_pairs, "agency": _agency_label(p.sale, names)}
+    items: list[dict[str, object]] = [
+        {
+            "sale": p.sale,
+            "pairs": p.form.hidden_pairs,
+            "agency": _agency_label(p.sale, names),
+            "day": p.sale.issue_day,
+        }
         for p in result.proposals
     ]
     return choose_page(db, auth, items, result.reader_warnings)
@@ -340,7 +345,9 @@ def sale_preview(request: Request, db: Db, clock: Now, auth: Auth, posted: Poste
     if form.add_row:
         return form_page(db, auth, clock, sale_forms.with_extra_row(form))
     user = auth.user
-    built = sale_forms.to_input(form, choose_day=permissions.can_edit_any_entry(user))
+    if not permissions.can_edit_any_entry(user):
+        form.day = ""  # staff never pick the day: derived fresh from the tickets, and shown
+    built = sale_forms.to_input(form, choose_day=True)
     if built.problems:
         return form_page(
             db, auth, clock, form, problems=built.problems, rows=built.rows, status_code=400
@@ -353,7 +360,8 @@ def sale_preview(request: Request, db: Db, clock: Now, auth: Auth, posted: Poste
     if isinstance(result, list):
         failure = Failure(400, errors=sale_forms.error_map(result, built.rows))
         return form_page(db, auth, clock, form, failure=failure)
-    return readback_page(db, auth, clock, form, result)
+    day = sales.filing_day(user, built.data, built.day, clock().date())
+    return readback_page(db, auth, clock, form, result, new_day=day)
 
 
 @router.post("")
@@ -361,7 +369,7 @@ def sale_create(request: Request, db: Db, clock: Now, auth: Auth, posted: Posted
     throttle(db, request, auth, clock, write=True)
     form = sale_forms.read(posted)
     user = auth.user
-    built = sale_forms.to_input(form, choose_day=permissions.can_edit_any_entry(user))
+    built = sale_forms.to_input(form, choose_day=True)
     if built.problems:
         return form_page(
             db, auth, clock, form, problems=built.problems, rows=built.rows, status_code=400
@@ -411,7 +419,7 @@ def sale_edit(sale_id: DbId, db: Db, clock: Now, auth: Auth) -> Response:
     view = get_sale(db, auth, sale_id)
     form = sale_forms.from_view(view)
     built = sale_forms.to_input(form, choose_day=False)
-    try:  # the service's own access rules (voided, closed day, today only), without writing
+    try:  # the service's own access rules (voided, closed day), without writing
         sales.preview_sale(db, auth.user, built.data, sale_id=view.id, now=clock())
     except UserError as exc:
         db.rollback()

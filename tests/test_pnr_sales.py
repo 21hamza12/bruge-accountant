@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import fields, is_dataclass
+from datetime import date
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
@@ -314,3 +315,36 @@ def test_an_unknown_agency_without_rm_says_the_price_is_missing() -> None:
     (s,) = from_text(UNKNOWN_AGENCY_WITH_RM.replace("  4 RM 29000 MRU\n", ""))
     assert s.pb is None
     assert any("RM" in w for w in s.warnings)
+
+
+# --- the issue date of a ticket is kept, and decides the day of the sale ---------------------
+
+
+def test_each_proposed_ticket_carries_its_issue_date() -> None:
+    result = sales("three_adults_rm")
+    assert [s.tickets[0].issue_date for s in result] == [date(2026, 10, 21)] * 3
+    assert [s.issue_day for s in result] == [date(2026, 10, 21)] * 3
+
+
+def test_the_day_of_a_layover_sale_is_the_date_of_its_tickets() -> None:
+    first, _ = sales("layover_two_pages")
+    assert [t.issue_date for t in first.tickets] == [date(2026, 10, 20)] * 2
+    assert first.issue_day == date(2026, 10, 20)
+
+
+def test_the_day_of_an_exchange_is_the_date_of_its_new_ticket() -> None:
+    (sale,) = sales("exchange")
+    assert sorted(t.issue_date for t in sale.tickets if t.issue_date) == [
+        date(2026, 9, 23),
+        date(2026, 10, 21),
+    ]
+    assert sale.issue_day == date(2026, 10, 21)  # the newest ticket, not the old one
+
+
+def test_a_ticket_without_a_readable_date_has_none_and_the_sale_has_no_day() -> None:
+    text = (
+        (FIXTURES / "three_adults_rm.txt").read_text(encoding="utf-8").replace("21OCT26", "99XYZ26")
+    )
+    result = from_text(text)
+    assert all(t.issue_date is None for s in result for t in s.tickets)
+    assert [s.issue_day for s in result] == [None] * 3

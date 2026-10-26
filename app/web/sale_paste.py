@@ -24,6 +24,11 @@ TEXT_FIELD = "pnr_text"
 EMPTY = "Collez le texte Amadeus de la réservation."
 TOO_LONG = f"Texte trop long : {MAX_TEXT_BYTES // 1024} Ko au plus."
 NOTHING = "Aucune vente lisible dans ce texte : vérifiez que vous avez copié tout l'écran."
+W_NO_ISSUE_DATE = (
+    "Date d'émission illisible : la vente sera classée à la journée d'aujourd'hui, "
+    "sauf si le gérant ou la comptable choisit une autre journée."
+)
+W_SOME_NO_ISSUE_DATE = "Billet {doc} : date d'émission illisible (ignorée pour la journée)."
 
 
 @dataclass(frozen=True)
@@ -67,6 +72,7 @@ def form_from_sale(
     sale: ProposedSale, reader_warnings: tuple[str, ...] = (), source: str = SOURCE_PASTE
 ) -> SaleForm:
     proposed, match = _ag_fields(sale)
+    day = sale.issue_day
     return SaleForm(
         tickets=[
             TicketForm(
@@ -77,6 +83,7 @@ def form_from_sale(
                 pax_type=t.pax_type,
                 rloc=t.rloc,
                 trnc=t.trnc,
+                issue_date=t.issue_date.isoformat() if t.issue_date else "",
             )
             for t in sale.tickets
         ]
@@ -90,8 +97,18 @@ def form_from_sale(
         ag_text=sale.agency_text or "",
         pb_read=money(sale.pb) if sale.pb is not None else "",
         ag_match=match,
-        notices=[*reader_warnings, *sale.warnings],
+        day=day.isoformat() if day else "",
+        notices=[*reader_warnings, *sale.warnings, *_date_notices(sale)],
     )
+
+
+def _date_notices(sale: ProposedSale) -> list[str]:
+    """What the agent is told when a ticket's issue date could not be read."""
+    if sale.issue_day is None:
+        return [W_NO_ISSUE_DATE] if sale.tickets else []
+    return [
+        W_SOME_NO_ISSUE_DATE.format(doc=t.doc_number) for t in sale.tickets if t.issue_date is None
+    ]
 
 
 def read_paste(

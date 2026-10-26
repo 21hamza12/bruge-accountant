@@ -69,10 +69,7 @@ SCHEMA_HINTS = {"day": " (date ISO AAAA-MM-JJ, ex. 2026-10-19)", "sign": " (ex. 
 NO_SUCH_TOOL = "Cette demande n'existe pas."
 DENIED = "Cette demande n'est pas disponible pour votre rôle."
 NO_TICKET = "Aucun billet {doc} trouvé parmi vos ventes."
-VOID_WHY = {
-    sales.VOID_DAY_CLOSED: "la journée est clôturée",
-    sales.VOID_NOT_TODAY: "seule une vente du jour peut être annulée par vous",
-}
+VOID_WHY = {sales.VOID_DAY_CLOSED: "la journée est clôturée"}
 
 
 class ToolArgError(ValueError):
@@ -528,9 +525,7 @@ def void_link(ctx: ChatContext, args: Mapping[str, Any]) -> Reply:
     if view is None:
         return r.reply("void_link", r.say(NO_TICKET.format(doc=doc)), doc=doc, found=False)
     report_day = days.get_day(ctx.db, ctx.user.agency_id, view.day)
-    blocker = sales.void_blocker(
-        ctx.user, view.day, report_day.status if report_day else None, ctx.today
-    )
+    blocker = sales.void_blocker(ctx.user, report_day.status if report_day else None)
     why = VOID_WHY.get(blocker or "", "")
     if why:
         return r.reply(

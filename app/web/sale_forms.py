@@ -6,10 +6,13 @@ without any of them (a price, a sign, a partner) deciding anything by itself. Th
 field by field from the request (not through FastAPI's ``Form`` parameters), so a missing, odd or
 oversized value becomes a French message next to the field and never a raw 422 page.
 
-* A ticket row is seven parallel lists (``doc_number``, ``airline``, ``total_doc``, ``pax_name``,
-  ``pax_type``, ``rloc``, ``trnc``): one entry per row, in the order shown. A row whose five free
-  fields are all empty is dropped (the way to remove a row without JavaScript); the errors of the
-  others point at the row where they were typed.
+* A ticket row is eight parallel lists (``doc_number``, ``airline``, ``total_doc``, ``pax_name``,
+  ``pax_type``, ``rloc``, ``trnc``, ``issue_date``): one entry per row, in the order shown. A row
+  whose five free fields are all empty is dropped (the way to remove a row without JavaScript);
+  the errors of the others point at the row where they were typed. ``issue_date`` (ISO, may be
+  empty) is the day the ticket was issued: shown read-only, carried in a hidden field, and the day
+  of the sale follows it (see ``app.sales.filing_day``); like everything posted it is checked
+  again by the service.
 * Every value is clipped to ``CLIP`` characters before use, more than any limit of the service, so
   clipping can only turn "too long" into "still too long".
 * The row count is capped at ``MAX_TICKETS_PER_SALE`` + 1: one over the limit is enough for the
@@ -34,7 +37,16 @@ from app.sales_rules import MAX_TICKETS_PER_SALE
 from app.web.params import parse_db_id
 
 CLIP = 1000
-TICKET_FIELDS = ("doc_number", "airline", "total_doc", "pax_name", "pax_type", "rloc", "trnc")
+TICKET_FIELDS = (
+    "doc_number",
+    "airline",
+    "total_doc",
+    "pax_name",
+    "pax_type",
+    "rloc",
+    "trnc",
+    "issue_date",
+)
 FREE_TICKET_FIELDS = ("doc_number", "airline", "total_doc", "pax_name", "rloc")
 DEFAULT_PAX_TYPE = "ADT"
 DEFAULT_TRNC = "TKTT"
@@ -55,6 +67,7 @@ ANSWER_YES, ANSWER_OTHER, ANSWER_DIRECT = "yes", "other", "direct"
 MAX_NOTICES = 12
 HIDDEN_CLIP = 120  # the agency text and the reader warnings carried in hidden fields
 BAD_DAY = "La date doit être au format AAAA-MM-JJ."
+BAD_ISSUE = "La date d'émission est illisible : relisez le texte Amadeus."
 BAD_VERSION = "Version de la vente invalide : rechargez la page."
 
 PAYMENT_LABELS: tuple[tuple[str, str], ...] = (
@@ -81,10 +94,16 @@ class TicketForm:
     pax_type: str = DEFAULT_PAX_TYPE
     rloc: str = ""
     trnc: str = DEFAULT_TRNC
+    issue_date: str = ""  # ISO date the ticket was issued; "" when unknown
 
     @property
     def is_blank(self) -> bool:
         return not any(getattr(self, name).strip() for name in FREE_TICKET_FIELDS)
+
+    @property
+    def issued(self) -> date | None:
+        """The issue date when it is a valid ISO date, else None."""
+        return _iso_or_none(self.issue_date)
 
 
 @dataclass
@@ -114,6 +133,12 @@ class SaleForm:
     ag_match: str = ""  # exact, packed, prefix, fp, close or none
     pb_read: str = ""  # the P.B the reader took from the RM line (to tell it from a typed one)
     notices: list[str] = field(default_factory=list)  # what the reader warned about
+
+    @property
+    def issue_day(self) -> date | None:
+        """The day the tickets say the sale belongs to: the newest issue date among them."""
+        found = [d for row in self.tickets if (d := row.issued) is not None]
+        return max(found) if found else None
 
     @property
     def from_paste(self) -> bool:
@@ -185,6 +210,16 @@ class Built:
     day: date | None
     rows: list[int]
     problems: list[FieldError]
+
+
+def _iso_or_none(raw: str) -> date | None:
+    text = raw.strip()
+    if _ISO_DATE.fullmatch(text):
+        try:
+            return date.fromisoformat(text)
+        except ValueError:
+            return None
+    return None
 
 
 def _amount_or_none(text: str) -> Decimal | None:
@@ -291,7 +326,8 @@ def parse_ag(raw: str) -> tuple[str, int | None]:
 
 
 def parse_day(raw: str) -> tuple[date | None, FieldError | None]:
-    """The day a manager or accountant chose; ``(None, None)`` for an empty field (today)."""
+    """The day posted; ``(None, None)`` for an empty field (the service then takes the tickets'
+    issue day, else today)."""
     text = raw.strip()
     if not text:
         return None, None
@@ -309,24 +345,34 @@ def parse_version(raw: str) -> int | None:
 
 
 def to_input(form: SaleForm, *, choose_day: bool) -> Built:
-    """The ``SaleInput`` the service will validate. ``choose_day`` is true for manager and
-    accountant only; for staff the day field is ignored (they always enter today)."""
+    """The ``SaleInput`` the service will validate. ``choose_day`` is true for a new sale: the day
+    posted (a manager's field, or the day the read-back carried for staff) is read and handed to
+    the service, which decides (staff: it must equal the tickets' issue day). For an edit it is
+    false: a sale keeps its day. An unreadable issue date is a mistake on its row."""
     kept = [i for i, row in enumerate(form.tickets) if not row.is_blank]
-    tickets = tuple(
-        TicketInput(
-            doc_number=form.tickets[i].doc_number,
-            airline=form.tickets[i].airline,
-            total_doc=form.tickets[i].total_doc,
-            pax_name=form.tickets[i].pax_name,
-            pax_type=form.tickets[i].pax_type,
-            rloc=form.tickets[i].rloc,
-            trnc=form.tickets[i].trnc,
+    problems: list[FieldError] = []
+    tickets: list[TicketInput] = []
+    for n, i in enumerate(kept):
+        row = form.tickets[i]
+        issue: date | None = None
+        if row.issue_date.strip():
+            issue = row.issued
+            if issue is None:
+                problems.append(FieldError(f"tickets[{n}].issue_date", BAD_ISSUE))
+        tickets.append(
+            TicketInput(
+                doc_number=row.doc_number,
+                airline=row.airline,
+                total_doc=row.total_doc,
+                pax_name=row.pax_name,
+                pax_type=row.pax_type,
+                rloc=row.rloc,
+                trnc=row.trnc,
+                issue_date=issue,
+            )
         )
-        for i in kept
-    )
     kind, partner_id = parse_ag(form.ag)
     day: date | None = None
-    problems: list[FieldError] = []
     if form.source not in SOURCES:
         problems.append(FieldError("source", BAD_SOURCE))
     elif form.from_paste and (problem := _agency_problem(form)) is not None:
@@ -336,7 +382,7 @@ def to_input(form: SaleForm, *, choose_day: bool) -> Built:
         if problem is not None:
             problems.append(problem)
     data = SaleInput(
-        tickets=tickets,
+        tickets=tuple(tickets),
         ag_kind=kind,
         partner_id=partner_id,
         pb=form.pb.strip() or None,
@@ -390,6 +436,7 @@ def from_view(view: SaleView) -> SaleForm:
                 pax_type=t.pax_type,
                 rloc=t.rloc,
                 trnc=t.trnc,
+                issue_date=t.issue_date.isoformat() if t.issue_date else "",
             )
             for t in view.tickets
         ],
@@ -488,6 +535,7 @@ TICKET_LABELS = {
     "pax_type": "Type de passager",
     "rloc": "Réservation (RLOC)",
     "trnc": "Type de billet (TRNC)",
+    "issue_date": "Date d'émission",
 }
 _ROW_KEY = re.compile(r"t(\d+)\.(\w+)")
 

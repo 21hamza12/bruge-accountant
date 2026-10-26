@@ -40,6 +40,7 @@
           <th scope="col">{{ _("Vente") }}</th>
           <th scope="col">{{ _("Signe") }}</th>
           <th scope="col">{{ _("Client") }}</th>
+          <th scope="col">{{ _("Émis le") }}</th>
           <th scope="col" class="col-end">{{ _("Billets") }}</th>
           <th scope="col" class="col-end">{{ _("Coût") }}</th>
           <th scope="col" class="col-end">{{ _("P.B") }}</th>
@@ -53,6 +54,7 @@
           <td><a href="/sales/{{ row.s.id }}">{{ _("Vente %(id)s", id=row.s.id) }}</a></td>
           <td class="mono">{{ row.s.staff_sign }}</td>
           <td>{{ row.s.clt or row.s.ag_label }}</td>
+          <td>{% if row.issued %}{{ row.issued | date_fr }}{% else %}-{% endif %}</td>
           <td class="num col-end">{{ row.s.tickets | length }}</td>
           <td class="num col-end">{{ row.s.cost_total | money_fr }}</td>
           <td class="num col-end">{{ row.s.pb | money_fr }}</td>

@@ -473,11 +473,12 @@ def test_cancel_only_links_to_the_void_screen(w: ChatWorld) -> None:
     assert versions == 1  # nothing was voided
 
 
-def test_an_agent_may_void_only_their_own_sale_of_today(w: ChatWorld) -> None:
+def test_an_agent_may_void_only_their_own_sales_on_a_day_that_is_not_closed(
+    w: ChatWorld,
+) -> None:
     sc = w.scenario
-    old = route_message(w.ctx(w.staff), f"annule {sc.plain}")  # their own, but of 20 October
-    assert old.data["can_void"] is False and hrefs(old) == []
-    assert "seule une vente du jour peut être annulée par vous" in old.plain
+    old = route_message(w.ctx(w.staff), f"annule {sc.plain}")  # their own, of 20 October (open)
+    assert old.data["can_void"] is True and hrefs(old) == [f"/sales/{old.data['sale_id']}/void"]
     today = w.sell_today(w.staff, "3940000106", "0004SV")
     new = route_message(w.ctx(w.staff), "annule 3940000106")
     assert new.data["can_void"] is True and hrefs(new) == [f"/sales/{today.id}/void"]
@@ -561,29 +562,25 @@ def test_a_handler_never_writes(w: ChatWorld) -> None:
 
 
 def test_void_blocker_is_the_one_rule_for_who_may_void_when(w: ChatWorld) -> None:
-    today, old = D20, date(2026, 10, 1)
-    assert sales.void_blocker(w.manager, old, "open", today) is None
-    assert sales.void_blocker(w.manager, old, "closed", today) == sales.VOID_DAY_CLOSED
-    assert sales.void_blocker(w.accountant, today, "closed", today) == sales.VOID_DAY_CLOSED
-    assert sales.void_blocker(w.staff, today, "open", today) is None
-    assert sales.void_blocker(w.staff, old, "open", today) == sales.VOID_NOT_TODAY
-    assert sales.void_blocker(w.staff, today, "closed", today) == sales.VOID_DAY_CLOSED
-    # staff on an old closed day: the same order as the sales service (its staff-day rule first)
-    assert sales.void_blocker(w.staff, old, "closed", today) == sales.VOID_NOT_TODAY
-    assert sales.void_blocker(w.staff, today, None, today) is None  # a day with no row is open
+    # owner, 26 Oct 2026: staff may void their own sales of any earlier day that is not closed
+    assert sales.void_blocker(w.manager, "open") is None
+    assert sales.void_blocker(w.manager, "closed") == sales.VOID_DAY_CLOSED
+    assert sales.void_blocker(w.accountant, "closed") == sales.VOID_DAY_CLOSED
+    assert sales.void_blocker(w.staff, "open") is None
+    assert sales.void_blocker(w.staff, "closed") == sales.VOID_DAY_CLOSED
+    assert sales.void_blocker(w.staff, None) is None  # a day with no row is open
 
 
 def test_void_link_follows_void_blocker_and_the_void_service(w: ChatWorld) -> None:
     sc = w.scenario
     old = route_message(w.ctx(w.staff), f"annule {sc.plain}")  # 20 October, today is the 22nd
-    assert old.data["can_void"] is False
-    with pytest.raises(sales.SaleForbidden):
-        sales.void_sale(w.db, w.staff, old.data["sale_id"], "motif de test", now=NOW)
+    assert old.data["can_void"] is True  # an earlier day that is open is theirs to void
     w.close(D20)
-    closed = route_message(w.ctx(w.manager), f"annule {sc.plain}")
-    assert closed.data["can_void"] is False
-    with pytest.raises(days.DayClosed):
-        sales.void_sale(w.db, w.manager, closed.data["sale_id"], "motif de test", now=NOW)
+    for who in (w.staff, w.manager):
+        closed = route_message(w.ctx(who), f"annule {sc.plain}")
+        assert closed.data["can_void"] is False
+        with pytest.raises(days.DayClosed):
+            sales.void_sale(w.db, who, closed.data["sale_id"], "motif de test", now=NOW)
 
 
 def test_flags_for_me_can_be_narrowed_to_one_ticket_in_the_query(w: ChatWorld) -> None:

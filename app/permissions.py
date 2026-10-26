@@ -64,7 +64,8 @@ def can_edit_any_entry(user: User) -> bool:
 
 
 def can_enter_own_sales(user: User) -> bool:
-    """Staff enter and correct the sales of their own linked signs (today only, see app/sales.py).
+    """Staff enter and correct the sales of their own linked signs (any day that is not closed, see
+    app/sales.py).
     Manager and accountant do not need this: they write any sale (``can_edit_any_entry``). A role
     that is not listed (an unknown value) may do nothing."""
     return user.role in _STAFF_ONLY

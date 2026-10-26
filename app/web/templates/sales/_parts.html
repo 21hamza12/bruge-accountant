@@ -27,6 +27,7 @@
         <th scope="col">{{ _("Type") }}</th>
         <th scope="col">{{ _("RLOC") }}</th>
         <th scope="col">{{ _("TRNC") }}</th>
+        <th scope="col">{{ _("Émis le") }}</th>
         <th scope="col" class="col-end">{{ _("Coût") }}</th>
       </tr>
     </thead>
@@ -39,6 +40,7 @@
         <td>{{ t.pax_type }}</td>
         <td class="mono">{{ t.rloc }}</td>
         <td>{{ t.trnc }}</td>
+        <td>{% if t.issue_date %}{{ t.issue_date | date_fr }}{% else %}-{% endif %}</td>
         <td class="num col-end">{{ t.total_doc | money_fr }}</td>
       </tr>
     {% endfor %}

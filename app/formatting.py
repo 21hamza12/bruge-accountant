@@ -65,6 +65,11 @@ def date_fr(value: date, *, weekday: bool = False) -> str:
     return f"{_WEEKDAYS[value.weekday()]} {text}" if weekday else text
 
 
+def day_month_fr(value: date) -> str:
+    """ "25 juin": the day and the month, no year (for a date close to today)."""
+    return f"{value.day} {_MONTHS[value.month - 1]}"
+
+
 def datetime_fr(value: datetime) -> str:
     """ "1 octobre 2026, 14:30": the date, then the 24-hour clock in UTC (a value without a time
     zone is taken as UTC, which is what the database stores)."""

@@ -60,6 +60,22 @@ on one booking may also have one price for everyone.
   Only the export layout depends on this, so it can follow the accountant's practice later without
   changing stored data.
 
+### Which day a sale belongs to (owner, 24-26 Oct 2026)
+
+A sale is filed under the day its ticket was **issued** (the date on the Amadeus FA line, for
+example `MRU28803.00/26APR26/NKC...` is 26 April 2026), not the day it was typed, so the day's
+comparison finds it in that day's Amadeus report. For a booking with several tickets (an exchange)
+it is the newest ticket's date. The date is read from the pasted text, shown on the form as
+"Émis le ...", and kept with the ticket. A sale typed by hand, or a ticket whose date cannot be
+read, goes to today (the agent is told).
+
+* **Agent (staff)**: the day is the issue date and cannot be chosen. The server re-derives it from
+  the tickets; a posted day that differs is refused, as is a date in the future. They may file,
+  correct and void their own sales on any earlier day that is **not closed**; on a closed day the
+  app says "La journée du 25 juin est clôturée : demandez au gérant ou à la comptable".
+* **Manager and accountant**: the day field is prefilled with the issue date and can be changed.
+  A closed day must be reopened first (manager), as before.
+
 ## 3. The comparison
 
 Lines are matched on **DOC NUMBER**. For each pair:

@@ -197,15 +197,19 @@ def test_a_ticket_not_sent_leads_to_the_prefilled_form_for_the_manager(world: Fl
     assert pax.split(" (")[0] in form.text
 
 
-def test_staff_cannot_enter_a_past_day_sale_but_are_told_who_can(world: FlagWeb) -> None:
+def test_staff_enter_a_not_sent_ticket_of_an_open_past_day_under_its_report_day(
+    world: FlagWeb,
+) -> None:
+    # owner, 26 Oct 2026: staff may file an earlier day that is not closed
     setup_diff(world, OWN[1], extra=0, skip=(OWN[0],))
     flag = flag_of(world, OWN[0], "not_sent")
     with world.staff() as c:
         listing = c.get(f"/flags?date={DAY}")
-        assert f'href="/flags/{flag.id}/enter"' not in listing.text
-        assert "gérant ou au comptable" in listing.text
-        refused = c.get(f"/flags/{flag.id}/enter")
-    assert refused.status_code == 403
+        assert f'href="/flags/{flag.id}/enter"' in listing.text
+        form = c.get(f"/flags/{flag.id}/enter")
+        assert form.status_code == 200 and OWN[0] in form.text
+        assert f'name="issue_date" value="{DAY}"' in form.text  # the sale goes on the report day
+        assert 'name="day"' not in form.text  # staff do not pick the day
 
 
 # --- answering ---------------------------------------------------------------------------------

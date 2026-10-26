@@ -76,7 +76,6 @@ CHOICE_LABELS = {
 }
 NOTE_WAITING = "En attente de validation"
 NOTE_LATER = "En attente du prochain rapport"
-HINT_ENTER = "Demandez au gérant ou au comptable de saisir ce billet."
 ACT_AMADEUS, ACT_MINE, ACT_VOID, ACT_WAIT, ACT_ENTER = (
     "amadeus_right",
     "mine_right",
@@ -155,9 +154,7 @@ def flag_row(
     )
 
 
-def _actions(
-    flag: ComparisonFlag, report_day_status: str, can_enter: bool
-) -> tuple[tuple[str, ...], str]:
+def _actions(flag: ComparisonFlag, report_day_status: str) -> tuple[tuple[str, ...], str]:
     """The buttons of a flag for this viewer, and why a button is missing."""
     if report_day_status == DAY_CLOSED or flag.status != FLAG_OPEN:
         return (), ""
@@ -166,7 +163,7 @@ def _actions(
     if flag.kind == "not_in_amadeus":
         return (ACT_VOID, ACT_WAIT), ""
     if flag.kind == "not_sent":
-        return ((ACT_ENTER,), "") if can_enter else ((), HINT_ENTER)
+        return (ACT_ENTER,), ""
     return (), ""
 
 
@@ -201,14 +198,9 @@ def list_page(
     user = auth.user
     shown = list(summary.flags) if summary is not None else []
     decided = approvals.decisions_for(db, user, [f.id for f in shown])
-    sees_all = permissions.sees_all_signs(user)
     rows = []
     for f in shown:
-        acts, hint = _actions(
-            f,
-            report_day.status if report_day is not None else "",
-            sees_all or chosen == clock().date(),
-        )
+        acts, hint = _actions(f, report_day.status if report_day is not None else "")
         rows.append(flag_row(f, actions=acts, note=_note(f, decided.get(f.id, [])), hint=hint))
     can_validate = permissions.can_validate_money(user)
     partner_open = bool(

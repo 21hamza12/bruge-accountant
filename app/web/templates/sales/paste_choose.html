@@ -19,6 +19,8 @@
   <dl class="kv">
     <dt>{{ _("Billets") }}</dt>
     <dd>{% for t in sale.tickets %}<span class="mono">{{ t.doc_number }}</span> ({{ t.pax_type }}{% if t.total_doc is not none %}, {{ t.total_doc | money_fr }} {{ agency.currency }}{% else %}, {{ _("coût à saisir") }}{% endif %}){% if not loop.last %}, {% endif %}{% endfor %}</dd>
+    <dt>{{ _("Émis le") }}</dt>
+    <dd>{% if item.day %}{{ _("Émis le %(date)s", date=item.day|date_fr) }} · <strong>{{ _("Vente du %(day)s", day=item.day|date_fr) }}</strong>{% else %}{{ _("date d'émission illisible : vente du jour") }}{% endif %}</dd>
     <dt>{{ _("Agence proposée") }}</dt>
     <dd>{{ item.agency }}{% if sale.agency_text %} · {{ sale.agency_text }}{% endif %}</dd>
     <dt>{{ _("P.B proposé") }}</dt>

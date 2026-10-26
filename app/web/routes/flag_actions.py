@@ -8,9 +8,9 @@ that was not sent.
 * ``GET /flags/validate``, ``POST /flags/{id}/validate``, ``POST /flags/overrides/{sale}/validate``
   (manager and accountant): approve, or reject with a reason. A validator never validates their own
   answer: the button is disabled and the server refuses with a 403 anyway.
-* ``GET /flags/{id}/enter``: the entry form of the sale, filled from the report line. Staff may
-  only enter a sale of today (a rule of the sale service), so for an older day the page says who
-  can.
+* ``GET /flags/{id}/enter``: the entry form of the sale, filled from the report line, with the
+  report's day as the ticket's issue date (so the sale is filed under that day). Staff may enter
+  it while the day is not closed; the sale service decides.
 
 Every write counts against the user's sale budget (``ratelimit.SALE_WRITE_USER``), is CSRF-protected
 on the router and refuses with a French message. Pages are ``no-store`` and carry no inline style or
@@ -49,7 +49,6 @@ NO_STORE = {"Cache-Control": "no-store"}
 MAX_REASON = 500
 APPROVE, REJECT = "approve", "reject"
 BAD_DECISION = "Choisissez d'approuver ou de rejeter."
-PAST_DAY = "Seul le gérant ou le comptable peut saisir un billet d'une journée passée."
 
 Answerer = Annotated[AuthContext, Depends(require_permission(permissions.can_answer_flags))]
 Validator = Annotated[AuthContext, Depends(require_permission(permissions.can_validate_money))]
@@ -137,8 +136,6 @@ def flag_enter(flag_id: DbId, db: Db, clock: Now, auth: Answerer) -> Response:
             db, auth, clock, _day_of(db, user, flag_id, clock), error=str(exc), status_code=status
         )
     sees_all = permissions.sees_all_signs(user)
-    if not sees_all and prefill.report_day != clock().date():
-        return list_page(db, auth, clock, prefill.report_day, error=PAST_DAY, status_code=403)
     form = SaleForm(
         tickets=[
             TicketForm(
@@ -149,6 +146,7 @@ def flag_enter(flag_id: DbId, db: Db, clock: Now, auth: Answerer) -> Response:
                 pax_type=prefill.pax_type,
                 rloc=prefill.rloc,
                 trnc=prefill.trnc,
+                issue_date=prefill.report_day.isoformat(),
             )
         ],
         staff_sign=prefill.staff_sign,

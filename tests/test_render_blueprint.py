@@ -128,9 +128,11 @@ def test_purge_cron_runs_the_purge_command_hourly_from_the_same_image(
 def test_purge_cron_mirrors_the_web_environment(web: dict[str, Any], purge: dict[str, Any]) -> None:
     web_env = {item["key"]: item for item in web["envVars"]}
     cron_env = {item["key"]: item for item in purge["envVars"]}
-    # same keys, same literal values, same dashboard-only keys; only the owner URL is left out
-    # (the purge never reads it, and a cron job should not hold more than it needs)
-    assert cron_env == {k: v for k, v in web_env.items() if k != "MIGRATION_DATABASE_URL"}
+    # same keys, same literal values, same dashboard-only keys; only the owner URL and the issue-date
+    # signing key are left out (the purge reads neither, and a cron job should not hold more than
+    # it needs; the key is generated for the web service alone)
+    web_only = {"MIGRATION_DATABASE_URL", "ISSUE_SIGNING_KEY"}
+    assert cron_env == {k: v for k, v in web_env.items() if k not in web_only}
     assert "MIGRATION_DATABASE_URL" not in cron_env
     dashboard_only = sorted(k for k, v in cron_env.items() if v.get("sync") is False)
     assert dashboard_only == ["ALLOWED_HOSTS", "DATABASE_URL", "SENTRY_DSN"]

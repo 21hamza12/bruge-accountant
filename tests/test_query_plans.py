@@ -440,10 +440,8 @@ def facts(plans: list[dict[str, Any]]) -> tuple[set[str], list[str]]:
 CASE_NAMES = [
     "session by token hash",
     "user by phone",
-    "tickets awaiting price",
     "tickets for a day (all statuses)",
     "tickets for a day (some signs)",
-    "awaiting counts by sign",
     "latest report date",
     "latest report date (some signs)",
     "recent report dates",
@@ -472,4 +470,4 @@ def test_the_hot_query_uses_its_index(world: World, name: str) -> None:
 
 
 def test_every_hot_query_is_covered() -> None:
-    assert len(CASE_NAMES) == len(set(CASE_NAMES)) == 17
+    assert len(CASE_NAMES) == len(set(CASE_NAMES)) == 15  # the price questions page is gone

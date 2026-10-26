@@ -66,3 +66,27 @@ def test_choosing_a_partner_after_the_rm_price_raises_no_false_alarm(env: Env) -
 
 def test_a_price_the_agent_typed_for_a_partner_sale_is_still_called_out(env: Env) -> None:
     assert IGNORED_PRICE in readback_for_partner(env, "31000")
+
+
+# --- the price line at the top of a prefilled sale ----------------------------------------------
+
+
+def price_line(html: str) -> str:
+    m = re.search(r'<p class="notice price-read" id="price-read"[^>]*>(.*?)</p>', html, re.S)
+    assert m is not None, "no price line"
+    return text_of(m.group(1))
+
+
+def test_the_top_line_shows_the_rm_price_and_the_amadeus_cost(env: Env) -> None:
+    line = price_line(paste(env, PASTE_UNKNOWN_AGENCY))
+    assert re.search(r"P\.B lu sur la ligne RM : 29\s000 MRU", line)
+    assert re.search(r"Coût Amadeus : 28\s803 MRU", line)
+
+
+def test_the_top_line_says_when_there_is_no_rm_price(env: Env) -> None:
+    line = price_line(paste(env, PASTE_UNKNOWN_AGENCY.replace("  4 RM 29000 MRU\n", "")))
+    assert "aucun prix sur la ligne RM" in line and "Coût Amadeus" in line
+
+
+def test_no_price_line_on_a_plain_form(env: Env) -> None:
+    assert 'id="price-read"' not in env.staff_a().get("/sales/new").text

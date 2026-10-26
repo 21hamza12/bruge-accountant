@@ -76,7 +76,7 @@ def env(web_db: WebDb) -> Env:
     return Env(web_db)
 
 
-def test_the_result_page_shows_the_numbers_the_uploader_and_a_link_to_the_questions(
+def test_the_result_page_shows_the_numbers_the_uploader_and_a_link_to_the_day(
     env: Env,
 ) -> None:
     with env.as_user(PHONE_A, PASSWORD_A) as c:
@@ -89,7 +89,7 @@ def test_the_result_page_shows_the_numbers_the_uploader_and_a_link_to_the_questi
     assert re.search(r"Ajoutés\s*:\s*<strong>48</strong>", text)
     assert re.search(r"Mis à jour\s*:\s*<strong>0</strong>", text)
     assert "Manager A" in text
-    assert 'href="/questions?date=2026-10-01"' in text
+    assert 'href="/days/2026-10-01"' in text
     assert page.headers["cache-control"] == "no-store"
 
 
@@ -160,7 +160,7 @@ def test_staff_see_their_own_upload_with_counts_and_date_but_no_warnings(env: En
     assert "1 octobre 2026" in text
     assert re.search(r"Ajoutés\s*:\s*<strong>2</strong>", text)
     assert "Staff A" in text
-    assert 'href="/questions?date=2026-10-01"' in text
+    assert 'href="/days/2026-10-01"' in text
     assert OTHER_PASSENGER not in text
     assert "BAD-LEAK-77" not in text
     assert "Avertissements" not in text
@@ -256,7 +256,7 @@ def test_the_result_page_shows_the_days_the_tickets_belong_to_and_warns_on_a_mis
         plain = m.get(first)
     text = page.text
     assert "5 octobre 2026" in text  # the upload's own date
-    assert 'href="/questions?date=2026-10-01"' in text  # where the tickets really are
+    assert 'href="/days/2026-10-01"' in text  # where the tickets really are
     assert re.search(r"1 octobre 2026</a> : 48 billets", text)
     assert "gardent leur jour d'origine" in text
     assert "gardent leur jour d'origine" not in plain.text  # no warning when the days agree

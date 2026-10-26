@@ -223,7 +223,6 @@ def test_the_replies_are_the_users_own_lookups(env: Env) -> None:
 def test_a_ticket_lookup_goes_through_the_page(env: Env) -> None:
     env.load()
     c = env.manager_a()
-    assert "billet" in c.get("/chat").text  # the empty conversation mentions it
     say(c, "billet 3940000777")
     assert rows(env)[-1].text == "Aucun billet 3940000777 trouvé parmi vos ventes."
 

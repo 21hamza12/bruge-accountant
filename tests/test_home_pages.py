@@ -1,23 +1,18 @@
 """The two home pages (manager dashboard, staff home) and the application shell around them.
 
-Numbers come from the synthetic fixture: 48 tickets, 33 bookings, 1 118 857 in total; two staff
-signs, 0004SV (34 tickets, 25 bookings, 746 423) and 0009ER (14 tickets, 8 bookings, 372 434).
+Numbers come from the synthetic fixture: 48 tickets, 1 118 857 in total; two staff signs,
+0004SV (34 tickets, 746 423) and 0009ER (14 tickets, 372 434).
 """
 
 from __future__ import annotations
 
 import re
-from datetime import UTC, datetime
-from types import SimpleNamespace
-from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
 
-from app.dashboard import summarize
-from app.parsing.amadeus import parse_report
 from tests.builders import build_workbook, ticket_row
-from tests.page_support import DAY, FIXTURE, Env, fr
+from tests.page_support import DAY, Env, fr
 from tests.web_support import WebDb
 
 
@@ -63,12 +58,14 @@ def test_the_manager_navigation(env: Env) -> None:
     with env.manager_a() as c:
         html = c.get("/").text
     side = html.split('<div class="sidebar">')[1].split('<div class="content-col">')[0]
-    for href in ("/", "/questions", "/uploads", "/staff", "/password/change"):
+    for href in ("/", "/sales/new", "/sales", "/uploads", "/staff", "/password/change"):
         assert f'href="{href}"' in side, href
+    assert 'href="/questions"' not in side
     assert 'aria-current="page"' in side
     tabbar = html.split('<nav class="tabbar"')[1].split("</nav>")[0]
-    for href in ("/", "/questions", "/uploads/new", "/staff", "/password/change"):
+    for href in ("/", "/sales/new", "/uploads/new", "/staff", "/password/change"):
         assert f'href="{href}"' in tabbar, href
+    assert 'href="/questions"' not in tabbar
     assert "Équipe" in tabbar and "Compte" in tabbar and "Profil" not in tabbar
     assert tabbar.count('class="tab"') == 5  # five fit a 320px screen (see the stylesheet test)
 
@@ -80,37 +77,12 @@ def test_the_staff_navigation_has_no_team_pages(env: Env) -> None:
         html = c.get("/").text
     assert 'href="/staff"' not in html
     tabbar = html.split('<nav class="tabbar"')[1].split("</nav>")[0]
-    # B5: staff get the two sales tabs; "Questions" stays in the sidebar and on their dashboard
+    # staff get the two sales tabs
     for href in ("/", "/sales/new", "/sales", "/uploads/new", "/password/change"):
         assert f'href="{href}"' in tabbar, href
     assert 'href="/questions"' not in tabbar
     assert "Compte" in tabbar and "Profil" not in tabbar
     assert tabbar.count('class="tab"') == 5  # five fit a 320px screen
-
-
-def test_the_questions_badge_counts_what_the_viewer_can_see(env: Env) -> None:
-    env.load()
-    env.link(env.seeded.staff_a, "0009ER")
-    with env.manager_a() as m, env.staff_a() as s:
-        manager_html, staff_html = m.get("/").text, s.get("/").text
-    waiting = '<span class="visually-hidden"> en attente</span></span>'
-    assert f'<span class="badge">33{waiting}' in manager_html
-    assert f'<span class="badge">8{waiting}' in staff_html
-    assert '<span class="badge">33' not in staff_html
-
-
-def test_the_manager_sidebar_lists_the_agents_with_their_counts(env: Env) -> None:
-    env.load()
-    env.link(env.seeded.staff_a, "0009ER")
-    with env.manager_a() as c:
-        side = (
-            c.get("/").text.split('<div class="sidebar">')[1].split('<div class="content-col">')[0]
-        )
-    assert "Staff A" in side
-    assert "0009ER" in side and "0004SV" in side
-    assert "Non attribué" in side  # 0004SV has no owner
-    assert re.search(r'agent-count">25<', side) and re.search(r'agent-count">8<', side)
-    assert side.count("en attente</span>") == 3  # badge and two agents: never a bare number
 
 
 def test_the_sidebar_logout_is_a_csrf_protected_post(env: Env) -> None:
@@ -120,16 +92,6 @@ def test_the_sidebar_logout_is_a_csrf_protected_post(env: Env) -> None:
     form = re.search(r'<form[^>]*action="/logout"[^>]*>(.*?)</form>', html, re.S)
     assert form and 'method="post"' in form.group(0)
     assert 'name="csrf_token"' in form.group(1)
-
-
-def test_the_search_box_is_a_plain_get_form_to_the_questions_page(env: Env) -> None:
-    env.load()
-    with env.manager_a() as c:
-        html = c.get("/").text
-    form = re.search(r'<form[^>]*role="search"[^>]*>(.*?)</form>', html, re.S)
-    assert form
-    assert 'method="get"' in form.group(0) and 'action="/questions"' in form.group(0)
-    assert 'name="q"' in form.group(1) and 'type="search"' in form.group(1)
 
 
 def test_the_primary_action_links_to_the_upload_form(env: Env) -> None:
@@ -158,10 +120,9 @@ def test_the_dashboard_status_line_and_kpis(env: Env) -> None:
     html = response.text
     assert "Rapport du 1 octobre 2026 importé · 48 billets" in squash(html)
     assert response.headers["cache-control"] == "no-store"
-    assert kpi(html, "Billets émis") == "Billets émis 48 33 réservations"
+    assert kpi(html, "Billets émis") == "Billets émis 48"
     assert kpi(html, "Coût total") == f"Coût total {fr(1118857)} MRU"
-    assert kpi(html, "Prix confirmés") == "Prix confirmés 0 / 33 0 confirmés sur 33 33 en attente"
-    assert kpi(html, "Bénéfice") == "Bénéfice — Non disponible après les prix"
+    assert "Prix confirmés" not in html and "Bénéfice" not in html
 
 
 def test_the_cost_chart_is_svg_with_attribute_sized_bars(env: Env) -> None:
@@ -197,7 +158,7 @@ def test_the_cost_chart_is_svg_with_attribute_sized_bars(env: Env) -> None:
     assert 'role="img"' in chart and "aria-label" in chart
 
 
-def test_progress_per_agent_with_the_unassigned_flag_and_owner_names(env: Env) -> None:
+def test_totals_per_agent_with_the_unassigned_flag_and_owner_names(env: Env) -> None:
     env.load()
     env.link(env.seeded.staff_a, "0009ER")
     with env.manager_a() as c:
@@ -206,14 +167,11 @@ def test_progress_per_agent_with_the_unassigned_flag_and_owner_names(env: Env) -
     rows = card.split('<div class="agent-row">')[1:]
     assert len(rows) == 2
     sv, er = squash(rows[0]), squash(rows[1])
-    assert "Non attribué" in sv and "0004SV" in sv and "0 / 25" in sv
+    assert "Non attribué" in sv and "0004SV" in sv
     assert f"{fr(746423)} MRU · 34 billets" in sv
-    assert "Staff A" in er and "0009ER" in er and "0 / 8" in er
+    assert "Staff A" in er and "0009ER" in er
     assert f"{fr(372434)} MRU · 14 billets" in er
-    progress = re.findall(r"<progress[^>]*>", card)
-    assert len(progress) == 2
-    assert 'max="25"' in progress[0] and 'value="0"' in progress[0]
-    assert 'max="8"' in progress[1]
+    assert "<progress" not in card
 
 
 def test_the_passenger_types(env: Env) -> None:
@@ -226,45 +184,6 @@ def test_the_passenger_types(env: Env) -> None:
     assert re.search(r"Bébés\s*</span>\s*<span[^>]*>2<", block)
 
 
-def test_the_five_costliest_waiting_bookings(env: Env) -> None:
-    env.load()
-    expected = summarize(
-        [_as_awaiting(t) for t in parse_report(FIXTURE.read_bytes()).tickets]
-    ).top_waiting(5)
-    with env.manager_a() as c:
-        html = c.get("/").text
-    card = html.split('<section class="card" aria-labelledby="waiting-title">')[1].split(
-        "</section>"
-    )[0]
-    assert "Voir les 33" in squash(card)
-    body = card.split("<tbody>")[1].split("</tbody>")[0]
-    rows = re.findall(r"<tr>(.*?)</tr>", body, re.S)
-    assert len(rows) == 5
-    for row, booking in zip(rows, expected, strict=True):
-        text = squash(row)
-        assert booking.question.booking_ref in text
-        assert fr(int(booking.question.known_cost_total)) in text
-        assert "En attente" in text
-        assert booking.staff_sign in text
-    assert f'href="/questions?date={DAY}&amp;q={expected[0].question.booking_ref}"' in card
-
-
-def _as_awaiting(p: Any) -> Any:
-    """A parsed ticket with the price status the database rows carry."""
-    return SimpleNamespace(
-        ticket_no=p.ticket_no,
-        staff_sign=p.staff_sign,
-        booking_ref=p.booking_ref,
-        airline=p.airline,
-        passenger_name=p.passenger_name,
-        pax_type=p.pax_type,
-        cost=p.cost,
-        flags=p.flags,
-        transaction_type=p.transaction_type,
-        price_status="awaiting_price",
-    )
-
-
 def test_the_dashboard_follows_the_date_parameter(env: Env) -> None:
     env.load()
     env.load(data=build_workbook([ticket_row(doc="3940000999", rloc="LATE00")], range_raw="05OCT"))
@@ -272,9 +191,9 @@ def test_the_dashboard_follows_the_date_parameter(env: Env) -> None:
         latest = c.get("/").text
         older = c.get(f"/?date={DAY}").text
     assert "Rapport du 5 octobre 2026" in squash(latest)
-    assert kpi(latest, "Billets émis").startswith("Billets émis 1 ")
+    assert kpi(latest, "Billets émis").startswith("Billets émis 1")
     assert "Rapport du 1 octobre 2026" in squash(older)
-    assert kpi(older, "Billets émis").startswith("Billets émis 48 ")
+    assert kpi(older, "Billets émis").startswith("Billets émis 48")
 
 
 def test_a_date_without_tickets_says_so_and_shows_no_figures(env: Env) -> None:
@@ -325,7 +244,7 @@ def test_hostile_passenger_names_are_escaped_on_the_dashboard(env: Env) -> None:
 # --- the staff home -----------------------------------------------------------------------------
 
 
-def test_the_staff_home_shows_only_their_own_work(env: Env) -> None:
+def test_the_staff_home_shows_only_their_own_day(env: Env) -> None:
     env.load()
     env.link(env.seeded.staff_a, "0009ER")
     with env.staff_a() as c:
@@ -333,43 +252,28 @@ def test_the_staff_home_shows_only_their_own_work(env: Env) -> None:
     html = response.text
     text = squash(html)
     assert '<h1 class="page-title">Bonjour, Staff A</h1>' in html
-    assert "8 réservations · 14 billets" in text
-    assert re.search(r'<a class="btn btn-primary btn-lg btn-block" href="/questions[^"]*">', html)
-    assert "Commencer" in text
+    assert "Ma journée" in text and "14 à saisir" in text
+    assert "0 ventes saisies · 14 billets dans le rapport" in text
+    assert re.search(r'<a class="btn btn-primary btn-lg btn-block" href="/sales/new">', html)
+    assert 'href="/sales?date=2026-10-01"' in html and 'href="/days/2026-10-01"' in html
     assert re.search(r"Coût de mes billets\s*</span>\s*<span[^>]*>" + fr(372434), html)
-    assert re.search(r"Prix confirmés\s*</span>\s*<span[^>]*>0<", html)
-    rows = re.findall(r'<a class="my-row"[^>]*>', html)
-    assert len(rows) == 8
+    assert len(re.findall(r'<div class="my-row">', html)) == 14
     assert "0004SV" not in html and fr(746423) not in html
     assert 'class="card kpi"' not in html and 'class="chart-plot"' not in html
-    progress = re.search(r"<progress[^>]*>", html)
-    assert progress and 'max="8"' in progress.group(0) and 'value="0"' in progress.group(0)
+    for gone in ("À tarifer", "Commencer", "Prix confirmés", "<progress", "/questions"):
+        assert gone not in html, gone
 
 
-def test_the_staff_home_lists_bookings_with_airline_names_and_a_status_pill(env: Env) -> None:
+def test_the_staff_home_lists_the_report_tickets_without_a_sale(env: Env) -> None:
     env.load()
     env.link(env.seeded.staff_a, "0009ER")
     with env.staff_a() as c:
         html = c.get("/").text
-    first = html.split('<a class="my-row"')[1].split("</a>")[0]
+    first = html.split('<div class="my-row">')[1][:600]
     text = squash(first)
-    assert re.search(r"QA\d{4}", text)
-    assert "En attente" in text
+    assert re.search(r"\d{10}", text)
     assert re.search(r"(Royal Air Maroc|Turkish Airlines|Tunisair|Qatar Airways|Cie \d+)", text)
     assert re.search(r"\d", text)
-
-
-def test_the_staff_home_says_today_only_when_the_report_is_from_today(env: Env) -> None:
-    env.load()
-    env.link(env.seeded.staff_a, "0009ER")
-    with env.staff_a() as c:
-        assert "À tarifer aujourd'hui" not in c.get("/").text
-        assert "jeudi 1 octobre 2026" in squash(c.get("/").text)
-    env.clock.now = datetime(2026, 10, 1, 9, 0, tzinfo=UTC)
-    with env.staff_a() as c:
-        assert "À tarifer aujourd&#39;hui" in c.get("/").text or "À tarifer aujourd'hui" in (
-            c.get("/").text
-        )
 
 
 def test_a_staff_member_with_two_signs_sees_both(env: Env) -> None:
@@ -378,7 +282,7 @@ def test_a_staff_member_with_two_signs_sees_both(env: Env) -> None:
     env.link(env.seeded.staff_a, "0004SV")
     with env.staff_a() as c:
         text = squash(c.get("/").text)
-    assert "33 réservations · 48 billets" in text
+    assert "48 billets dans le rapport" in text
 
 
 def test_staff_without_a_linked_sign_get_a_friendly_empty_state(env: Env) -> None:
@@ -455,7 +359,7 @@ def test_no_inline_styles_or_style_blocks_in_the_rendered_homes(env: Env) -> Non
     env.load()
     env.link(env.seeded.staff_a, "0009ER")
     with env.manager_a() as m, env.staff_a() as s:
-        pages = [m.get("/").text, s.get("/").text, m.get("/questions").text]
+        pages = [m.get("/").text, s.get("/").text]
     for html in pages:
         assert not re.search(r"\sstyle=", html, re.I)
         assert not re.search(r"<style", html, re.I)

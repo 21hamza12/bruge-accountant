@@ -1,7 +1,7 @@
 [project]
 name = "bruge-accountant"
 version = "0.1.0"
-description = "AI accountant for travel agencies: Amadeus import and per-staff price questions"
+description = "AI accountant for travel agencies: Amadeus import, sales entry and comparison"
 requires-python = ">=3.12"
 dependencies = [
     "openpyxl>=3.1",

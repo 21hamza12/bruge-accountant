@@ -21,7 +21,6 @@ from app.repository import (
     create_agency,
     get_agency_by_slug,
     import_report,
-    tickets_awaiting_price,
 )
 from app.tenancy import rebind_tenant
 from tests.builders import build_workbook, ticket_row
@@ -214,29 +213,6 @@ def test_large_import_spans_lookup_chunks(session: Session) -> None:
     assert import_report(session, agency.id, parsed, "big.xlsx", SHA).inserted == 1200
     again = import_report(session, agency.id, parsed, "big.xlsx", SHA)
     assert (again.inserted, again.updated) == (0, 1200)
-
-
-def test_tickets_awaiting_price_filters(session: Session, parsed_fixture: ParsedReport) -> None:
-    a = create_agency(session, "a", "A")
-    b = create_agency(session, "b", "B")
-    rebind_tenant(session, a.id)
-    import_report(session, a.id, parsed_fixture, "1OCT.xlsx", SHA)
-    rebind_tenant(session, b.id)
-    import_report(session, b.id, parsed_fixture, "1OCT.xlsx", SHA)
-    day = date(2026, 10, 1)
-    rebind_tenant(session, a.id)
-    assert len(tickets_awaiting_price(session, a.id, day)) == 48
-    assert tickets_awaiting_price(session, a.id, date(2026, 10, 2)) == []
-    rebind_tenant(session, 999)
-    assert tickets_awaiting_price(session, 999, day) == []
-    rebind_tenant(session, a.id)
-    allow_future_price_statuses(session)
-    victim = tickets_awaiting_price(session, a.id, day)[0]
-    victim.price_status = "priced"
-    session.commit()
-    result = tickets_awaiting_price(session, a.id, day)
-    assert len(result) == 47
-    assert {t.agency_id for t in result} == {a.id}
 
 
 def test_default_database_url(monkeypatch: pytest.MonkeyPatch) -> None:

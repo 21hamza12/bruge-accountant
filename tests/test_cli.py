@@ -42,51 +42,8 @@ def test_import_fixture_prints_json(
     assert (out["inserted"], out["updated"]) == (48, 0)
     assert out["warnings"] == []
     assert isinstance(out["upload_id"], int)
-    sv, er = out["staff"]
-    assert (sv["staff_sign"], sv["ticket_count"], sv["group_count"]) == ("0004SV", 34, 25)
-    assert sv["total_cost"] == "746423"
-    assert (er["staff_sign"], er["ticket_count"], er["group_count"]) == ("0009ER", 14, 8)
-    assert er["total_cost"] == "372434"
-
-
-def test_import_staff_question_shape(
-    ready_db: str, fixture_path: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
-    out = run_import(capsys, fixture_path, ready_db)
-    er = out["staff"][1]
-    q = next(q for q in er["questions"] if q["booking_ref"] == "QA0030")
-    assert q == {
-        "booking_ref": "QA0030",
-        "airlines": ["495"],
-        "ticket_count": 3,
-        "total_cost": "37773",
-        "known_cost_total": "37773",
-        "missing_cost_count": 0,
-        "passengers": [
-            {
-                "name": "PAX03/GIVEN03",
-                "pax_type": "CHD",
-                "ticket_no": "9990000154",
-                "airline": "495",
-                "cost": "17444",
-            },
-            {
-                "name": "PAX14/GIVEN14",
-                "pax_type": "ADT",
-                "ticket_no": "9990000155",
-                "airline": "495",
-                "cost": "19428",
-            },
-            {
-                "name": "PAX02/GIVEN02",
-                "pax_type": "INF",
-                "ticket_no": "9990000156",
-                "airline": "495",
-                "cost": "901",
-            },
-        ],
-        "flags": [],
-    }
+    assert out["ticket_dates"] == {"2026-10-01": 48}
+    assert "staff" not in out  # the price questions were removed from the output
 
 
 def test_import_twice(
@@ -96,7 +53,7 @@ def test_import_twice(
     second = run_import(capsys, fixture_path, ready_db)
     assert (second["inserted"], second["updated"]) == (0, 48)
     assert second["upload_id"] != first["upload_id"]
-    assert second["staff"] == first["staff"]
+    assert second["ticket_dates"] == first["ticket_dates"]
 
 
 def test_db_from_environment(
@@ -162,8 +119,7 @@ def test_date_override(
 ) -> None:
     out = run_import(capsys, fixture_path, ready_db, "--date", "2026-10-05")
     assert out["report_date"] == "2026-10-05"
-    assert len(out["staff"]) == 2
-    assert sum(s["ticket_count"] for s in out["staff"]) == 48
+    assert out["ticket_dates"] == {"2026-10-05": 48}
 
 
 def test_invalid_date_is_usage_error(ready_db: str, fixture_path: Path) -> None:
@@ -211,20 +167,6 @@ def test_unicode_and_warnings_in_output(
     path.write_bytes(build_workbook(rows))
     out = run_import(capsys, path, ready_db)
     assert len(out["warnings"]) == 1
-    names = [p["name"] for p in out["staff"][0]["questions"][0]["passengers"]]
-    assert "ÉLODIE/BÉBÉ" in names
-    q = out["staff"][0]["questions"][0]
-    assert q["total_cost"] is None
-    assert "missing_cost" in q["flags"]
-
-
-def test_fractional_cost_is_string(
-    ready_db: str, tmp_path: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
-    path = tmp_path / "f.xlsx"
-    path.write_bytes(build_workbook([ticket_row(cost=1234.5)]))
-    out = run_import(capsys, path, ready_db)
-    assert out["staff"][0]["total_cost"] == "1234.50"
 
 
 def test_no_subcommand_is_usage_error() -> None:
@@ -238,48 +180,6 @@ def test_python_dash_m_entrypoint(monkeypatch: pytest.MonkeyPatch) -> None:
     with pytest.raises(SystemExit) as exc:
         runpy.run_module("app", run_name="__main__")
     assert exc.value.code == 0
-
-
-def test_money_is_always_a_string(
-    ready_db: str, tmp_path: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
-    path = tmp_path / "m.xlsx"
-    path.write_bytes(
-        build_workbook(
-            [
-                ticket_row(doc="3940000001", cost=746423, rloc="AAAAAA"),
-                ticket_row(doc="3940000002", cost=1234.5, rloc="BBBBBB"),
-                ticket_row(doc="3940000003", cost=None, rloc="CCCCCC"),
-            ]
-        )
-    )
-    out = run_import(capsys, path, ready_db)
-    questions = {q["booking_ref"]: q for q in out["staff"][0]["questions"]}
-    assert questions["AAAAAA"]["total_cost"] == "746423"
-    assert questions["BBBBBB"]["total_cost"] == "1234.50"
-    assert questions["BBBBBB"]["passengers"][0]["cost"] == "1234.50"
-    assert questions["CCCCCC"]["total_cost"] is None
-    assert questions["CCCCCC"]["known_cost_total"] == "0"
-    assert questions["CCCCCC"]["missing_cost_count"] == 1
-    assert questions["CCCCCC"]["passengers"][0]["cost"] is None
-    staff = out["staff"][0]
-    assert staff["total_cost"] is None
-    assert staff["known_cost_total"] == "747657.50"
-    assert staff["missing_cost_count"] == 1
-
-
-def test_blank_booking_refs_become_separate_questions(
-    ready_db: str, tmp_path: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
-    path = tmp_path / "b.xlsx"
-    path.write_bytes(
-        build_workbook(
-            [ticket_row(doc="3940000001", rloc=None), ticket_row(doc="3940000002", rloc=None)]
-        )
-    )
-    out = run_import(capsys, path, ready_db)
-    assert out["staff"][0]["group_count"] == 2
-    assert [q["booking_ref"] for q in out["staff"][0]["questions"]] == ["", ""]
 
 
 def test_arabic_output_on_a_legacy_codepage_stream(
@@ -422,4 +322,3 @@ def test_reimport_under_another_date_shows_the_real_day_and_warns(
     assert (out["inserted"], out["updated"]) == (0, 48)
     assert "keep their original day" in out["date_warning"]
     assert "2026-10-01" in out["date_warning"]
-    assert sum(s["ticket_count"] for s in out["staff"]) == 48  # questions of the real day, not none

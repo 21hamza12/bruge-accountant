@@ -4,7 +4,11 @@ AI accountant for travel agencies: imports the daily Amadeus sales report, colle
 ticket's selling price from the staff member who issued it, and reports tickets sold,
 revenue, profit and margin.
 
-Status: Phase 1 (Amadeus import → per-staff price questions). See [PLAN.md](PLAN.md).
+Status: Amadeus import, sales entry (« Saisir une vente ») and comparison with the report. See [PLAN.md](PLAN.md).
+
+The first version's price workflow (« Questions de prix », the « À tarifer » card, the `/questions`
+pages) was removed in October 2026: it now answers 404. Its data stays (`tickets.price_status` and
+the other columns are untouched, no migration; expand-only policy) but nothing reads it any more.
 
 ## Quick start
 
@@ -18,15 +22,14 @@ uv run python -m app import tests/fixtures/1OCT.xlsx --agency bruge-voyages
 ```
 
 `import` stores the tickets and prints JSON: the upload id, how many tickets were inserted
-or updated, any parser warnings, and one price question per staff sign and booking reference.
-Importing the same file again updates the tickets in place and never resets their price status.
+or updated, and any parser warnings.
+Importing the same file again updates the tickets in place.
 
 - Database: set `DATABASE_URL` (preferred) or pass `--db <url>` (default `sqlite:///bruge.db`).
   A URL given with `--db` may contain a password and ends up in your shell history and in process
   listings, so use the environment variable for anything but a throwaway SQLite file.
 - All money in the JSON output is a string (`"746423"`, `"1234.50"`; `null` when unknown), never a
-  float. Each question also has `known_cost_total` and `missing_cost_count`; `total_cost` is `null`
-  as soon as one ticket has no cost.
+  float.
 - Database errors are reported as `error: ...` with exit code 1 (`run: init-db` only when the tables
   are missing); no tracebacks for expected failures.
 - Limits: files up to 10 MB, 50,000 data rows, 30 MB uncompressed; larger or hostile workbooks are
@@ -142,9 +145,9 @@ all four accounts:
 
 Sign in as the `demo-a` manager, open **Envoyer un rapport** (`/uploads/new`) and choose
 `tests/fixtures/1OCT.xlsx`: the result page shows 48 tickets added. Send it again and it shows 0
-added and 48 updated. **Questions de prix** (`/questions`) lists the day's price questions: the
-manager sees both signs (34 tickets in 25 questions for `0004SV`, 14 in 8 for `0009ER`), a staff
-member only the sign linked to them. Prices are not collected yet.
+added and 48 updated. The home page (`/`) then shows the day: a manager sees both signs (34
+tickets for `0004SV`, 14 for `0009ER`), a staff member only the sign linked to them, with the
+report tickets that no sale holds yet. Sales are entered through **Saisir une vente**.
 
 - Parsing runs in a throwaway child process (`app/parsing/sandbox.py`, `python -I` with a
   minimal environment: it cannot read `DATABASE_URL` or any other secret of the web process). One

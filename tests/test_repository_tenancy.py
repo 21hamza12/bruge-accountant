@@ -25,7 +25,7 @@ from app.repository import (
     create_agency,
     get_agency_by_slug,
     import_report,
-    tickets_awaiting_price,
+    tickets_for_day,
 )
 from app.tenancy import TenantBindingError, bind_tenant, bound_tenant, rebind_tenant
 from tests.conftest import SHA, RlsDatabase
@@ -89,7 +89,7 @@ def test_repository_functions_bind_the_tenant(
         other.close()
     third = Session(bind=session.get_bind())
     try:
-        tickets_awaiting_price(third, agency.id, parsed_fixture.header.report_date)
+        tickets_for_day(third, agency.id, parsed_fixture.header.report_date)
         assert bound_tenant(third) == agency.id
     finally:
         third.close()
@@ -109,12 +109,12 @@ def test_slug_lookup_works_on_an_unbound_session(session: Session) -> None:
 # --- no silent re-pointing ---------------------------------------------------------------
 
 
-def test_tickets_awaiting_price_refuses_another_agency_and_keeps_the_binding(
+def test_tickets_for_day_refuses_another_agency_and_keeps_the_binding(
     session: Session,
 ) -> None:
     bind_tenant(session, 1)
     with pytest.raises(TenantBindingError):
-        tickets_awaiting_price(session, 2, date(2026, 10, 1))
+        tickets_for_day(session, 2, date(2026, 10, 1))
     assert bound_tenant(session) == 1
 
 
@@ -134,7 +134,7 @@ def test_the_functions_accept_the_agency_the_session_is_bound_to(
     agency = create_agency(session, "a", "A")
     bind_tenant(session, agency.id)  # same agency again: fine
     import_report(session, agency.id, parsed_fixture, "f.xlsx", SHA)
-    found = tickets_awaiting_price(session, agency.id, parsed_fixture.header.report_date)
+    found = tickets_for_day(session, agency.id, parsed_fixture.header.report_date)
     assert len(found) == 48
 
 
@@ -267,7 +267,7 @@ def test_import_survives_its_commit_under_rls_and_is_isolated(
             assert (first.inserted, first.updated) == (48, 0)
             again = import_report(s, a, parsed_fixture, "1OCT.xlsx", SHA)
             assert (again.inserted, again.updated) == (0, 48)
-            assert len(tickets_awaiting_price(s, a, parsed_fixture.header.report_date)) == 48
+            assert len(tickets_for_day(s, a, parsed_fixture.header.report_date)) == 48
 
             # the same tickets in agency B are new rows there: B's lookups cannot see A's
             rebind_tenant(s, b)  # a deliberate switch; import_report itself refuses to re-point

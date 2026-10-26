@@ -5,11 +5,11 @@ to ``page()``. It reads, for the signed-in user's own agency only (the id comes 
 
 * the agency (its name and currency);
 * the day pages open on (a manager: the agency's newest report day; staff: the newest day with a
-  ticket on their own signs, else the agency's) and, for that day, how many price questions still
-  wait, per staff sign. A manager counts every sign and sees the agent list; staff count only the
-  signs linked to them. The badge on "Questions de prix" is the sum.
+  ticket on their own signs, else the agency's);
+* the badges of the menu (open comparison flags, answers waiting for a validator, agency names
+  waiting for a decision), all in one SELECT.
 
-Three or four small indexed queries per page. The tickets themselves are not loaded here.
+A few small indexed queries per page. The tickets themselves are not loaded here.
 """
 
 from __future__ import annotations
@@ -25,11 +25,10 @@ from sqlalchemy.orm import Session
 
 from app import accounts, approvals, flags, partner_aliases, permissions
 from app.models import Agency, User
-from app.repository import awaiting_counts_by_sign, latest_report_date, sign_owners
+from app.repository import latest_report_date, sign_owners
 from app.web.deps import AuthContext
 
 ACTIVE_HOME = "home"
-ACTIVE_QUESTIONS = "questions"
 ACTIVE_UPLOADS = "uploads"
 ACTIVE_UPLOAD_NEW = "upload_new"
 ACTIVE_STAFF = "staff"
@@ -44,13 +43,6 @@ ACTIVE_CHAT = "chat"
 
 
 @dataclass(frozen=True)
-class AgentNav:
-    staff_sign: str
-    owner: str | None  # None: the sign is not linked to anyone
-    waiting: int
-
-
-@dataclass(frozen=True)
 class Shell:
     agency: Agency
     user: User
@@ -61,17 +53,15 @@ class Shell:
     can_see_day_sales: bool  # manager, accountant: "Ventes du jour"
     # Five tabs fit 320px, so the bottom bar differs by role (a test counts them per role):
     bottom_bar_partners: bool  # only users without the staff tab get this one
-    bottom_bar_sales: bool  # the two sales tabs, for staff, in place of "Questions"
-    bottom_bar_questions: bool
+    bottom_bar_sales: bool  # the two sales tabs ("Saisir une vente", "Mes ventes"), for staff
+    bottom_bar_sale_entry: bool  # manager, accountant: the one tab "Saisir une vente"
     active: str
     latest_day: date | None
-    badge: int
     flag_badge: int  # open blocking comparison flags the viewer may see ("Écarts")
     can_chat: bool  # the "Discussion" entry (staff, manager, accountant)
     can_validate: bool  # manager, accountant: the "À valider" screen
     validate_badge: int  # answers and fee overrides waiting for a validator ("À valider")
     pending_aliases: int  # agency names waiting for a decision (who may manage partners)
-    agents: tuple[AgentNav, ...]  # managers only
     owners: Mapping[str, str]  # managers only: sign to person
     my_signs: tuple[str, ...]  # staff only: the signs linked to them
 
@@ -113,15 +103,7 @@ def build_shell(db: Session, auth: AuthContext, active: str) -> Shell:
     if not sees_all:
         my_signs = tuple(link.staff_sign for link in accounts.get_signs(db, agency_id, user.id))
     day = _default_day(db, agency_id, None if sees_all else my_signs)
-    counts: dict[str, int] = {}
-    if day is not None:
-        counts = awaiting_counts_by_sign(db, agency_id, day, None if sees_all else my_signs)
     owners: Mapping[str, str] = sign_owners(db, agency_id) if sees_all else {}
-    agents = (
-        tuple(AgentNav(sign, owners.get(sign), n) for sign, n in sorted(counts.items()))
-        if sees_all
-        else ()
-    )
     # Every sidebar badge in one SELECT (each a scalar subquery; 0 when the role has no badge).
     visible = None if sees_all else my_signs
     zero = literal(0)
@@ -147,16 +129,14 @@ def build_shell(db: Session, auth: AuthContext, active: str) -> Shell:
         bottom_bar_partners=permissions.can_manage_partners(user)
         and not permissions.can_manage_staff(user),
         bottom_bar_sales=permissions.can_enter_own_sales(user),
-        bottom_bar_questions=not permissions.can_enter_own_sales(user),
+        bottom_bar_sale_entry=permissions.can_edit_any_entry(user),
         active=active,
         latest_day=day,
-        badge=sum(counts.values()),
         flag_badge=int(flag_badge or 0),
         can_chat=permissions.can_use_chat(user),
         can_validate=permissions.can_validate_money(user),
         validate_badge=int(validate_badge or 0),
         pending_aliases=int(pending or 0),
-        agents=agents,
         owners=owners,
         my_signs=my_signs,
     )

@@ -47,7 +47,7 @@ def test_the_csp_is_exactly_the_strict_one() -> None:
 def test_pages_keep_the_security_headers(env: Env) -> None:
     env.load()
     with env.manager_a() as c:
-        for path in ("/", "/questions", "/uploads", "/uploads/new", "/staff", "/password/change"):
+        for path in ("/", "/uploads", "/uploads/new", "/staff", "/password/change"):
             response = c.get(path)
             assert response.status_code == 200, path
             assert response.headers["content-security-policy"] == EXPECTED_CSP, path
@@ -337,7 +337,7 @@ def test_the_home_page_is_reachable_from_every_nav_link(env: Env) -> None:
         hrefs = set(re.findall(r'href="(/[^"#?]*)', side))
         for href in sorted(hrefs):
             assert c.get(href).status_code == 200, href
-    assert {"/", "/questions", "/uploads", "/staff", "/password/change"} <= hrefs
+    assert {"/", "/uploads", "/staff", "/password/change"} <= hrefs
 
 
 def test_the_manifest_and_the_meta_tag_share_the_accent_colour(client: TestClient) -> None:

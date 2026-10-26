@@ -50,7 +50,6 @@ from app.web.routes import flags as flag_routes
 from app.web.routes import home as home_routes
 from app.web.routes import partners as partner_routes
 from app.web.routes import password as password_routes
-from app.web.routes import questions as questions_routes
 from app.web.routes import sale_entry as sale_entry_routes
 from app.web.routes import sales as sales_routes
 from app.web.routes import staff as staff_routes
@@ -195,7 +194,6 @@ def create_app(
     app.include_router(flag_routes.router)
     app.include_router(flag_action_routes.router)
     app.include_router(upload_routes.router)
-    app.include_router(questions_routes.router)
     app.include_router(chat_routes.router)
     app.mount("/static", StaticAssets(directory=TEMPLATES_DIR.parent / "static"), name="static")
 

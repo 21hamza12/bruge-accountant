@@ -54,15 +54,12 @@ def _staff_context(db: Session, shell: Shell, day: date | None) -> dict[str, Any
         if day is not None and shell.my_signs
         else []
     )
-    entered = {
-        normalise_doc(t.doc_number, t.airline) or t.doc_number for v in my_sales for t in v.tickets
-    }
-    missing = [
-        t
-        for t in mine
-        if not is_cancelled(t)
-        and (normalise_doc(t.ticket_no, t.airline) or t.ticket_no) not in entered
-    ]
+    # A report ticket is entered when any active sale of the agency holds it (the comparison's
+    # rule): a sale typed by the manager, or under another sign, is not "à saisir" here.
+    issued = [t for t in mine if not is_cancelled(t)]
+    keys = [normalise_doc(t.ticket_no, t.airline) or t.ticket_no for t in issued]
+    sold = sales.active_ticket_lookup(db, shell.agency.id, keys) if keys else {}
+    missing = [t for t, key in zip(issued, keys, strict=True) if key not in sold]
     return {
         "day": day,
         "summary": summary,

@@ -118,3 +118,14 @@ def test_the_pages_that_used_to_link_to_the_questions_do_not_any_more(env: Env) 
             html = c.get(path).text
             assert 'href="/questions' not in html, path
             assert 'action="/questions' not in html, path
+
+
+def test_a_ticket_sold_under_another_sign_is_not_listed_as_missing() -> None:
+    """The staff home counts a report ticket as entered when any active sale of the agency holds
+    it (the comparison's rule), not only a sale on the agent's own signs."""
+    import inspect
+
+    from app.web.routes import home
+
+    source = inspect.getsource(home._staff_context)
+    assert "active_ticket_lookup" in source

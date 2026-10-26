@@ -257,7 +257,7 @@ def test_the_staff_home_shows_only_their_own_day(env: Env) -> None:
     assert re.search(r'<a class="btn btn-primary btn-lg btn-block" href="/sales/new">', html)
     assert 'href="/sales?date=2026-10-01"' in html and 'href="/days/2026-10-01"' in html
     assert re.search(r"Coût de mes billets\s*</span>\s*<span[^>]*>" + fr(372434), html)
-    assert len(re.findall(r'<div class="my-row">', html)) == 14
+    assert len(re.findall(r'<li class="my-row">', html)) == 14
     assert "0004SV" not in html and fr(746423) not in html
     assert 'class="card kpi"' not in html and 'class="chart-plot"' not in html
     for gone in ("À tarifer", "Commencer", "Prix confirmés", "<progress", "/questions"):
@@ -269,7 +269,7 @@ def test_the_staff_home_lists_the_report_tickets_without_a_sale(env: Env) -> Non
     env.link(env.seeded.staff_a, "0009ER")
     with env.staff_a() as c:
         html = c.get("/").text
-    first = html.split('<div class="my-row">')[1][:600]
+    first = html.split('<li class="my-row">')[1][:600]
     text = squash(first)
     assert re.search(r"\d{10}", text)
     assert re.search(r"(Royal Air Maroc|Turkish Airlines|Tunisair|Qatar Airways|Cie \d+)", text)

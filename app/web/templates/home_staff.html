@@ -49,8 +49,9 @@
   {% if missing_count %}
   <section class="card card-flush" aria-labelledby="mine-title">
     <h2 class="my-list-title" id="mine-title">{{ _("Billets du rapport sans vente saisie") }}</h2>
+    <ul class="list-plain">
     {% for t in missing %}
-    <div class="my-row">
+    <li class="my-row">
       <span class="my-main">
         <span class="my-name">{{ t.passenger_name }}</span>
         <span class="my-sub"><span class="mono">{{ t.ticket_no }}</span> · {{ t.airline|airline }}</span>
@@ -58,10 +59,11 @@
       <span class="my-side">
         <span class="my-cost">{% if t.cost is none %}<span class="faint">{{ _("Prix manquant") }}</span>{% else %}{{ t.cost|money_fr }}{% endif %}</span>
       </span>
-    </div>
+    </li>
     {% endfor %}
+    </ul>
     {% if hidden_count %}
-    <p class="muted more-link">{{ _("Et %(count)s autres billets. Ouvrez la journée pour tout voir.", count=hidden_count) }}</p>
+    <p class="muted more-link"><a href="/days/{{ day.isoformat() }}">{{ _("Et %(count)s autres billets : voir la journée", count=hidden_count) }}</a></p>
     {% endif %}
   </section>
   {% endif %}

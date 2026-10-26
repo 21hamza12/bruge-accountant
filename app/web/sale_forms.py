@@ -22,11 +22,13 @@ import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import date
+from decimal import Decimal
 
 from starlette.datastructures import FormData
 
 from app.formatting import money
 from app.models import AG_DIRECT, AG_PARTNER, SaleVersion
+from app.money import MoneyError, parse_amount
 from app.sales import FieldError, SaleInput, SaleView, TicketInput
 from app.sales_rules import MAX_TICKETS_PER_SALE
 from app.web.params import parse_db_id
@@ -119,6 +121,23 @@ class SaleForm:
         return self.source in (SOURCE_PASTE, SOURCE_SCREENSHOT)
 
     @property
+    def cost_read(self) -> Decimal | None:
+        """The Amadeus cost of the tickets as read (sum of TOTAL DOC), for the line at the top of
+        a prefilled sale; ``None`` when a ticket has no readable cost."""
+        total = Decimal(0)
+        for row in self.tickets:
+            amount = _amount_or_none(row.total_doc)
+            if amount is None:
+                return None
+            total += amount
+        return total
+
+    @property
+    def pb_read_amount(self) -> Decimal | None:
+        """The P.B the reader took from the RM line, as an amount (``None``: no RM price)."""
+        return _amount_or_none(self.pb_read)
+
+    @property
     def hidden_pairs(self) -> list[tuple[str, str]]:
         """Every value of the form as ``(name, value)`` pairs, to carry in hidden fields."""
         pairs: list[tuple[str, str]] = []
@@ -166,6 +185,13 @@ class Built:
     day: date | None
     rows: list[int]
     problems: list[FieldError]
+
+
+def _amount_or_none(text: str) -> Decimal | None:
+    try:
+        return parse_amount(text)
+    except MoneyError:
+        return None
 
 
 def _text(value: object) -> str:

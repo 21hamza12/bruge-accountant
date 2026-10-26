@@ -88,7 +88,10 @@ def seed_tenant(
                     csrf_token="c" * 43,
                     last_seen_at=NOW,
                     idle_expires_at=NOW + timedelta(hours=12),
-                    absolute_expires_at=NOW + timedelta(days=7),
+                    # Far ahead of the real clock: the purge policy lets a DELETE see expired
+                    # sessions of every agency, so an aged seed would turn "1 row of my tenant"
+                    # into 2 (failed on 26 Oct 2026, 7 days after NOW + 7 days ran out).
+                    absolute_expires_at=NOW + timedelta(days=36500),
                 )
             )
             s.add(

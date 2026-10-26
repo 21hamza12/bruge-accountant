@@ -76,6 +76,32 @@ read, goes to today (the agent is told).
 * **Manager and accountant**: the day field is prefilled with the issue date and can be changed.
   A closed day must be reopened first (manager), as before.
 
+Hardening (security review, 26 Oct 2026):
+
+* **The issue date is bound to what the server read.** The date travels in a hidden field, which a
+  staff member could edit to file a sale on any earlier open day. So every date the app proposes
+  itself (paste reader, screenshot reader, the "not sent" flag form) is signed:
+  `issue_sig = HMAC-SHA256(key, "agency_id|user_id|doc_number|issue_date")`, carried with the row
+  through the read-back and the confirm (`app/issue_sig.py`). For staff a date counts only when its
+  signature verifies (constant-time compare); otherwise it is ignored, as if the ticket had no
+  date, and the sale goes to today (no error, nothing logged). Manager and accountant choose their
+  day freely and need no signature; a typed row has no date, so today.
+* **Key**: `ISSUE_SIGNING_KEY` (a server secret; `render.yaml` generates it). Unset, the app makes
+  a random key at start-up: a restart then only makes forms open before it lose their dates (the
+  sale goes to today). A key derived from the session's CSRF token was rejected: the token is in
+  the page the staff member holds, so they could compute the signature themselves.
+* **Editing an earlier day needs a reason.** Staff editing a sale whose day is not today must give
+  a reason, as a manager does (voiding always needed one); today's own sale is edited without one.
+  The reason is kept on the version and in the audit like any other.
+* **An edit cannot change an issue date.** For staff, each ticket already on the sale keeps the
+  previous version's date (matched by ticket number); a ticket added in an edit has no date unless
+  signed.
+* **A very old issue date is flagged**: more than 31 days before today, the prefilled form says
+  "Date d'émission ancienne : 25 juin 2019, vérifiez la date du billet" (a typo such as `25JUN19`).
+* A sale staff file on a day other than today is logged (agency, user, sale and day ids only).
+* **"Today" is the UTC date** (`utc_now().date()`). Mauritania is UTC+0 with no daylight saving,
+  so the agency's calendar day and the app's day are the same; there is no offset to apply.
+
 ## 3. The comparison
 
 Lines are matched on **DOC NUMBER**. For each pair:

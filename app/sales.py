@@ -45,6 +45,7 @@ caller must roll back the session (a day may have been opened and flushed before
 from __future__ import annotations
 
 import functools
+import logging
 from collections.abc import Callable, Collection, Sequence
 from dataclasses import dataclass, replace
 from datetime import date, datetime
@@ -96,9 +97,12 @@ from app.sales_rules import (
     sale_cost,
     sale_profit,
     ticket_json,
+    ticket_number,
     ticket_rows,
     validate,
 )
+
+log = logging.getLogger(__name__)
 
 __all__ = [
     "MAX_TICKETS_PER_SALE",
@@ -363,11 +367,30 @@ def void_blocker(actor: User, day_status: str | None) -> str | None:
     return VOID_DAY_CLOSED if day_status == DAY_CLOSED else None
 
 
-def _reason_for_edit(scope: str, raw: str | None) -> str | None:
+def _reason_for_edit(scope: str, raw: str | None, sale_day: date, today: date) -> str | None:
+    """The reason of an edit: mandatory for manager and accountant, and for staff when the sale's
+    day is not today; optional (but cleaned) for staff editing their own sale of today."""
     try:
-        return required_reason(raw) if scope == ALL else clean_reason(raw)
+        if scope == ALL or sale_day != today:
+            return required_reason(raw)
+        return clean_reason(raw)
     except ReasonError as exc:
         raise InvalidReason(str(exc)) from None
+
+
+def _keep_issue_dates(scope: str, data: SaleInput, previous: SaleVersion) -> SaleInput:
+    """Staff cannot change a ticket's issue date by editing: each ticket already on the sale keeps
+    the date of the previous version (matched by ticket number); a new row keeps what it came
+    with (the web layer blanks any date that is not signed). A manager or accountant edit as
+    they choose."""
+    if scope == ALL:
+        return data
+    held = {line.doc_number: line.issue_date for line in lines_from_json(previous.tickets)}
+    kept: list[TicketInput] = []
+    for t in data.tickets:
+        number, _ = ticket_number(t.doc_number, str(t.airline).strip().upper())
+        kept.append(replace(t, issue_date=held[number]) if number in held else t)
+    return replace(data, tickets=tuple(kept))
 
 
 def _resolve_sign(
@@ -996,6 +1019,7 @@ def preview_sale(
     if sale_id is not None:
         head, report_day = _access(db, actor, sale_id, today, lock=False)
         previous = _current_version(db, head)
+        data = _keep_issue_dates(scope, data, previous)
         chosen = report_day.day
         _resolve_sign(db, actor, scope, data.staff_sign, head.staff_sign)
     else:
@@ -1077,6 +1101,16 @@ def create_sale(
     except IntegrityError as exc:
         _raise_unique(db, actor, exc, docs, None)
     _audit(db, audit.SALE_CREATED, actor, head, 1, result, now=moment, ip=ip)
+    if scope != ALL and chosen != today:
+        log.info(
+            "staff sale filed on another day than today",
+            extra={
+                "agency_id": actor.agency_id,
+                "user_id": actor.id,
+                "sale_id": head.id,
+                "report_day": chosen.isoformat(),
+            },
+        )
     warnings = result.warnings + _sign_warnings(db, actor, scope, sign)
     return SaleResult(_reload(db, actor, head), warnings)
 
@@ -1097,9 +1131,10 @@ def edit_sale(
     """Replace the content of a sale (tickets, price, client, payment...) with a new version.
 
     Manager and accountant must give a ``reason``; staff, editing their own sale of today, need
-    not. The day stays (``move_sale_day`` changes it). ``SaleError`` when nothing changed, the
-    sale is voided, or it changed under us ("rechargez"). ``expected_version`` is the version the
-    form was built on: when the sale has moved on, the edit is refused as stale. Staff may edit
+    not (of an earlier day they must, as managers do). The day stays (``move_sale_day`` changes
+    it). ``SaleError`` when nothing changed, the sale is voided, or it changed under us
+    ("rechargez"). ``expected_version`` is the version the form was
+    built on: when the sale has moved on, the edit is refused as stale. Staff may edit
     their own sale of any day that is not closed.
     """
     _check_source(source)
@@ -1108,9 +1143,10 @@ def edit_sale(
     _check_issue_dates(data, moment.date())
     _check_expected(head, expected_version)
     scope = _scope(actor)
-    clean = _reason_for_edit(scope, reason)
+    clean = _reason_for_edit(scope, reason, report_day.day, moment.date())
     sign = _resolve_sign(db, actor, scope, data.staff_sign, head.staff_sign)
     previous = _current_version(db, head)
+    data = _keep_issue_dates(scope, data, previous)
     result = validate(data, build_context(db, actor, data, report_day.day, previous))
     if isinstance(result, list):
         raise InvalidSale(result)

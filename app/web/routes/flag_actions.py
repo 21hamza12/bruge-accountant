@@ -32,10 +32,12 @@ from app import approvals, day_page, days, flags, permissions, sales
 from app.clock import Clock
 from app.errors import UserError
 from app.formatting import money
+from app.issue_sig import signer_for
 from app.models import FlagDecision, ReportDay, User
 from app.sales import SaleView
+from app.settings import Settings
 from app.web.csrf import csrf_protect
-from app.web.deps import AuthContext, client_ip, require_permission
+from app.web.deps import AuthContext, client_ip, get_settings, require_permission
 from app.web.pages import page
 from app.web.params import DbId
 from app.web.routes.flags import CHOICE_LABELS, FlagRow, flag_row, list_page
@@ -124,7 +126,13 @@ def _day_of(db: Session, user: User, flag_id: int, clock: Clock) -> date:
 
 
 @router.get("/{flag_id}/enter")
-def flag_enter(flag_id: DbId, db: Db, clock: Now, auth: Answerer) -> Response:
+def flag_enter(
+    flag_id: DbId,
+    db: Db,
+    clock: Now,
+    auth: Answerer,
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> Response:
     """The entry form filled from the report line of a ticket that was not entered."""
     user = auth.user
     try:
@@ -147,6 +155,7 @@ def flag_enter(flag_id: DbId, db: Db, clock: Now, auth: Answerer) -> Response:
                 rloc=prefill.rloc,
                 trnc=prefill.trnc,
                 issue_date=prefill.report_day.isoformat(),
+                issue_sig=signer_for(settings, user).sign(prefill.doc_number, prefill.report_day),
             )
         ],
         staff_sign=prefill.staff_sign,

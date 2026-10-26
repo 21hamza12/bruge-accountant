@@ -11,6 +11,7 @@ import html
 import re
 from collections.abc import Iterator
 from contextlib import contextmanager
+from datetime import date
 from typing import Any
 
 import pytest
@@ -19,7 +20,8 @@ from sqlalchemy.orm import Session
 
 from app import audit
 from app.auth import ratelimit
-from app.models import AuditEvent, ComparisonFlag, FlagDecision, Sale, User
+from app.issue_sig import IssueSigner
+from app.models import AuditEvent, ComparisonFlag, FlagDecision, ReportDay, Sale, User
 from app.tenancy import rebind_tenant
 from tests.fixtures import synthetic_20oct as fx
 from tests.flag_support import FlagWeb
@@ -210,6 +212,62 @@ def test_staff_enter_a_not_sent_ticket_of_an_open_past_day_under_its_report_day(
         assert form.status_code == 200 and OWN[0] in form.text
         assert f'name="issue_date" value="{DAY}"' in form.text  # the sale goes on the report day
         assert 'name="day"' not in form.text  # staff do not pick the day
+
+
+def _enter_fields(page: str) -> dict[str, list[str]]:
+    """What the browser posts from the not-sent entry form: its inputs, plus what the user adds."""
+    data: dict[str, list[str]] = {}
+    for tag in re.findall(r"<input[^>]*>", page):
+        name = re.search(r'name="([^"]+)"', tag)
+        value = re.search(r'value="([^"]*)"', tag)
+        if name and name.group(1) != "csrf_token":
+            data.setdefault(name.group(1), []).append(
+                html.unescape(value.group(1)) if value else ""
+            )
+    data.update(
+        pax_type=["ADT"], trnc=["TKTT"], ag=["direct"], pb=["99999"], clt=["Client Synth"],
+        payment_method=["cash"],
+    )  # fmt: skip
+    return data
+
+
+def _day_of_new_sale(world: FlagWeb) -> str:
+    with tenant_session(world) as s:
+        sale = s.scalars(select(Sale).order_by(Sale.id.desc())).first()
+        assert sale is not None
+        found = s.get(ReportDay, sale.report_day_id)
+        assert found is not None
+        return found.day.isoformat()
+
+
+def test_staff_enter_form_carries_a_signed_report_day_that_files_the_sale(world: FlagWeb) -> None:
+    setup_diff(world, OWN[1], extra=0, skip=(OWN[0],))
+    flag = flag_of(world, OWN[0], "not_sent")
+    with world.staff() as c:
+        form = c.get(f"/flags/{flag.id}/enter")
+        fields = _enter_fields(form.text)
+        signer = IssueSigner(
+            world.factory.app.state.settings.issue_key(),  # type: ignore[attr-defined]
+            world.seeded.agency_a,
+            world.seeded.staff_a,
+        )
+        assert signer.verify(OWN[0], date.fromisoformat(DAY), fields["issue_sig"][0])
+        token = csrf_for(c, f"/flags?date={DAY}")
+        done = c.post("/sales", data={**fields, "csrf_token": token}, follow_redirects=False)
+        assert done.status_code == 303
+    assert _day_of_new_sale(world) == DAY
+
+
+def test_a_forged_report_day_on_the_enter_form_is_ignored_for_staff(world: FlagWeb) -> None:
+    setup_diff(world, OWN[1], extra=0, skip=(OWN[0],))
+    flag = flag_of(world, OWN[0], "not_sent")
+    with world.staff() as c:
+        fields = _enter_fields(c.get(f"/flags/{flag.id}/enter").text)
+        fields["issue_date"] = ["2026-10-19"]  # signature kept, date changed
+        token = csrf_for(c, f"/flags?date={DAY}")
+        done = c.post("/sales", data={**fields, "csrf_token": token}, follow_redirects=False)
+        assert done.status_code == 303
+    assert _day_of_new_sale(world) == "2026-10-22"  # today on the test clock
 
 
 # --- answering ---------------------------------------------------------------------------------

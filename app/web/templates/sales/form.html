@@ -129,6 +129,7 @@
       <div class="field">
         {% if row.issued %}<p class="help issued" id="issue_date_{{ i }}">{{ _("Émis le %(date)s", date=row.issued|date_fr) }}</p>{% endif %}
         <input type="hidden" name="issue_date" value="{{ row.issue_date }}">
+        <input type="hidden" name="issue_sig" value="{{ row.issue_sig }}">
         {{ field_error(errors, "t" ~ i ~ ".issue_date") }}
       </div>
     </fieldset>

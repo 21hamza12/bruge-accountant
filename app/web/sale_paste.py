@@ -11,11 +11,13 @@ what the agent confirms in the form is.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import date, timedelta
 
 from sqlalchemy.orm import Session
 
 from app import partner_aliases, partners
-from app.formatting import money
+from app.formatting import day_month_fr, money
+from app.issue_sig import IssueSigner
 from app.parsing.pnr import MAX_TEXT_BYTES, parse_pnr_text
 from app.parsing.pnr_sales import ProposedSale, proposed_sales
 from app.web.sale_forms import DIRECT, SOURCE_PASTE, SOURCE_SCREENSHOT, SaleForm, TicketForm
@@ -28,6 +30,8 @@ W_NO_ISSUE_DATE = (
     "Date d'émission illisible : la vente sera classée à la journée d'aujourd'hui, "
     "sauf si le gérant ou la comptable choisit une autre journée."
 )
+OLD_ISSUE_DAYS = 31  # an issue date further back than this is probably a typo (25JUN19)
+W_OLD_ISSUE_DATE = "Date d'émission ancienne : {date}, vérifiez la date du billet."
 W_SOME_NO_ISSUE_DATE = "Billet {doc} : date d'émission illisible (ignorée pour la journée)."
 
 
@@ -68,8 +72,16 @@ def _ag_fields(sale: ProposedSale) -> tuple[str, str]:
     return proposed, sale.agency_match
 
 
+def _signature(signer: IssueSigner | None, doc: str, day: date | None) -> str:
+    return signer.sign(doc, day) if signer is not None and day is not None else ""
+
+
 def form_from_sale(
-    sale: ProposedSale, reader_warnings: tuple[str, ...] = (), source: str = SOURCE_PASTE
+    sale: ProposedSale,
+    reader_warnings: tuple[str, ...] = (),
+    source: str = SOURCE_PASTE,
+    signer: IssueSigner | None = None,
+    today: date | None = None,
 ) -> SaleForm:
     proposed, match = _ag_fields(sale)
     day = sale.issue_day
@@ -84,6 +96,7 @@ def form_from_sale(
                 rloc=t.rloc,
                 trnc=t.trnc,
                 issue_date=t.issue_date.isoformat() if t.issue_date else "",
+                issue_sig=_signature(signer, t.doc_number, t.issue_date),
             )
             for t in sale.tickets
         ]
@@ -98,24 +111,35 @@ def form_from_sale(
         pb_read=money(sale.pb) if sale.pb is not None else "",
         ag_match=match,
         day=day.isoformat() if day else "",
-        notices=[*reader_warnings, *sale.warnings, *_date_notices(sale)],
+        notices=[*reader_warnings, *sale.warnings, *_date_notices(sale, today)],
     )
 
 
-def _date_notices(sale: ProposedSale) -> list[str]:
-    """What the agent is told when a ticket's issue date could not be read."""
+def _date_notices(sale: ProposedSale, today: date | None = None) -> list[str]:
+    """What the agent is told when a ticket's issue date could not be read, or is old."""
     if sale.issue_day is None:
         return [W_NO_ISSUE_DATE] if sale.tickets else []
-    return [
+    notices = [
         W_SOME_NO_ISSUE_DATE.format(doc=t.doc_number) for t in sale.tickets if t.issue_date is None
     ]
+    if today is not None and sale.issue_day < today - timedelta(days=OLD_ISSUE_DAYS):
+        text = f"{day_month_fr(sale.issue_day)} {sale.issue_day.year}"
+        notices.append(W_OLD_ISSUE_DATE.format(date=text))
+    return notices
 
 
 def read_paste(
-    db: Session, agency_id: int, text: str, source: str = SOURCE_PASTE, nothing: str = NOTHING
+    db: Session,
+    agency_id: int,
+    text: str,
+    source: str = SOURCE_PASTE,
+    nothing: str = NOTHING,
+    signer: IssueSigner | None = None,
+    today: date | None = None,
 ) -> PasteResult:
     """Parse ``text`` (already checked with ``check_text``) for this agency. ``source`` labels the
-    forms (``paste``, or ``screenshot`` for the transcript of an image)."""
+    forms (``paste``, or ``screenshot`` for the transcript of an image). With ``signer`` every issue
+    date read is signed (see ``app/issue_sig.py``); ``today`` enables the old-date notice."""
     reading = parse_pnr_text(text, transcript=source == SOURCE_SCREENSHOT)
     names = [(p.id, p.name) for p in partners.list_active(db, agency_id)]
     aliases = partner_aliases.approved_pairs(db, agency_id)
@@ -124,7 +148,9 @@ def read_paste(
         return PasteResult([], reading.warnings, nothing)
     return PasteResult(
         [
-            Proposal(s, form_from_sale(s, reading.warnings, source), reading.agent_sign)
+            Proposal(
+                s, form_from_sale(s, reading.warnings, source, signer, today), reading.agent_sign
+            )
             for s in sales
         ],
         reading.warnings,

@@ -30,6 +30,7 @@ from decimal import Decimal
 from starlette.datastructures import FormData
 
 from app.formatting import money
+from app.issue_sig import IssueSigner
 from app.models import AG_DIRECT, AG_PARTNER, SaleVersion
 from app.money import MoneyError, parse_amount
 from app.sales import FieldError, SaleInput, SaleView, TicketInput
@@ -46,6 +47,7 @@ TICKET_FIELDS = (
     "rloc",
     "trnc",
     "issue_date",
+    "issue_sig",
 )
 FREE_TICKET_FIELDS = ("doc_number", "airline", "total_doc", "pax_name", "rloc")
 DEFAULT_PAX_TYPE = "ADT"
@@ -95,6 +97,7 @@ class TicketForm:
     rloc: str = ""
     trnc: str = DEFAULT_TRNC
     issue_date: str = ""  # ISO date the ticket was issued; "" when unknown
+    issue_sig: str = ""  # the server's signature of (user, doc number, issue_date); "" if unsigned
 
     @property
     def is_blank(self) -> bool:
@@ -233,13 +236,17 @@ def _text(value: object) -> str:
     return value[:CLIP] if isinstance(value, str) else ""
 
 
-def read(source: FormData, *, new_sale: bool = True) -> SaleForm:
+def read(source: FormData, *, new_sale: bool = True, signer: IssueSigner | None = None) -> SaleForm:
     """The form as posted: every value text, clipped; missing fields are empty.
 
     ``source`` and the agency-question fields are **advisory**: they label a new sale's history
     and decide what the agent is asked, never what is accepted (the service validates the AG as
     any other). Only a new sale can come from a paste: with ``new_sale`` false (an edit) they
-    are ignored."""
+    are ignored.
+
+    ``signer`` is set for staff: an issue date whose signature does not verify against its own
+    ticket number is blanked (the ticket then has no date), see ``app/issue_sig.py``. ``None``
+    (manager, accountant) keeps the dates as posted."""
     columns = {name: [_text(v) for v in source.getlist(name)] for name in TICKET_FIELDS}
     count = min(max((len(v) for v in columns.values()), default=0), MAX_TICKETS_PER_SALE + 1)
     rows: list[TicketForm] = []
@@ -282,7 +289,18 @@ def read(source: FormData, *, new_sale: bool = True) -> SaleForm:
     )
     if form.from_paste:
         form.ag = answered_ag(form)
+    if signer is not None:
+        for ticket in form.tickets:
+            drop_unsigned_date(ticket, signer)
     return form
+
+
+def drop_unsigned_date(ticket: TicketForm, signer: IssueSigner) -> None:
+    """Blank the issue date (and its signature) of a row whose signature is not the server's."""
+    issued = ticket.issued
+    if issued is None or not signer.verify(ticket.doc_number, issued, ticket.issue_sig):
+        ticket.issue_date = ""
+        ticket.issue_sig = ""
 
 
 def answered_ag(form: SaleForm) -> str:

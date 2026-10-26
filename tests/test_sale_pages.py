@@ -910,10 +910,15 @@ def test_a_staff_member_edits_a_sale_of_a_past_day_that_is_not_closed(env: Env) 
     sale_id = enter(env.manager_a(), tk(D1), staff_sign=SIGN, day=YESTERDAY)
     c = env.staff_a()
     assert c.get(f"/sales/{sale_id}").status_code == 200
+    # an older sale: the agent gives a reason (owner's decision, 26 Oct)
     r = post(c, f"/sales/{sale_id}", form(pb="30000", version_no="1"), via="/sales/new")
+    assert r.status_code == 400 and "motif" in text_of(r.text).lower()
+    data = form(pb="30000", version_no="1", reason="prix corrigé")
+    r = post(c, f"/sales/{sale_id}", data, via="/sales/new")
     assert r.status_code == 303 and latest(env, sale_id).version_no == 2
     set_day_status(env, "closed")  # a closed day refuses staff (tests/test_sale_day_pages.py)
-    r = post(c, f"/sales/{sale_id}", form(pb="31000", version_no="2"), via="/sales/new")
+    data = form(pb="31000", version_no="2", reason="prix corrigé")
+    r = post(c, f"/sales/{sale_id}", data, via="/sales/new")
     assert r.status_code == 409 and "clôturée" in text_of(r.text)
     assert latest(env, sale_id).version_no == 2
 

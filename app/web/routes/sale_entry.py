@@ -48,6 +48,7 @@ from app.ai.screenshots import NOTHING as SCREENSHOT_NOTHING
 from app.auth import ratelimit
 from app.clock import Clock
 from app.errors import UserError
+from app.issue_sig import IssueSigner, signer_for
 from app.models import User
 from app.parsing.pnr_sales import ProposedSale
 from app.sales import DuplicateTicket, SaleView
@@ -95,6 +96,12 @@ UNREADABLE = (
 DOUBLE_SUBMIT_WINDOW = timedelta(seconds=120)
 
 
+def _enforced(settings: Settings, user: User) -> IssueSigner | None:
+    """The signer that staff's issue dates are checked with (``sale_forms.read``); None for a
+    manager or accountant, who choose their day and need no signature."""
+    return None if permissions.can_edit_any_entry(user) else signer_for(settings, user)
+
+
 def _just_created(
     db: Session, user: User, duplicate: DuplicateTicket, form: SaleForm, now: datetime
 ) -> SaleView | None:
@@ -121,13 +128,27 @@ def sale_new(db: Db, clock: Now, auth: Auth) -> Response:
 
 
 @router.post("/new")
-def sale_new_again(db: Db, clock: Now, auth: Auth, posted: Posted) -> Response:
+def sale_new_again(
+    db: Db,
+    clock: Now,
+    auth: Auth,
+    posted: Posted,
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> Response:
     """Back from the read-back: the form with the values typed, nothing validated."""
-    return form_page(db, auth, clock, sale_forms.read(posted))
+    form = sale_forms.read(posted, signer=_enforced(settings, auth.user))
+    return form_page(db, auth, clock, form)
 
 
 @router.post("/paste")
-def sale_paste_text(request: Request, db: Db, clock: Now, auth: Auth, posted: Posted) -> Response:
+def sale_paste_text(
+    request: Request,
+    db: Db,
+    clock: Now,
+    auth: Auth,
+    posted: Posted,
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> Response:
     """Read pasted Amadeus text and show what it proposes: the prefilled form (one passenger) or
     the list of proposed sales (several). Nothing is written, and the text is neither stored nor
     logged nor audited: it is read here and dropped."""
@@ -136,7 +157,13 @@ def sale_paste_text(request: Request, db: Db, clock: Now, auth: Auth, posted: Po
     error = sale_paste.check_text(raw)
     if error:
         return form_page(db, auth, clock, SaleForm(), paste_error=error, status_code=400)
-    result = sale_paste.read_paste(db, auth.user.agency_id, raw if isinstance(raw, str) else "")
+    result = sale_paste.read_paste(
+        db,
+        auth.user.agency_id,
+        raw if isinstance(raw, str) else "",
+        signer=signer_for(settings, auth.user),
+        today=clock().date(),
+    )
     return _read_outcome(db, auth, clock, result, screenshot=False)
 
 
@@ -312,6 +339,8 @@ def _screenshot_outcome(
         read.text,
         source=sale_forms.SOURCE_SCREENSHOT,
         nothing=SCREENSHOT_NOTHING,
+        signer=signer_for(settings, auth.user),
+        today=clock().date(),
     )
     return _read_outcome(db, auth, clock, result, screenshot=True)
 
@@ -339,9 +368,16 @@ def _prefill_sign(proposal: sale_paste.Proposal, mode: str, signs: list[str]) ->
 
 
 @router.post("/preview")
-def sale_preview(request: Request, db: Db, clock: Now, auth: Auth, posted: Posted) -> Response:
+def sale_preview(
+    request: Request,
+    db: Db,
+    clock: Now,
+    auth: Auth,
+    posted: Posted,
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> Response:
     throttle(db, request, auth, clock, write=False)
-    form = sale_forms.read(posted)
+    form = sale_forms.read(posted, signer=_enforced(settings, auth.user))
     if form.add_row:
         return form_page(db, auth, clock, sale_forms.with_extra_row(form))
     user = auth.user
@@ -365,9 +401,16 @@ def sale_preview(request: Request, db: Db, clock: Now, auth: Auth, posted: Poste
 
 
 @router.post("")
-def sale_create(request: Request, db: Db, clock: Now, auth: Auth, posted: Posted) -> Response:
+def sale_create(
+    request: Request,
+    db: Db,
+    clock: Now,
+    auth: Auth,
+    posted: Posted,
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> Response:
     throttle(db, request, auth, clock, write=True)
-    form = sale_forms.read(posted)
+    form = sale_forms.read(posted, signer=_enforced(settings, auth.user))
     user = auth.user
     built = sale_forms.to_input(form, choose_day=True)
     if built.problems:
@@ -429,19 +472,33 @@ def sale_edit(sale_id: DbId, db: Db, clock: Now, auth: Auth) -> Response:
 
 
 @router.post("/{sale_id}/edit")
-def sale_edit_again(sale_id: DbId, db: Db, clock: Now, auth: Auth, posted: Posted) -> Response:
+def sale_edit_again(
+    sale_id: DbId,
+    db: Db,
+    clock: Now,
+    auth: Auth,
+    posted: Posted,
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> Response:
     """Back from the read-back of an edit: the form with the values typed, nothing validated."""
     view = get_sale(db, auth, sale_id)
-    return form_page(db, auth, clock, sale_forms.read(posted, new_sale=False), sale=view)
+    form = sale_forms.read(posted, new_sale=False, signer=_enforced(settings, auth.user))
+    return form_page(db, auth, clock, form, sale=view)
 
 
 @router.post("/{sale_id}/preview-edit")
 def sale_preview_edit(
-    sale_id: DbId, request: Request, db: Db, clock: Now, auth: Auth, posted: Posted
+    sale_id: DbId,
+    request: Request,
+    db: Db,
+    clock: Now,
+    auth: Auth,
+    posted: Posted,
+    settings: Annotated[Settings, Depends(get_settings)],
 ) -> Response:
     throttle(db, request, auth, clock, write=False)
     view = get_sale(db, auth, sale_id)
-    form = sale_forms.read(posted, new_sale=False)
+    form = sale_forms.read(posted, new_sale=False, signer=_enforced(settings, auth.user))
     if form.add_row:
         return form_page(db, auth, clock, sale_forms.with_extra_row(form), sale=view)
     stale = stale_or_garbled(form, view)
@@ -450,7 +507,7 @@ def sale_preview_edit(
     user = auth.user
     built = sale_forms.to_input(form, choose_day=False)
     problems = list(built.problems)
-    problem = reason_problem(user, form.reason)
+    problem = reason_problem(user, form.reason, view.day, clock().date())
     if problem is not None:
         problems.append(problem)
     if problems:
@@ -470,17 +527,23 @@ def sale_preview_edit(
 
 @router.post("/{sale_id}")
 def sale_update(
-    sale_id: DbId, request: Request, db: Db, clock: Now, auth: Auth, posted: Posted
+    sale_id: DbId,
+    request: Request,
+    db: Db,
+    clock: Now,
+    auth: Auth,
+    posted: Posted,
+    settings: Annotated[Settings, Depends(get_settings)],
 ) -> Response:
     throttle(db, request, auth, clock, write=True)
     view = get_sale(db, auth, sale_id)
-    form = sale_forms.read(posted, new_sale=False)
+    form = sale_forms.read(posted, new_sale=False, signer=_enforced(settings, auth.user))
     stale = stale_or_garbled(form, view)
     if stale is not None:
         return detail_page(db, auth, clock, view, error=stale.message, status_code=stale.status)
     user = auth.user
     built = sale_forms.to_input(form, choose_day=False)
-    problem = reason_problem(user, form.reason)
+    problem = reason_problem(user, form.reason, view.day, clock().date())
     if problem is not None:
         return form_page(db, auth, clock, form, sale=view, problems=[problem], status_code=400)
     try:

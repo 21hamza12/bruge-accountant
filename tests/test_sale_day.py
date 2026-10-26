@@ -17,7 +17,7 @@ from sqlalchemy.orm import Session
 
 from app import days, sales
 from app.models import ReportDay, Sale
-from app.sales import InvalidSale, SaleForbidden, SaleInput, SaleNotFound
+from app.sales import InvalidReason, InvalidSale, SaleForbidden, SaleInput, SaleNotFound
 from app.sales_rules import latest_issue_date, lines_from_json, ticket_json
 from tests.flag_support import FlagWorld
 from tests.test_sales import D1, D2, D3, NOW, TODAY, YESTERDAY, World, direct, ticket
@@ -178,7 +178,7 @@ def test_another_signs_ticket_is_still_not_theirs_on_an_earlier_day(w: World) ->
 
 def test_staff_edit_and_void_their_own_sale_of_an_earlier_open_day(w: World) -> None:
     sale = w.create(w.staff, direct(issued(D1, YESTERDAY))).sale
-    edited = w.edit(w.staff, sale.id, direct(issued(D1, YESTERDAY), pb="25000"), "")
+    edited = w.edit(w.staff, sale.id, direct(issued(D1, YESTERDAY), pb="25000"), "prix corrigé")
     assert edited.sale.pb == 25000 and edited.sale.day == YESTERDAY
     voided = w.void(w.staff, sale.id)
     assert voided.status == "voided"
@@ -211,8 +211,87 @@ def test_staff_still_cannot_touch_another_signs_sale_on_an_earlier_day(w: World)
 
 def test_an_edit_keeps_the_day_even_if_the_dates_change(w: World) -> None:
     sale = w.create(w.staff, direct(issued(D1, YESTERDAY))).sale
-    edited = w.edit(w.staff, sale.id, direct(issued(D1, TWO_DAYS_AGO)), "")
+    edited = w.edit(w.staff, sale.id, direct(issued(D1, TWO_DAYS_AGO), pb="25000"), "correction")
     assert edited.sale.day == YESTERDAY  # only move_sale_day changes the day
+
+
+def test_staff_must_give_a_reason_to_edit_a_sale_of_an_earlier_day(w: World) -> None:
+    sale = w.create(w.staff, direct(issued(D1, YESTERDAY))).sale
+    for missing in (None, "", "   ", "abc"):
+        with pytest.raises(InvalidReason):
+            w.edit(w.staff, sale.id, direct(issued(D1, YESTERDAY), pb="25000"), missing)
+    assert len(w.history(sale.id)) == 1
+    w.edit(w.staff, sale.id, direct(issued(D1, YESTERDAY), pb="25000"), "prix corrigé")
+    versions = w.history(sale.id)
+    assert len(versions) == 2 and versions[-1].reason == "prix corrigé"
+
+
+def test_staff_edit_of_todays_own_sale_needs_no_reason(w: World) -> None:
+    sale = w.create(w.staff, direct(ticket(D1))).sale
+    edited = w.edit(w.staff, sale.id, direct(ticket(D1), pb="25000"), None)
+    assert edited.sale.pb == 25000 and edited.sale.version_no == 2
+
+
+def test_staff_void_of_an_earlier_day_needs_a_reason(w: World) -> None:
+    sale = w.create(w.staff, direct(issued(D1, YESTERDAY))).sale
+    with pytest.raises(InvalidReason):
+        w.void(w.staff, sale.id, "")
+    assert w.void(w.staff, sale.id, "saisie en double").status == "voided"
+    assert w.history(sale.id)[-1].reason == "saisie en double"
+
+
+def test_staff_edit_keeps_each_tickets_issue_date(w: World) -> None:
+    sale = w.create(w.staff, direct(issued(D1, YESTERDAY), issued(D2, TWO_DAYS_AGO), pb="30000"))
+    forged = direct(
+        issued(D1, TWO_DAYS_AGO), issued(D2, YESTERDAY), ticket(D3, issue_date=TWO_DAYS_AGO),
+        pb="31000",
+    )  # fmt: skip
+    edited = w.edit(w.staff, sale.sale.id, forged, "ajout d'un billet")
+    dates = {t.doc_number: t.issue_date for t in edited.sale.tickets}
+    assert dates[D1] == YESTERDAY and dates[D2] == TWO_DAYS_AGO
+    assert dates[D3] == TWO_DAYS_AGO  # a new row keeps what the web layer let through
+    assert edited.sale.day == YESTERDAY
+
+
+def test_staff_edit_matches_tickets_by_normalised_number(w: World) -> None:
+    sale = w.create(w.staff, direct(issued(D1, YESTERDAY))).sale
+    spaced = f"199-{D1}"
+    edited = w.edit(w.staff, sale.id, direct(issued(spaced, TWO_DAYS_AGO), pb="25000"), "corrigé")
+    assert edited.sale.tickets[0].issue_date == YESTERDAY
+
+
+def test_staff_edit_cannot_add_a_date_to_a_ticket_that_had_none(w: World) -> None:
+    sale = w.create(w.staff, direct(ticket(D1))).sale
+    edited = w.edit(w.staff, sale.id, direct(issued(D1, TWO_DAYS_AGO), pb="25000"), None)
+    assert edited.sale.tickets[0].issue_date is None
+
+
+def test_a_manager_edit_may_change_the_issue_date(w: World) -> None:
+    sale = w.create(w.staff, direct(issued(D1, YESTERDAY))).sale
+    edited = w.edit(w.manager, sale.id, direct(issued(D1, TWO_DAYS_AGO)), "date corrigée")
+    assert edited.sale.tickets[0].issue_date == TWO_DAYS_AGO
+
+
+def test_the_preview_of_a_staff_edit_shows_the_kept_dates(w: World) -> None:
+    sale = w.create(w.staff, direct(issued(D1, YESTERDAY))).sale
+    result = sales.preview_sale(
+        w.db, w.staff, direct(issued(D1, TWO_DAYS_AGO), pb="25000"), sale_id=sale.id, now=NOW
+    )
+    assert not isinstance(result, list) and result.tickets[0].issue_date == YESTERDAY
+
+
+def test_a_staff_sale_filed_on_another_day_is_logged_with_ids_only(
+    w: World, caplog: pytest.LogCaptureFixture
+) -> None:
+    with caplog.at_level("INFO", logger="app.sales"):
+        sale = w.create(w.staff, direct(issued(D1, YESTERDAY))).sale
+        w.create(w.staff, direct(ticket(D2)))  # today: not logged
+        w.create(w.manager, direct(issued(D3, YESTERDAY), staff_sign="0004SV"))  # not staff
+    records = [r for r in caplog.records if "another day" in r.getMessage()]
+    assert len(records) == 1
+    r = records[0]
+    assert (r.agency_id, r.user_id, r.sale_id) == (w.agency_id, w.staff.id, sale.id)  # type: ignore[attr-defined]
+    assert "SYNTH" not in r.getMessage() and "Client" not in str(r.__dict__)
 
 
 def test_void_blocker_is_only_about_a_closed_day(w: World) -> None:

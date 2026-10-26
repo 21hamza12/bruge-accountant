@@ -122,11 +122,17 @@ def stale_or_garbled(form: SaleForm, view: SaleView) -> Failure | None:
     return None
 
 
-def reason_problem(user: User, raw: str) -> FieldError | None:
-    """The reason of an edit: required for manager and accountant, optional (but valid when given)
-    for staff editing their own sale."""
+def reason_needed(user: User, sale_day: date, today: date) -> bool:
+    """An edit needs a reason from manager and accountant, and from staff for a sale of an
+    earlier day (today's own sale is edited without one)."""
+    return permissions.can_edit_any_entry(user) or sale_day != today
+
+
+def reason_problem(user: User, raw: str, sale_day: date, today: date) -> FieldError | None:
+    """The reason of an edit: required when ``reason_needed``, optional (but valid when given)
+    for staff editing their own sale of today."""
     try:
-        if permissions.can_edit_any_entry(user):
+        if reason_needed(user, sale_day, today):
             reasons.required_reason(raw)
         else:
             reasons.clean_reason(raw)
@@ -370,7 +376,7 @@ def form_page(
         signs=signs,
         choose_day=choose_day,
         sale_day=sale_day,
-        needs_reason=sale is not None and permissions.can_edit_any_entry(user),
+        needs_reason=sale is not None and reason_needed(user, sale.day, today),
         today=today,
         max_tickets=MAX_TICKETS_PER_SALE,
         can_add_row=len(form.tickets) < MAX_TICKETS_PER_SALE,

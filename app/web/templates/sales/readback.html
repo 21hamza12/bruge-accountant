@@ -3,6 +3,7 @@
 {% block title %}{{ _("Vérifier la vente") }}{% endblock %}
 {% block content %}
 <p class="muted">{{ _("Relisez la vente avec le client. Rien n'est enregistré tant que vous n'avez pas confirmé.") }}</p>
+<p class="notice price-read" id="sale-day" role="status"><strong>{{ _("Vente du %(day)s", day=day|date_fr) }}</strong></p>
 
 {% if v.warnings or notes %}
 <div class="notice" role="status">

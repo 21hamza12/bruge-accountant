@@ -5,13 +5,18 @@ ticket is a sale of one ticket. The public names of ``sales_rules`` are re-expor
 callers import everything from ``app.sales``.
 
 * **Who may write**: staff (``permissions.can_enter_own_sales``) only for their own linked signs
-  (no sign: "Demandez au gérant de lier votre signe"), only on a sale of today, and only while the
-  day is not closed. Manager and accountant (``can_edit_any_entry``) may write any sale of their
-  agency, on past days too (not after today, not more than 5 years back), and must give a reason
-  to edit. A closed day refuses everybody until it is reopened. A role that is neither may do
-  nothing. Staff see only their own signs' sales (another sign's sale is "not found").
+  (no sign: "Demandez au gérant de lier votre signe"), on any day that is not closed and not in the
+  future (owner, 26 Oct 2026: a ticket issued earlier is filed under its issue date). Manager and
+  accountant (``can_edit_any_entry``) may write any sale of their agency, on past days too (not
+  after today, not more than 5 years back), and must give a reason to edit. A closed day refuses
+  everybody until it is reopened (staff are told to ask the manager or the accountant). A role
+  that is neither may do nothing. Staff see only their own signs' sales (another sign's sale is
+  "not found").
+* **The day of a new sale** (``filing_day``): the issue date of its newest ticket
+  (``TicketInput.issue_date``, kept in the ticket's JSON), else today. A manager or accountant may
+  name another day. Staff may not pick one: a day they post must equal the derived one.
 * **Reasons**: an edit by manager or accountant needs one (5 to 500 characters). A staff member
-  editing their own sale on the same day may leave it empty; if they give one it must be valid.
+  editing their own sale may leave it empty; if they give one it must be valid.
   Voiding and moving a sale need one for everybody.
 * **History**: a creation, an edit, a void and a move to another day each append a
   ``sale_versions`` row holding the whole sale (tickets included, money as text) and bump
@@ -40,6 +45,7 @@ caller must roll back the session (a day may have been opened and flushed before
 from __future__ import annotations
 
 import functools
+import logging
 from collections.abc import Callable, Collection, Sequence
 from dataclasses import dataclass, replace
 from datetime import date, datetime
@@ -53,6 +59,7 @@ from app import audit, days, partners, permissions
 from app.accounts import AccountError, get_signs, is_unique_violation, normalize_staff_sign
 from app.clock import utc_now
 from app.errors import UserError
+from app.formatting import day_month_fr
 from app.models import (
     AG_PARTNER,
     DAY_CLOSED,
@@ -68,6 +75,7 @@ from app.models import (
 )
 from app.reasons import ReasonError, clean_reason, required_reason
 from app.sales_rules import (
+    FUTURE_ISSUE_DATE,
     MAX_TICKETS_PER_SALE,
     CarriedFee,
     DayTotals,
@@ -82,15 +90,19 @@ from app.sales_rules import (
     ValidationContext,
     below_cost_warning,
     day_totals,
+    latest_issue_date,
     lines_from_json,
     override_digest,
     pb_per_line,
     sale_cost,
     sale_profit,
     ticket_json,
+    ticket_number,
     ticket_rows,
     validate,
 )
+
+log = logging.getLogger(__name__)
 
 __all__ = [
     "MAX_TICKETS_PER_SALE",
@@ -121,6 +133,7 @@ __all__ = [
     "check_sale_consistency",
     "create_sale",
     "day_totals",
+    "filing_day",
     "edit_sale",
     "get_sale_for",
     "move_sale_day",
@@ -149,7 +162,7 @@ NO_SIGN = "Aucun signe n'est lié à votre compte. Demandez au gérant de lier v
 SIGN_NOT_YOURS = "Ce signe n'est pas lié à votre compte."
 SIGN_REQUIRED = "Choisissez le signe de la vente."
 BAD_SIGN = "Ce signe n'est pas valide."
-ONLY_TODAY = "Vous ne pouvez saisir ou modifier que les ventes d'aujourd'hui."
+DAY_FROM_TICKET = "La journée d'une vente est celle de l'émission de ses billets."
 MOVE_FORBIDDEN = "Seul le gérant ou le comptable peut déplacer une vente vers un autre jour."
 NOT_FOUND = "Vente introuvable."
 VOIDED = "Cette vente est annulée."
@@ -288,36 +301,96 @@ def _check_source(source: str) -> None:
         raise SaleError(BAD_SOURCE)
 
 
-def _staff_day_blocked(scope: str, day: date, today: date) -> bool:
-    """Staff (own signs only) work on the sales of today only."""
-    return scope == OWN and day != today
+def filing_day(actor: User, data: SaleInput, day: date | None, today: date) -> date:
+    """The report day a new sale is filed under (pure: nothing is read or written).
+
+    The day of a sale is the day its tickets were issued: the newest ticket's ``issue_date``, else
+    today (a typed sale with no date). A manager or accountant may name another day (``day``).
+    Staff may not: the day they post is client data and must equal the one derived from the
+    tickets, else ``SaleForbidden``; they pick no day of their own. The day may not be after today
+    nor too old (``days.check_day``); whether it is closed is checked where the day row is read.
+    """
+    issued = latest_issue_date(data.tickets)
+    derived = issued if issued is not None else today
+    if _scope(actor) == ALL:
+        chosen = day if day is not None else derived
+    else:
+        if day is not None and day != derived:
+            raise SaleForbidden(DAY_FROM_TICKET)
+        chosen = derived
+    days.check_day(chosen, today)
+    return chosen
 
 
-def _check_staff_day(scope: str, day: date, today: date) -> None:
-    if _staff_day_blocked(scope, day, today):
-        raise SaleForbidden(ONLY_TODAY)
+def _check_issue_dates(data: SaleInput, today: date) -> None:
+    """A ticket cannot have been issued after today: refused as a mistake on its row."""
+    errors = [
+        FieldError(f"tickets[{i}].issue_date", FUTURE_ISSUE_DATE)
+        for i, t in enumerate(data.tickets)
+        if (d := getattr(t, "issue_date", None)) is not None
+        and isinstance(d, date)
+        and not isinstance(d, datetime)
+        and d > today
+    ]
+    if errors:
+        raise InvalidSale(errors)
 
 
-VOID_NOT_TODAY = "not_today"
+def _day_text(day: date, today: date) -> str:
+    text = day_month_fr(day)
+    return text if day.year == today.year else f"{text} {day.year}"
+
+
+def _require_open(scope: str, report_day: ReportDay, today: date) -> None:
+    """Refuse a write on a closed day. Staff are told which day it is and who can help; a manager
+    or accountant are told to have the manager reopen it."""
+    if report_day.status != DAY_CLOSED:
+        return
+    if scope == OWN:
+        raise days.DayClosed(
+            f"La journée du {_day_text(report_day.day, today)} est clôturée : "
+            "demandez au gérant ou à la comptable."
+        )
+    raise days.DayClosed
+
+
 VOID_DAY_CLOSED = "day_closed"
 
 
-def void_blocker(actor: User, day: date, day_status: str | None, today: date) -> str | None:
-    """Why ``actor`` cannot void (or edit) a sale of ``day``, or None: ``VOID_NOT_TODAY`` (staff
-    work on today's sales only) or ``VOID_DAY_CLOSED``, in the order ``_access`` applies them.
-    ``day_status`` is the day's status, None for a day with no row. The same two rules as
-    ``_access``; the chat tells the person why before linking to the void screen, which still
-    re-checks everything. Raises ``SaleForbidden`` for a role that may not enter sales."""
-    if _staff_day_blocked(_scope(actor), day, today):
-        return VOID_NOT_TODAY
+def void_blocker(actor: User, day_status: str | None) -> str | None:
+    """Why ``actor`` cannot void (or edit) a sale, or None: ``VOID_DAY_CLOSED``. Staff may void
+    their own sales of any day that is not closed (and not in the future, which a sale never is).
+    ``day_status`` is the day's status, None for a day with no row. The same rule as ``_access``;
+    the chat tells the person why before linking to the void screen, which still re-checks
+    everything. Raises ``SaleForbidden`` for a role that may not enter sales."""
+    _scope(actor)
     return VOID_DAY_CLOSED if day_status == DAY_CLOSED else None
 
 
-def _reason_for_edit(scope: str, raw: str | None) -> str | None:
+def _reason_for_edit(scope: str, raw: str | None, sale_day: date, today: date) -> str | None:
+    """The reason of an edit: mandatory for manager and accountant, and for staff when the sale's
+    day is not today; optional (but cleaned) for staff editing their own sale of today."""
     try:
-        return required_reason(raw) if scope == ALL else clean_reason(raw)
+        if scope == ALL or sale_day != today:
+            return required_reason(raw)
+        return clean_reason(raw)
     except ReasonError as exc:
         raise InvalidReason(str(exc)) from None
+
+
+def _keep_issue_dates(scope: str, data: SaleInput, previous: SaleVersion) -> SaleInput:
+    """Staff cannot change a ticket's issue date by editing: each ticket already on the sale keeps
+    the date of the previous version (matched by ticket number); a new row keeps what it came
+    with (the web layer blanks any date that is not signed). A manager or accountant edit as
+    they choose."""
+    if scope == ALL:
+        return data
+    held = {line.doc_number: line.issue_date for line in lines_from_json(previous.tickets)}
+    kept: list[TicketInput] = []
+    for t in data.tickets:
+        number, _ = ticket_number(t.doc_number, str(t.airline).strip().upper())
+        kept.append(replace(t, issue_date=held[number]) if number in held else t)
+    return replace(data, tickets=tuple(kept))
 
 
 def _resolve_sign(
@@ -417,6 +490,22 @@ def _current(agency_id: int) -> Select[Sale, SaleVersion, date]:
         .where(Sale.agency_id == agency_id)
         .execution_options(populate_existing=True)
     )
+
+
+def issue_dates_for(db: Session, agency_id: int, doc_numbers: Collection[str]) -> dict[str, date]:
+    """``{doc_number: issue date}`` of the numbers held by an active sale of the agency whose
+    ticket carries an issue date (two queries, whatever the count): for screens that list
+    tickets, such as the approvals queue."""
+    found = active_ticket_lookup(db, agency_id, doc_numbers)
+    sale_ids = {sale_id for sale_id, _ in found.values()}
+    if not sale_ids:
+        return {}
+    dates: dict[str, date] = {}
+    for head, version, day in db.execute(_current(agency_id).where(Sale.id.in_(sale_ids))):
+        for t in _view(head, version, day).tickets:
+            if t.issue_date is not None and t.doc_number in found:
+                dates[t.doc_number] = t.issue_date
+    return dates
 
 
 def _get_sale(db: Session, agency_id: int, sale_id: int) -> SaleView | None:
@@ -723,13 +812,12 @@ def _fresh_sale(db: Session, actor: User, sale_id: int, *, lock: bool) -> Sale:
 
 
 def _access(
-    db: Session, actor: User, sale_id: int, today: date, *, lock: bool, any_day: bool = False
+    db: Session, actor: User, sale_id: int, today: date, *, lock: bool
 ) -> tuple[Sale, ReportDay]:
     """The one place that decides whether the actor may work on an existing sale: it exists in
-    the actor's agency and (for staff) is one of their signs; the day is today for staff; the day
-    is not closed; the sale is not voided. With ``lock`` the locks are taken day first, then the
-    sale, and everything is re-read under them. Used by edit, void and preview alike. ``any_day``
-    (approvals only, see ``edit_sale``) lifts the "staff: today only" rule, nothing else."""
+    the actor's agency and (for staff) is one of their signs; the day is not closed (staff may work
+    on any earlier day that is open); the sale is not voided. With ``lock`` the locks are taken day
+    first, then the sale, and everything is re-read under them. Used by edit, void and preview."""
     scope = _scope(actor)
     head = _fresh_sale(db, actor, sale_id, lock=False)
     report_day = db.scalars(
@@ -737,14 +825,12 @@ def _access(
         .where(ReportDay.agency_id == head.agency_id, ReportDay.id == head.report_day_id)
         .execution_options(populate_existing=True)
     ).one()
-    if not any_day:
-        _check_staff_day(scope, report_day.day, today)
     if lock:
         days.lock_day(db, actor, report_day, shared=True)
         head = _fresh_sale(db, actor, sale_id, lock=True)
         if head.report_day_id != report_day.id:
             raise StaleSale  # moved to another day while we waited
-    days.require_writable(report_day)
+    _require_open(scope, report_day, today)
     if head.status == SALE_VOIDED:
         raise SaleVoided
     return head, report_day
@@ -945,19 +1031,19 @@ def preview_sale(
     today = moment.date()
     scope = _scope(actor)
     previous = None
+    _check_issue_dates(data, today)
     if sale_id is not None:
         head, report_day = _access(db, actor, sale_id, today, lock=False)
         previous = _current_version(db, head)
+        data = _keep_issue_dates(scope, data, previous)
         chosen = report_day.day
         _resolve_sign(db, actor, scope, data.staff_sign, head.staff_sign)
     else:
-        chosen = day if day is not None else today
-        days.check_day(chosen, today)
+        chosen = filing_day(actor, data, day, today)
         _resolve_sign(db, actor, scope, data.staff_sign, None)
-        _check_staff_day(scope, chosen, today)
         existing = days.get_day(db, actor.agency_id, chosen)
         if existing is not None:
-            days.require_writable(existing)
+            _require_open(scope, existing, today)
     result = validate(data, build_context(db, actor, data, chosen, previous))
     if isinstance(result, list):
         return result
@@ -985,11 +1071,10 @@ def create_sale(
     _check_source(source)
     moment = now or utc_now()
     today = moment.date()
-    chosen = day if day is not None else today
-    days.check_day(chosen, today)
     scope = _scope(actor)
+    _check_issue_dates(data, today)
+    chosen = filing_day(actor, data, day, today)
     sign = _resolve_sign(db, actor, scope, data.staff_sign, None)
-    _check_staff_day(scope, chosen, today)
     result = validate(data, build_context(db, actor, data, chosen))
     if isinstance(result, list):
         raise InvalidSale(result)
@@ -999,7 +1084,7 @@ def create_sale(
         after_duplicate_check()
     report_day = days.get_or_open_day(db, actor, chosen, now=moment, ip=ip)
     days.lock_day(db, actor, report_day, shared=True)
-    days.require_writable(report_day)
+    _require_open(scope, report_day, today)
     head = Sale(
         agency_id=actor.agency_id,
         report_day_id=report_day.id,
@@ -1032,6 +1117,16 @@ def create_sale(
     except IntegrityError as exc:
         _raise_unique(db, actor, exc, docs, None)
     _audit(db, audit.SALE_CREATED, actor, head, 1, result, now=moment, ip=ip)
+    if scope != ALL and chosen != today:
+        log.info(
+            "staff sale filed on another day than today",
+            extra={
+                "agency_id": actor.agency_id,
+                "user_id": actor.id,
+                "sale_id": head.id,
+                "report_day": chosen.isoformat(),
+            },
+        )
     warnings = result.warnings + _sign_warnings(db, actor, scope, sign)
     return SaleResult(_reload(db, actor, head), warnings)
 
@@ -1048,25 +1143,26 @@ def edit_sale(
     ip: str | None = None,
     source: str = "form",
     expected_version: int | None = None,
-    any_day: bool = False,
 ) -> SaleResult:
     """Replace the content of a sale (tickets, price, client, payment...) with a new version.
 
     Manager and accountant must give a ``reason``; staff, editing their own sale of today, need
-    not. The day stays (``move_sale_day`` changes it). ``SaleError`` when nothing changed, the
-    sale is voided, or it changed under us ("rechargez"). ``expected_version`` is the version the
-    form was built on: when the sale has moved on, the edit is refused as stale. ``any_day`` lets
-    a staff member correct their own sale of a past day; ONLY ``app/approvals.py`` passes it, when
-    the staff member answers a comparison flag on that sale (never from a form or a route).
+    not (of an earlier day they must, as managers do). The day stays (``move_sale_day`` changes
+    it). ``SaleError`` when nothing changed, the sale is voided, or it changed under us
+    ("rechargez"). ``expected_version`` is the version the form was
+    built on: when the sale has moved on, the edit is refused as stale. Staff may edit
+    their own sale of any day that is not closed.
     """
     _check_source(source)
     moment = now or utc_now()
-    head, report_day = _access(db, actor, sale_id, moment.date(), lock=True, any_day=any_day)
+    head, report_day = _access(db, actor, sale_id, moment.date(), lock=True)
+    _check_issue_dates(data, moment.date())
     _check_expected(head, expected_version)
     scope = _scope(actor)
-    clean = _reason_for_edit(scope, reason)
+    clean = _reason_for_edit(scope, reason, report_day.day, moment.date())
     sign = _resolve_sign(db, actor, scope, data.staff_sign, head.staff_sign)
     previous = _current_version(db, head)
+    data = _keep_issue_dates(scope, data, previous)
     result = validate(data, build_context(db, actor, data, report_day.day, previous))
     if isinstance(result, list):
         raise InvalidSale(result)

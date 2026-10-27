@@ -631,11 +631,14 @@ def test_agency_id_and_sale_id_fields_are_ignored(env: Env) -> None:
     assert latest(env, sale_id).version_no == 2 and latest(env, other).version_no == 1
 
 
-def test_staff_always_enter_today_whatever_day_they_post(env: Env) -> None:
+def test_staff_cannot_choose_the_day_they_post(env: Env) -> None:
+    # the day follows the tickets' issue date (tests/test_sale_day_pages.py); a posted day with
+    # no ticket date behind it is refused, and the typed sale stays on today
     c = env.staff_a()
-    sale_id = sale_id_of(post(c, "/sales", form(day=YESTERDAY)))
-    detail = c.get(f"/sales/{sale_id}").text
-    assert "18 octobre 2026" in detail
+    refused = post(c, "/sales", form(day=YESTERDAY))
+    assert refused.status_code == 403 and "émission" in text_of(refused.text)
+    sale_id = sale_id_of(post(c, "/sales", form()))
+    assert "18 octobre 2026" in c.get(f"/sales/{sale_id}").text
 
 
 def test_a_manager_enters_a_sale_for_a_past_day_and_a_chosen_sign(env: Env) -> None:
@@ -903,13 +906,21 @@ def test_an_unknown_or_oversized_sale_id_is_a_404(env: Env) -> None:
     assert c.get("/sales/abc").status_code == 400
 
 
-def test_a_staff_member_cannot_edit_a_sale_of_a_past_day(env: Env) -> None:
+def test_a_staff_member_edits_a_sale_of_a_past_day_that_is_not_closed(env: Env) -> None:
     sale_id = enter(env.manager_a(), tk(D1), staff_sign=SIGN, day=YESTERDAY)
     c = env.staff_a()
-    assert c.get(f"/sales/{sale_id}").status_code == 200  # they may read it
+    assert c.get(f"/sales/{sale_id}").status_code == 200
+    # an older sale: the agent gives a reason (owner's decision, 26 Oct)
     r = post(c, f"/sales/{sale_id}", form(pb="30000", version_no="1"), via="/sales/new")
-    assert r.status_code == 403 and "aujourd'hui" in text_of(r.text)
-    assert latest(env, sale_id).version_no == 1
+    assert r.status_code == 400 and "motif" in text_of(r.text).lower()
+    data = form(pb="30000", version_no="1", reason="prix corrigé")
+    r = post(c, f"/sales/{sale_id}", data, via="/sales/new")
+    assert r.status_code == 303 and latest(env, sale_id).version_no == 2
+    set_day_status(env, "closed")  # a closed day refuses staff (tests/test_sale_day_pages.py)
+    data = form(pb="31000", version_no="2", reason="prix corrigé")
+    r = post(c, f"/sales/{sale_id}", data, via="/sales/new")
+    assert r.status_code == 409 and "clôturée" in text_of(r.text)
+    assert latest(env, sale_id).version_no == 2
 
 
 # --- edit ---------------------------------------------------------------------------------------

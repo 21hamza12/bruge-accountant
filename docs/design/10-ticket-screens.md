@@ -90,3 +90,6 @@ same PNR (likely an added service).
 3. **`FP NONREF …` is not reliable**: it can be the word CLIENT, the client's name, or another
    agency's name. The app uses it only as a **suggestion** in the read-back; the agent confirms
    AG (BRUGE or partner) and CLT. The `AP … - <agency> - A` line is the stronger hint for AG.
+4. **The issue date decides the day (24-26 Oct).** The date of the FA line
+   (`MRU28803.00/26APR26/NKC…` is 26 April 2026) is the day the sale is filed under, not the day it
+   was typed; staff may file an earlier day that is not closed. See `05-daily-comparison.md`.

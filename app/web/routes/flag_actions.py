@@ -8,9 +8,9 @@ that was not sent.
 * ``GET /flags/validate``, ``POST /flags/{id}/validate``, ``POST /flags/overrides/{sale}/validate``
   (manager and accountant): approve, or reject with a reason. A validator never validates their own
   answer: the button is disabled and the server refuses with a 403 anyway.
-* ``GET /flags/{id}/enter``: the entry form of the sale, filled from the report line. Staff may
-  only enter a sale of today (a rule of the sale service), so for an older day the page says who
-  can.
+* ``GET /flags/{id}/enter``: the entry form of the sale, filled from the report line, with the
+  report's day as the ticket's issue date (so the sale is filed under that day). Staff may enter
+  it while the day is not closed; the sale service decides.
 
 Every write counts against the user's sale budget (``ratelimit.SALE_WRITE_USER``), is CSRF-protected
 on the router and refuses with a French message. Pages are ``no-store`` and carry no inline style or
@@ -32,10 +32,12 @@ from app import approvals, day_page, days, flags, permissions, sales
 from app.clock import Clock
 from app.errors import UserError
 from app.formatting import money
+from app.issue_sig import signer_for
 from app.models import FlagDecision, ReportDay, User
 from app.sales import SaleView
+from app.settings import Settings
 from app.web.csrf import csrf_protect
-from app.web.deps import AuthContext, client_ip, require_permission
+from app.web.deps import AuthContext, client_ip, get_settings, require_permission
 from app.web.pages import page
 from app.web.params import DbId
 from app.web.routes.flags import CHOICE_LABELS, FlagRow, flag_row, list_page
@@ -49,7 +51,6 @@ NO_STORE = {"Cache-Control": "no-store"}
 MAX_REASON = 500
 APPROVE, REJECT = "approve", "reject"
 BAD_DECISION = "Choisissez d'approuver ou de rejeter."
-PAST_DAY = "Seul le gérant ou le comptable peut saisir un billet d'une journée passée."
 
 Answerer = Annotated[AuthContext, Depends(require_permission(permissions.can_answer_flags))]
 Validator = Annotated[AuthContext, Depends(require_permission(permissions.can_validate_money))]
@@ -125,7 +126,13 @@ def _day_of(db: Session, user: User, flag_id: int, clock: Clock) -> date:
 
 
 @router.get("/{flag_id}/enter")
-def flag_enter(flag_id: DbId, db: Db, clock: Now, auth: Answerer) -> Response:
+def flag_enter(
+    flag_id: DbId,
+    db: Db,
+    clock: Now,
+    auth: Answerer,
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> Response:
     """The entry form filled from the report line of a ticket that was not entered."""
     user = auth.user
     try:
@@ -137,8 +144,6 @@ def flag_enter(flag_id: DbId, db: Db, clock: Now, auth: Answerer) -> Response:
             db, auth, clock, _day_of(db, user, flag_id, clock), error=str(exc), status_code=status
         )
     sees_all = permissions.sees_all_signs(user)
-    if not sees_all and prefill.report_day != clock().date():
-        return list_page(db, auth, clock, prefill.report_day, error=PAST_DAY, status_code=403)
     form = SaleForm(
         tickets=[
             TicketForm(
@@ -149,6 +154,8 @@ def flag_enter(flag_id: DbId, db: Db, clock: Now, auth: Answerer) -> Response:
                 pax_type=prefill.pax_type,
                 rloc=prefill.rloc,
                 trnc=prefill.trnc,
+                issue_date=prefill.report_day.isoformat(),
+                issue_sig=signer_for(settings, user).sign(prefill.doc_number, prefill.report_day),
             )
         ],
         staff_sign=prefill.staff_sign,
@@ -164,6 +171,7 @@ def flag_enter(flag_id: DbId, db: Db, clock: Now, auth: Answerer) -> Response:
 class QueueFlag:
     row: FlagRow
     day: date
+    issued: date | None  # the ticket's issue date, from its sale (None: no sale, or no date)
     answer: str  # what the agent chose
     reason: str
     by: str
@@ -209,6 +217,7 @@ def validate_page(
         {d.actor_user_id for d in agents.values() if d is not None}
         | {v.actor_user_id for v in queue.overrides},
     )
+    issued = sales.issue_dates_for(db, user.agency_id, {f.doc_number for f in queue.flags})
     flag_items: list[QueueFlag] = []
     for f in queue.flags:
         given = agents[f.id]
@@ -216,6 +225,7 @@ def validate_page(
             QueueFlag(
                 row=flag_row(f),
                 day=dates.get(f.report_day_id, date.min),
+                issued=issued.get(f.doc_number),
                 answer=CHOICE_LABELS.get(given.choice, "") if given else "",
                 reason=(given.reason or "") if given else "",
                 by=names.get(given.actor_user_id, "—") if given else "—",

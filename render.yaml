@@ -44,6 +44,9 @@ services:
         sync: false
       - key: SENTRY_DSN
         sync: false
+      # Signs the issue dates the app proposes (app/issue_sig.py). Generated once by Render.
+      - key: ISSUE_SIGNING_KEY
+        generateValue: true
 
   # Hourly housekeeping: expired sessions and temporary passwords, audit events past retention,
   # old rate-limit windows. Same image as the web service, a different command; it needs the same

@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import json
 import os
+import secrets
 from decimal import Decimal
 from typing import Annotated, Any, Literal
 
-from pydantic import Field, SecretStr, ValidationInfo, field_validator, model_validator
+from pydantic import Field, PrivateAttr, SecretStr, ValidationInfo, field_validator, model_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 from app.ai.pricing import PRICES
@@ -147,6 +148,15 @@ class Settings(BaseSettings):
     # Render sets RENDER=true on its services. Seeing it outside production means a deploy
     # forgot ENV=production, so refuse to start rather than run with development defaults.
     render: str | None = None
+    # Secret that signs the issue dates the app proposes (app/issue_sig.py). Unset: a random key
+    # per process (older forms then lose their dates after a restart; nothing forged is accepted).
+    issue_signing_key: SecretStr | None = None
+    _ephemeral_key: bytes = PrivateAttr(default_factory=lambda: secrets.token_bytes(32))
+
+    def issue_key(self) -> bytes:
+        configured = self.issue_signing_key
+        text = configured.get_secret_value().strip() if configured is not None else ""
+        return text.encode() if text else self._ephemeral_key
 
     @field_validator("allowed_hosts", "cors_allowed_origins", mode="before")
     @classmethod

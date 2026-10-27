@@ -26,6 +26,7 @@ from app.ai import budget as ai_budget
 from app.auth import ratelimit
 from app.clock import Clock
 from app.errors import UserError
+from app.formatting import date_fr
 from app.models import DAY_CLOSED, PAX_TYPES, SALE_VOIDED, TICKET_TYPES, Partner, SaleVersion, User
 from app.parsing.pnr import MAX_TEXT_BYTES
 from app.repository import sign_owners
@@ -41,7 +42,7 @@ from app.sales import (
     StaleSale,
     ValidatedSale,
 )
-from app.sales_rules import MAX_TICKETS_PER_SALE, TicketLine, ticket_number
+from app.sales_rules import MAX_TICKETS_PER_SALE, TicketLine, latest_issue_date, ticket_number
 from app.web import sale_forms
 from app.web.deps import (
     AuthContext,
@@ -121,11 +122,17 @@ def stale_or_garbled(form: SaleForm, view: SaleView) -> Failure | None:
     return None
 
 
-def reason_problem(user: User, raw: str) -> FieldError | None:
-    """The reason of an edit: required for manager and accountant, optional (but valid when given)
-    for staff editing their own sale."""
+def reason_needed(user: User, sale_day: date, today: date) -> bool:
+    """An edit needs a reason from manager and accountant, and from staff for a sale of an
+    earlier day (today's own sale is edited without one)."""
+    return permissions.can_edit_any_entry(user) or sale_day != today
+
+
+def reason_problem(user: User, raw: str, sale_day: date, today: date) -> FieldError | None:
+    """The reason of an edit: required when ``reason_needed``, optional (but valid when given)
+    for staff editing their own sale of today."""
     try:
-        if permissions.can_edit_any_entry(user):
+        if reason_needed(user, sale_day, today):
             reasons.required_reason(raw)
         else:
             reasons.clean_reason(raw)
@@ -342,6 +349,9 @@ def form_page(
         form.staff_sign = signs[0]
     keep = sale.partner_id if sale is not None else None
     ask = agency_ask(db, user.agency_id, today, form) if form.from_paste and sale is None else None
+    choose_day = permissions.can_edit_any_entry(user)
+    posted_day = sale_forms.parse_day(form.day)[0] if choose_day else None
+    sale_day = sale.day if sale is not None else posted_day or form.issue_day or today
     return page(
         "sales/form.html",
         status_code=failure.status if failure and status_code == 200 else status_code,
@@ -364,8 +374,9 @@ def form_page(
         payments=sale_forms.PAYMENT_LABELS,
         sign_mode=mode,
         signs=signs,
-        choose_day=permissions.can_edit_any_entry(user),
-        needs_reason=sale is not None and permissions.can_edit_any_entry(user),
+        choose_day=choose_day,
+        sale_day=sale_day,
+        needs_reason=sale is not None and reason_needed(user, sale.day, today),
         today=today,
         max_tickets=MAX_TICKETS_PER_SALE,
         can_add_row=len(form.tickets) < MAX_TICKETS_PER_SALE,
@@ -392,9 +403,12 @@ def readback_page(
     result: ValidatedSale,
     *,
     sale: SaleView | None = None,
+    new_day: date | None = None,
 ) -> Response:
     """The read-back of a validated sale: what will be stored, priced by the server. Its two forms
-    (confirm, and back to the form) carry the posted values in hidden fields, nothing computed."""
+    (confirm, and back to the form) carry the posted values in hidden fields, nothing computed.
+    ``new_day`` is the day a new sale will be filed under (``sales.filing_day``): the page says it,
+    and the confirm carries it back so the server can tell a day changed on the way."""
     user = auth.user
     _, signs = sign_choice(db, user)
     chosen = form.staff_sign.strip().upper()
@@ -404,10 +418,16 @@ def readback_page(
         sign = chosen
     else:
         sign = signs[0] if len(signs) == 1 else ""
-    day = sale.day if sale is not None else None
-    if day is None:
-        day = sale_forms.parse_day(form.day)[0] if permissions.can_edit_any_entry(user) else None
+    day = sale.day if sale is not None else new_day or clock().date()
     notes = list(sales.sign_warnings(db, user, sign)) if sign else []
+    issued = form.issue_day
+    if sale is None and issued is not None:
+        form.day = day.isoformat()  # the confirm carries the day: staff cannot change it on the way
+        if day != issued:
+            notes.append(
+                f"La journée choisie ({date_fr(day)}) n'est pas la date d'émission "
+                f"des billets ({date_fr(issued)})."
+            )
     ask = (
         agency_ask(db, user.agency_id, clock().date(), form)
         if form.from_paste and sale is None
@@ -427,7 +447,7 @@ def readback_page(
         answer=_answer_text(form, result) if ask is not None else "",
         profit=sales.sale_profit(result),
         sign=sign,
-        day=day or clock().date(),
+        day=day,
         payment=_payment(result.payment_method),
         pairs=form.hidden_pairs,
         confirm_action="/sales" if sale is None else f"/sales/{sale.id}",
@@ -484,8 +504,6 @@ def detail_page(
     report_day = days.get_day(db, user.agency_id, view.day)
     closed = report_day is not None and report_day.status == DAY_CLOSED
     editable = view.status != SALE_VOIDED and not closed
-    if not permissions.can_edit_any_entry(user):
-        editable = editable and view.day == clock().date()
     return page(
         "sales/detail.html",
         status_code=status_code,
@@ -548,7 +566,12 @@ def list_page(
         day=day,
         today=clock().date(),
         rows=[
-            {"s": v, "profit": sales.sale_profit(v), "payment": _payment(v.payment_method)}
+            {
+                "s": v,
+                "profit": sales.sale_profit(v),
+                "payment": _payment(v.payment_method),
+                "issued": latest_issue_date(v.tickets),
+            }
             for v in views
         ],
         totals=sales.day_totals(views),

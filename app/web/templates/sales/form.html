@@ -21,6 +21,7 @@
 <p class="notice price-read" id="price-read" role="status">
   {% if f.pb_read_amount is not none %}{{ _("P.B lu sur la ligne RM : %(pb)s %(cur)s", pb=f.pb_read_amount|money_fr, cur=agency.currency) }}{% else %}{{ _("P.B : aucun prix sur la ligne RM, à saisir") }}{% endif %}
   · {% if f.cost_read is not none %}{{ _("Coût Amadeus : %(cost)s %(cur)s", cost=f.cost_read|money_fr, cur=agency.currency) }}{% else %}{{ _("Coût Amadeus : à vérifier") }}{% endif %}
+  · <strong>{{ _("Vente du %(day)s", day=sale_day|date_fr) }}</strong>
 </p>
 {% endif %}
 
@@ -125,6 +126,12 @@
         </select>
         {{ field_error(errors, "t" ~ i ~ ".trnc") }}
       </div>
+      <div class="field">
+        {% if row.issued %}<p class="help issued" id="issue_date_{{ i }}">{{ _("Émis le %(date)s", date=row.issued|date_fr) }}</p>{% endif %}
+        <input type="hidden" name="issue_date" value="{{ row.issue_date }}">
+        <input type="hidden" name="issue_sig" value="{{ row.issue_sig }}">
+        {{ field_error(errors, "t" ~ i ~ ".issue_date") }}
+      </div>
     </fieldset>
     {% endfor %}
     {% if not can_add_row %}<p class="help">{{ _("Une vente ne peut pas avoir plus de %(max)s billets.", max=max_tickets) }}</p>{% endif %}
@@ -159,6 +166,8 @@
       <input id="day" name="day" type="date" max="{{ today.isoformat() }}" value="{{ f.day or today.isoformat() }}"{{ described(errors, "day") }}>
       {{ field_error(errors, "day") }}
     </div>
+    {% elif not sale %}
+    <p>{{ _("Journée") }} : <strong>{{ sale_day|date_fr }}</strong>{% if f.issue_day %} <span class="help">({{ _("date d'émission du billet") }})</span>{% endif %}</p>
     {% endif %}
 
     {% if ask %}

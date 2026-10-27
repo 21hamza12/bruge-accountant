@@ -16,6 +16,9 @@ Rules (docs/design/05-daily-comparison.md section 2; decisions 4, 13, 21, 22):
   standard fee of the day instead. A partner without a fee is refused, naming the partner.
 * **Limits**: the cost of a sale and its P.B (and an override fee times the number of tickets)
   must stay under ``money.MAX_AMOUNT``, the size of the NUMERIC(14,2) columns.
+* **Issue date**: a ticket may carry the day it was issued (``TicketInput.issue_date``, stored in
+  the ticket JSON); the newest one is the day the sale is filed under (``latest_issue_date``, used
+  by ``app.sales.filing_day``).
 * **Per-line P.B for the exports** (``pb_per_line``): the full price on the first ticket (position
   1, the order entered) and 0 on the others.
 """
@@ -81,6 +84,8 @@ DIRECT_WITH_OVERRIDE = "Un tarif particulier ne concerne qu'une vente partenaire
 OVERRIDE_REASON_REQUIRED = "Un tarif particulier exige un motif (5 caractères au moins)."
 REFUSED_WITH_PHONE = "Le client a refusé de donner son numéro : laissez le numéro vide."
 BAD_FLAG = "Valeur invalide."
+BAD_ISSUE_DATE = "La date d'émission du billet est invalide."
+FUTURE_ISSUE_DATE = "La date d'émission du billet est dans le futur."
 
 
 def _no_fee(name: str) -> str:
@@ -119,6 +124,7 @@ class TicketInput:
     pax_type: str
     rloc: str
     trnc: str
+    issue_date: date | None = None  # the day the ticket was issued (Amadeus FA line)
 
 
 @dataclass(frozen=True)
@@ -176,6 +182,7 @@ class TicketLine:
     rloc: str
     trnc: str
     position: int
+    issue_date: date | None = None
 
 
 @dataclass(frozen=True)
@@ -349,11 +356,30 @@ def _validate_ticket(raw: TicketInput, index: int, errs: list[FieldError]) -> Ti
     trnc = _code(raw.trnc)
     if trnc not in TICKET_TYPES:
         bad("trnc", BAD_TRNC)
+    issue_date = raw.issue_date
+    if issue_date is not None and (
+        isinstance(issue_date, datetime) or not isinstance(issue_date, date)
+    ):
+        bad("issue_date", BAD_ISSUE_DATE)
     if len(errs) > start or not (doc and airline and name and pax_type and rloc and trnc):
         return None
     if cost is None:
         return None
-    return TicketLine(doc, airline, cost, name, pax_type, rloc, trnc, index + 1)
+    return TicketLine(doc, airline, cost, name, pax_type, rloc, trnc, index + 1, issue_date)
+
+
+def latest_issue_date(tickets: object) -> date | None:
+    """The day a sale is filed under: the issue date of its newest ticket (for an exchange, the new
+    ticket), or None when no ticket has one. Anything that is not a plain date is ignored here
+    (``validate`` refuses it)."""
+    if not isinstance(tickets, Sequence) or isinstance(tickets, str | bytes):
+        return None
+    found = [
+        d
+        for t in tickets
+        if isinstance(d := getattr(t, "issue_date", None), date) and not isinstance(d, datetime)
+    ]
+    return max(found) if found else None
 
 
 def _validate_tickets(raw: object, errs: list[FieldError]) -> tuple[TicketLine, ...] | None:
@@ -608,7 +634,7 @@ def override_digest(
 
 def ticket_json(line: TicketLine) -> dict[str, Any]:
     """A ticket as stored in ``sale_versions.tickets`` (money as text)."""
-    return {
+    stored: dict[str, Any] = {
         "doc_number": line.doc_number,
         "airline": line.airline,
         "total_doc": str(line.total_doc),
@@ -618,6 +644,20 @@ def ticket_json(line: TicketLine) -> dict[str, Any]:
         "trnc": line.trnc,
         "position": line.position,
     }
+    if (
+        line.issue_date is not None
+    ):  # absent for a ticket without a date, as before the date existed
+        stored["issue_date"] = line.issue_date.isoformat()
+    return stored
+
+
+def _stored_date(raw: object) -> date | None:
+    if not isinstance(raw, str):
+        return None
+    try:
+        return date.fromisoformat(raw)
+    except ValueError:
+        return None
 
 
 def lines_from_json(raw: list[dict[str, Any]]) -> tuple[TicketLine, ...]:
@@ -632,6 +672,7 @@ def lines_from_json(raw: list[dict[str, Any]]) -> tuple[TicketLine, ...]:
             rloc=str(t["rloc"]),
             trnc=str(t["trnc"]),
             position=int(t["position"]),
+            issue_date=_stored_date(t.get("issue_date")),
         )
         for t in sorted(raw, key=lambda item: int(item["position"]))
     )

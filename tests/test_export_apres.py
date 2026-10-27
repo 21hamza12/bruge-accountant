@@ -950,3 +950,38 @@ def test_a_compared_day_exports_the_compared_upload_not_the_newest(w: World) -> 
     w.db.commit()
     compared = export_apres.apres_rows(w.db, w.manager, DAY)
     assert compared is not None and compared.ticket_count == 34
+
+
+def test_the_issue_date_is_a_thirteenth_column_never_compared() -> None:
+    """Owner's request (27 Oct): each ticket's issue date, after the 12 compared columns."""
+    from datetime import date as _date
+    from decimal import Decimal as _Dec
+    from io import BytesIO
+
+    import openpyxl as _xl
+
+    from app.export_apres import (
+        FIRST_ROW,
+        HEADER_ROW,
+        HEADERS,
+        ISSUE_HEADER,
+        ApresLine,
+        ApresReport,
+        build_apres_xlsx,
+    )
+
+    line = ApresLine(
+        seq_no="1", airline="495", doc_number="3940299902", total_doc=_Dec("100"),
+        pax_name="SYNTH/PAX", staff_sign="0004SV", trnc="TKTT", rloc="SYN7QA",
+        pb=_Dec("120"), ag="BRUGE", sale_id=1, ticket_count=1, issue_date=_date(2026, 10, 21),
+    )  # fmt: skip
+    report = ApresReport(
+        day=_date(2026, 10, 21), agy_no="X", range_raw="21OCT", current_date="22-OCT-2026",
+        lines=(line,), ticket_count=1, total_doc=_Dec("100"), total_pb=_Dec("120"),
+        total_margin=_Dec("20"), unmatched=0,
+    )  # fmt: skip
+    ws = _xl.load_workbook(BytesIO(build_apres_xlsx(report))).active
+    assert ws is not None
+    assert len(HEADERS) == 12 and ISSUE_HEADER not in HEADERS  # the comparison is unchanged
+    assert ws.cell(row=HEADER_ROW, column=13).value == "DATE EMISSION"
+    assert ws.cell(row=FIRST_ROW, column=13).value == "21/10/2026"

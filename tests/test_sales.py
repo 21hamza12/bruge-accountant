@@ -711,8 +711,10 @@ def test_staff_with_two_signs_must_choose_one_of_them(w: World) -> None:
     assert w.create(w.two_signs, direct(staff_sign="0008bb")).sale.staff_sign == "0008BB"
 
 
-def test_staff_can_only_create_for_today(w: World) -> None:
-    with pytest.raises(SaleForbidden, match="aujourd"):
+def test_staff_cannot_pick_a_day_and_nobody_files_in_the_future(w: World) -> None:
+    # owner, 26 Oct 2026: the day follows the tickets' issue date (tests/test_sale_day.py); a
+    # staff member can no longer name a day of their own choosing
+    with pytest.raises(SaleForbidden, match="émission"):
         w.create(w.staff, direct(), day=YESTERDAY)
     with pytest.raises(days.DayError, match="futur"):
         w.create(w.manager, direct(staff_sign="0004SV"), day=TODAY + timedelta(days=1))
@@ -972,9 +974,17 @@ def test_staff_cannot_move_their_sale_to_another_sign(w: World) -> None:
         w.edit(w.staff, sale_id, direct(pb="24000", staff_sign="0006AC"), "ok ok")
 
 
-def test_staff_cannot_edit_a_sale_of_a_past_day(w: World) -> None:
+def test_staff_edit_a_sale_of_a_past_day_that_is_not_closed(w: World) -> None:
     sale_id = w.create(w.manager, direct(staff_sign="0004SV"), day=YESTERDAY).sale.id
-    with pytest.raises(SaleForbidden, match="aujourd"):
+    result = w.edit(w.staff, sale_id, direct(pb="25000"), "correction")
+    assert result.sale.pb == Decimal("25000.00") and result.sale.day == YESTERDAY
+    assert len(w.history(sale_id)) == 2
+
+
+def test_staff_cannot_edit_a_sale_of_a_closed_past_day(w: World) -> None:
+    sale_id = w.create(w.manager, direct(staff_sign="0004SV"), day=YESTERDAY).sale.id
+    w.close(YESTERDAY)
+    with pytest.raises(days.DayClosed, match="clôturée"):
         w.edit(w.staff, sale_id, direct(pb="25000"), "trop tard")
     assert len(w.history(sale_id)) == 1
 
@@ -1107,16 +1117,18 @@ def test_voiding_needs_a_reason(w: World, reason: str | None) -> None:
     assert sales.get_sale_for(w.db, w.manager, sale_id).status == "active"  # type: ignore[union-attr]
 
 
-def test_staff_voids_only_their_own_sale_of_today(w: World) -> None:
+def test_staff_void_only_their_own_sales_on_a_day_that_is_not_closed(w: World) -> None:
     mine = w.create(w.staff, direct(ticket(D1))).sale.id
     theirs = w.create(w.staff2, direct(ticket(D2))).sale.id
     past = w.create(w.manager, direct(ticket(D3), staff_sign="0004SV"), day=YESTERDAY).sale.id
     with pytest.raises(SaleNotFound):
         w.void(w.staff, theirs)
-    with pytest.raises(SaleForbidden):
-        w.void(w.staff, past)
-    assert w.void(w.manager, past).status == "voided"
+    assert w.void(w.staff, past).status == "voided"  # an earlier day that is open
     assert w.void(w.staff, mine).status == "voided"
+    closed = w.create(w.manager, direct(ticket(D4), staff_sign="0004SV"), day=YESTERDAY).sale.id
+    w.close(YESTERDAY)
+    with pytest.raises(days.DayClosed):
+        w.void(w.staff, closed)
 
 
 # --- reading --------------------------------------------------------------------------------
@@ -1274,15 +1286,17 @@ def test_preview_of_another_signs_sale_is_not_found_and_leaks_nothing(w: World) 
     assert isinstance(seen, ValidatedSale) and seen.pb == Decimal("1100.00")  # own sale: fee kept
 
 
-def test_preview_of_a_sale_on_a_closed_day_or_voided_or_old_is_refused(w: World) -> None:
+def test_preview_of_a_sale_on_a_closed_day_or_voided_is_refused(w: World) -> None:
     today = w.create(w.staff, direct(ticket(D1))).sale.id
     old = w.create(w.manager, direct(ticket(D2), staff_sign="0004SV"), day=YESTERDAY).sale.id
     gone = w.create(w.staff, direct(ticket(D3))).sale.id
     w.void(w.staff, gone)
     with pytest.raises(SaleError, match="annul"):
         sales.preview_sale(w.db, w.staff, direct(ticket(D3)), sale_id=gone, now=NOW)
-    with pytest.raises(SaleForbidden, match="aujourd"):
-        sales.preview_sale(w.db, w.staff, direct(ticket(D2)), sale_id=old, now=NOW)
+    assert isinstance(  # staff may correct an earlier day that is open (owner, 26 Oct 2026)
+        sales.preview_sale(w.db, w.staff, direct(ticket(D2)), sale_id=old, now=NOW),
+        ValidatedSale,
+    )
     assert isinstance(
         sales.preview_sale(
             w.db, w.manager, direct(ticket(D2), staff_sign="0004SV"), sale_id=old, now=NOW
@@ -1292,6 +1306,9 @@ def test_preview_of_a_sale_on_a_closed_day_or_voided_or_old_is_refused(w: World)
     w.close()
     with pytest.raises(days.DayClosed):
         sales.preview_sale(w.db, w.staff, direct(ticket(D1)), sale_id=today, now=NOW)
+    w.close(YESTERDAY)
+    with pytest.raises(days.DayClosed):
+        sales.preview_sale(w.db, w.staff, direct(ticket(D2)), sale_id=old, now=NOW)
 
 
 def test_preview_reports_a_duplicate_like_the_write_does(w: World) -> None:

@@ -370,5 +370,4 @@ def apply_amadeus(
         ip=ip,
         source="comparison",
         expected_version=expected_version,
-        any_day=True,
     )

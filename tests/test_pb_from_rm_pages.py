@@ -4,13 +4,25 @@ visible while the agency question is open (synthetic booking)."""
 from __future__ import annotations
 
 import re
+from datetime import UTC, datetime
+
+import pytest
 
 from app.web.sale_pages import IGNORED_PRICE
 from tests.acceptance_support import fields_of, text_of
 from tests.page_support import Env
-from tests.test_sale_pages import env as env  # the fixture
+from tests.test_sale_pages import env as base_env  # noqa: F401  (the fixture)
 from tests.test_sale_pages import make_partner
 from tests.web_support import csrf_for
+
+
+@pytest.fixture
+def env(base_env: Env) -> Env:  # noqa: F811
+    """The booking below was issued on 25 October: the clock must not be before that day (a sale
+    is filed under its issue date, which cannot be in the future)."""
+    base_env.clock.now = datetime(2026, 10, 26, 12, 0, tzinfo=UTC)
+    return base_env
+
 
 PASTE_UNKNOWN_AGENCY = """--- TST RLR ---
 RP/NKC262353/NKC262353            SV/SU  25OCT26/1501Z   SYN7QA

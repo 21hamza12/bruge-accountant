@@ -20,6 +20,7 @@
         <tr>
           <th scope="col">{{ _("Jour") }}</th>
           <th scope="col">{{ _("Billet") }}</th>
+          <th scope="col">{{ _("Émis le") }}</th>
           <th scope="col">{{ _("Champ") }}</th>
           <th scope="col">{{ _("Application") }}</th>
           <th scope="col">{{ _("Amadeus") }}</th>
@@ -32,16 +33,20 @@
         <tr>
           <td>{{ item.day | date_fr }}</td>
           <td class="mono">{{ item.row.doc_number }}</td>
+          <td>{% if item.issued %}{{ item.issued | date_fr }}{% else %}—{% endif %}</td>
           <td>{{ item.row.field or "—" }}</td>
           <td class="num">{{ item.row.app_value }}</td>
           <td class="num">{{ item.row.amadeus_value }}</td>
           <td>{{ item.answer }}{% if item.reason %}<br><span class="muted">{{ _("Motif") }} : {{ item.reason }}</span>{% endif %}<br><span class="muted">{{ item.by }}</span></td>
           <td>
-            {% if item.own %}<p class="muted">{{ _("Votre réponse : un autre validateur doit la valider.") }}</p>{% endif %}
+            {% if item.own %}
+            {# Four eyes: whoever answered cannot validate. No dead button: say who can. #}
+            <p class="muted own-answer">{{ _("Votre réponse : un autre validateur (le gérant ou la comptable) doit la valider.") }}</p>
+            {% else %}
             <form class="inline-form" method="post" action="/flags/{{ item.row.id }}/validate">
               {% include "_csrf.html" %}
               <input type="hidden" name="decision" value="approve">
-              <button class="btn btn-primary" type="submit"{% if item.own %} disabled{% endif %}>{{ _("Approuver") }}</button>
+              <button class="btn btn-primary" type="submit">{{ _("Approuver") }}</button>
             </form>
             <details>
               <summary class="btn">{{ _("Rejeter") }}</summary>
@@ -52,9 +57,10 @@
                   <label for="reject-{{ item.row.id }}">{{ _("Motif (5 caractères au moins)") }}</label>
                   <input id="reject-{{ item.row.id }}" name="reason" type="text" required minlength="5" maxlength="500" autocomplete="off">
                 </div>
-                <button class="btn" type="submit"{% if item.own %} disabled{% endif %}>{{ _("Rejeter la réponse") }}</button>
+                <button class="btn" type="submit">{{ _("Rejeter la réponse") }}</button>
               </form>
             </details>
+            {% endif %}
           </td>
         </tr>
       {% endfor %}
@@ -91,12 +97,15 @@
           <td>{{ item.sale.fee_override_reason }}</td>
           <td>{{ item.by }}</td>
           <td>
-            {% if item.own %}<p class="muted">{{ _("Vous avez saisi ces frais : un autre validateur doit les valider.") }}</p>{% endif %}
+            {% if item.own %}
+            <p class="muted own-answer">{{ _("Vous avez saisi ces frais : un autre validateur (le gérant ou la comptable) doit les valider.") }}</p>
+            {% else %}
             <form class="inline-form" method="post" action="/flags/overrides/{{ item.sale.id }}/validate">
               {% include "_csrf.html" %}
               <input type="hidden" name="decision" value="approve">
-              <button class="btn btn-primary" type="submit"{% if item.own %} disabled{% endif %}>{{ _("Approuver") }}</button>
+              <button class="btn btn-primary" type="submit">{{ _("Approuver") }}</button>
             </form>
+            {% endif %}
             <details>
               <summary class="btn">{{ _("Rejeter") }}</summary>
               <form class="form" method="post" action="/flags/overrides/{{ item.sale.id }}/validate">

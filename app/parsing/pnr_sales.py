@@ -27,7 +27,10 @@ the FP hint, which can be a client's name.
 
 P.B is the RM price of the passenger's type unless a partner is recognised (also when the agency
 is unknown or ambiguous: the agent may answer "direct"); a partner's price is computed later by
-the sales rules. The client is the FP hint unless it is ``CLIENT``, BRUGE or
+the sales rules. Each ticket keeps the issue date of its FA line, and ``ProposedSale.issue_day``
+(the newest ticket's date; for an exchange, the new ticket) is the day the sale is filed under.
+
+The client is the FP hint unless it is ``CLIENT``, BRUGE or
 names an agency (exact or packed match with a partner, a loose prefix match with the
 partner already chosen, or the AP agency). The phone is the first
 AP phone. FE non-refundable amounts are only noted in a warning, never used as a cost or a
@@ -40,6 +43,7 @@ from __future__ import annotations
 import re
 from collections.abc import Sequence
 from dataclasses import dataclass, replace
+from datetime import date
 from decimal import Decimal
 from typing import Literal, NamedTuple
 
@@ -87,6 +91,7 @@ class ProposedTicket:
     pax_type: PaxType
     rloc: str
     trnc: str
+    issue_date: date | None = None  # the issue date of the FA line; None when unreadable
 
 
 @dataclass(frozen=True)
@@ -105,6 +110,13 @@ class ProposedSale:
     agency_text: str | None = None  # the AP agency (else the FP hint) the suggestion came from
     agency_match: AgencyMatch = "none"
     suggested_partner_id: int | None = None  # a close name for an unknown AP agency: never chosen
+
+    @property
+    def issue_day(self) -> date | None:
+        """The day the sale is filed under: the issue date of its newest ticket (for an exchange,
+        the new ticket), None when no ticket has a readable date."""
+        dates = [t.issue_date for t in self.tickets if t.issue_date is not None]
+        return max(dates) if dates else None
 
 
 class PartnerMatch(NamedTuple):
@@ -326,6 +338,7 @@ def _ticket_row(
         pax_type=pax_type,
         rloc=rloc or "",
         trnc=TRNC_EMD if t.emd else TRNC_TICKET,
+        issue_date=t.issue_date,
     )
 
 

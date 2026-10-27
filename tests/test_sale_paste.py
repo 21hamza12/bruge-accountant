@@ -7,6 +7,7 @@ written by the same confirm step as a typed one, which validates everything agai
 from __future__ import annotations
 
 import re
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -46,6 +47,9 @@ REND = "REND TOURISME ET VOYAGES"
 def env(web_db: WebDb) -> Env:
     e = Env(web_db)
     e.link(e.seeded.staff_a, SIGN)
+    # the fixtures were issued on 21 October: a sale is filed under its issue date, which cannot be
+    # in the future, so the clock is the 22nd
+    e.clock.now = datetime(2026, 10, 22, 12, 0, tzinfo=UTC)
     return e
 
 

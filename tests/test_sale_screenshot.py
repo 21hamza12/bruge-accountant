@@ -42,6 +42,7 @@ SONNET_COST = pricing.cost_micro_usd(SONNET, 650, 400)
 def env(web_db: WebDb) -> Env:
     e = Env(web_db)
     e.link(e.seeded.staff_a, SIGN)
+    e.clock.now = datetime(2026, 10, 22, 12, 0, tzinfo=UTC)  # after the booking's issue date
     return e
 
 

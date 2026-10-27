@@ -604,7 +604,8 @@ def test_a_message_just_under_the_paste_cap_is_read_in_linear_time(env: Env) -> 
     c = env.manager_a()
     started = time.perf_counter()
     r = say(c, "\n" * 16_000 + "x", htmx=True)
-    assert time.perf_counter() - started < 1.0
+    # the quadratic regex took minutes here; 3 s leaves room for a loaded CI machine (1.07 s seen)
+    assert time.perf_counter() - started < 3.0
     assert r.status_code == 200 and store.EMPTY not in r.text and "Texte trop long" not in r.text
 
 

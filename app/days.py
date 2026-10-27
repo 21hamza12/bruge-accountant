@@ -65,8 +65,8 @@ class DayError(UserError):
 class DayClosed(DayError):
     """The day is closed: nothing may be written on it until the manager reopens it."""
 
-    def __init__(self) -> None:
-        super().__init__(CLOSED)
+    def __init__(self, message: str = CLOSED) -> None:
+        super().__init__(message)
 
 
 # --- reading ------------------------------------------------------------------------------------

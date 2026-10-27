@@ -11,6 +11,7 @@ import html
 import re
 from collections.abc import Iterator
 from contextlib import contextmanager
+from datetime import date
 from typing import Any
 
 import pytest
@@ -19,7 +20,8 @@ from sqlalchemy.orm import Session
 
 from app import audit
 from app.auth import ratelimit
-from app.models import AuditEvent, ComparisonFlag, FlagDecision, Sale, User
+from app.issue_sig import IssueSigner
+from app.models import AuditEvent, ComparisonFlag, FlagDecision, ReportDay, Sale, User
 from app.tenancy import rebind_tenant
 from tests.fixtures import synthetic_20oct as fx
 from tests.flag_support import FlagWeb
@@ -197,15 +199,75 @@ def test_a_ticket_not_sent_leads_to_the_prefilled_form_for_the_manager(world: Fl
     assert pax.split(" (")[0] in form.text
 
 
-def test_staff_cannot_enter_a_past_day_sale_but_are_told_who_can(world: FlagWeb) -> None:
+def test_staff_enter_a_not_sent_ticket_of_an_open_past_day_under_its_report_day(
+    world: FlagWeb,
+) -> None:
+    # owner, 26 Oct 2026: staff may file an earlier day that is not closed
     setup_diff(world, OWN[1], extra=0, skip=(OWN[0],))
     flag = flag_of(world, OWN[0], "not_sent")
     with world.staff() as c:
         listing = c.get(f"/flags?date={DAY}")
-        assert f'href="/flags/{flag.id}/enter"' not in listing.text
-        assert "gérant ou au comptable" in listing.text
-        refused = c.get(f"/flags/{flag.id}/enter")
-    assert refused.status_code == 403
+        assert f'href="/flags/{flag.id}/enter"' in listing.text
+        form = c.get(f"/flags/{flag.id}/enter")
+        assert form.status_code == 200 and OWN[0] in form.text
+        assert f'name="issue_date" value="{DAY}"' in form.text  # the sale goes on the report day
+        assert 'name="day"' not in form.text  # staff do not pick the day
+
+
+def _enter_fields(page: str) -> dict[str, list[str]]:
+    """What the browser posts from the not-sent entry form: its inputs, plus what the user adds."""
+    data: dict[str, list[str]] = {}
+    for tag in re.findall(r"<input[^>]*>", page):
+        name = re.search(r'name="([^"]+)"', tag)
+        value = re.search(r'value="([^"]*)"', tag)
+        if name and name.group(1) != "csrf_token":
+            data.setdefault(name.group(1), []).append(
+                html.unescape(value.group(1)) if value else ""
+            )
+    data.update(
+        pax_type=["ADT"], trnc=["TKTT"], ag=["direct"], pb=["99999"], clt=["Client Synth"],
+        payment_method=["cash"],
+    )  # fmt: skip
+    return data
+
+
+def _day_of_new_sale(world: FlagWeb) -> str:
+    with tenant_session(world) as s:
+        sale = s.scalars(select(Sale).order_by(Sale.id.desc())).first()
+        assert sale is not None
+        found = s.get(ReportDay, sale.report_day_id)
+        assert found is not None
+        return found.day.isoformat()
+
+
+def test_staff_enter_form_carries_a_signed_report_day_that_files_the_sale(world: FlagWeb) -> None:
+    setup_diff(world, OWN[1], extra=0, skip=(OWN[0],))
+    flag = flag_of(world, OWN[0], "not_sent")
+    with world.staff() as c:
+        form = c.get(f"/flags/{flag.id}/enter")
+        fields = _enter_fields(form.text)
+        signer = IssueSigner(
+            world.factory.app.state.settings.issue_key(),  # type: ignore[attr-defined]
+            world.seeded.agency_a,
+            world.seeded.staff_a,
+        )
+        assert signer.verify(OWN[0], date.fromisoformat(DAY), fields["issue_sig"][0])
+        token = csrf_for(c, f"/flags?date={DAY}")
+        done = c.post("/sales", data={**fields, "csrf_token": token}, follow_redirects=False)
+        assert done.status_code == 303
+    assert _day_of_new_sale(world) == DAY
+
+
+def test_a_forged_report_day_on_the_enter_form_is_ignored_for_staff(world: FlagWeb) -> None:
+    setup_diff(world, OWN[1], extra=0, skip=(OWN[0],))
+    flag = flag_of(world, OWN[0], "not_sent")
+    with world.staff() as c:
+        fields = _enter_fields(c.get(f"/flags/{flag.id}/enter").text)
+        fields["issue_date"] = ["2026-10-19"]  # signature kept, date changed
+        token = csrf_for(c, f"/flags?date={DAY}")
+        done = c.post("/sales", data={**fields, "csrf_token": token}, follow_redirects=False)
+        assert done.status_code == 303
+    assert _day_of_new_sale(world) == "2026-10-22"  # today on the test clock
 
 
 # --- answering ---------------------------------------------------------------------------------
@@ -372,7 +434,10 @@ def test_a_validator_cannot_validate_their_own_answer(world: FlagWeb) -> None:
         )  # fmt: skip
         queue = c.get("/flags/validate")
         assert "Votre réponse" in queue.text
-        assert re.search(r"<button[^>]*disabled[^>]*>", queue.text)
+        # no dead button: the person who answered sees who must validate, not "Approuver"
+        assert f'action="/flags/{flag.id}/validate"' not in queue.text
+        assert "le gérant ou la comptable" in queue.text
+        assert "Émis le" in queue.text  # the ticket's issue date column (owner, 27 Oct)
         refused = post(c, f"/flags/{flag.id}/validate", "/flags/validate", decision="approve")
     assert refused.status_code == 403 and "votre propre réponse" in refused.text
     assert status_of(world, flag.id) == "answered"
@@ -477,7 +542,9 @@ def test_fee_overrides_are_listed_and_validated_or_rejected(world: FlagWeb) -> N
         world.upload(c)
         own = c.get("/flags/validate")
         assert "Remise accordée" in own.text and "Frais exceptionnels" in own.text
-        assert re.search(r"<button[^>]*disabled[^>]*>", own.text)  # the manager wrote it
+        # the manager wrote it: no Approuver for them, only who must validate (and Rejeter)
+        assert not re.search(r"<button[^>]*disabled[^>]*>", own.text)
+        assert 'name="decision" value="approve"' not in own.text.split("Frais exceptionnels")[1]
         refused = post(
             c, f"/flags/overrides/{sale_id}/validate", "/flags/validate", decision="approve"
         )

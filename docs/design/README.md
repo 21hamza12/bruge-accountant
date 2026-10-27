@@ -21,6 +21,7 @@ AI advice). Real agency files go in `intake/` (git-ignored, local only).
 | [12-chat-part1.md](12-chat-part1.md) | Phase E part 1: the in-app chat without AI (router, tool registry, storage, security) | Built |
 | [13-chat-ai.md](13-chat-ai.md) | Phase E part 2: the chat asks Claude when plain code does not understand (tools, budget share, escalation, injection model) | Built; measured on the real API (24 Oct) |
 | [14-go-live.md](14-go-live.md) | Phase C: go live on Render, drills, the nine-item release checklist, Bruge set-up, training, parallel run; what the owner provides | Plan for approval |
+| [16-partner-accounts-plan.md](16-partner-accounts-plan.md) | Phase F: partner running accounts, half-month periods, manual lines, payments, statements, alerts (slices F1–F5) | Plan for approval |
 
 Still to come once the ticket samples arrive: how screenshots are read (plain code or AI), the
 reading test on the ~200 checked tickets, and the measured AI cost.

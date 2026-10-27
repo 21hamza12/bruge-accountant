@@ -9,6 +9,12 @@
   <h2 class="card-title" id="who-title">{{ _("Compte de %(name)s", name=acc.partner.name) }}</h2>
   <p>{{ _("Solde actuel") }} : <strong class="num" id="balance">{{ acc.balance | money_fr }}</strong> {{ agency.currency }}
     <span class="muted">{{ _("(positif : le partenaire doit à l'agence)") }}</span></p>
+  {% if current %}
+  <div class="actions">
+    <a class="btn" href="/partner-accounts/{{ acc.partner.id }}/periods/{{ current.start.isoformat() }}/statement.xlsx" download>{{ _("Télécharger le relevé (Excel)") }}</a>
+    <span class="help">{{ _("Période du %(label)s, marquée « PROVISOIRE » tant qu'elle est ouverte. Le relevé d'une période clôturée se télécharge depuis sa page.", label=current.label) }}</span>
+  </div>
+  {% endif %}
   {% if can_write %}
   <div class="actions">
     <a class="btn btn-primary" href="/partner-accounts/{{ acc.partner.id }}/lines/new">{{ _("Ajouter une ligne") }}</a>

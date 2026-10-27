@@ -1622,3 +1622,68 @@ Index(
     sqlite_where=PartnerPayment.request_key.is_not(None),
     postgresql_where=PartnerPayment.request_key.is_not(None),
 )
+
+
+# --- Phase F, slice F3: the agency's own details (migration 0018) ----------------------------
+
+# Every detail printed in the header of a partner statement (and, later, of an invoice): the
+# column and its longest value. All optional: a missing one is left out of the header.
+AGENCY_DETAIL_LIMITS: dict[str, int] = {
+    "name_fr": 120,
+    "name_ar": 120,
+    "address": 300,
+    "phones": 120,
+    "email": 120,
+    "nif": 40,
+    "bank_name": 120,
+    "bank_account": 60,
+    "bankily": 40,
+    "masrvi": 40,
+    "sedad": 40,
+}
+
+
+class AgencyDetails(Base):
+    """One row per agency at most: the details the agency prints on its documents. Written by
+    a manager through « Coordonnées de l'agence » (``app/agency_details.py``); the accountant
+    reads them. A separate tenant table because the application role only reads ``agencies``.
+    ``request_key`` is the key of the last form that saved the row (a double click saves once).
+    Never deleted (migration 0018: no DELETE policy or grant)."""
+
+    __tablename__ = "agency_details"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["agency_id", "updated_by_user_id"],
+            ["users.agency_id", "users.id"],
+            name="fk_agency_details_agency_user",
+            ondelete="RESTRICT",
+        ),
+        *(
+            CheckConstraint(
+                f"{column} IS NULL OR length({column}) BETWEEN 1 AND {limit}",
+                name=f"{column}_length",
+            )
+            for column, limit in AGENCY_DETAIL_LIMITS.items()
+        ),
+        CheckConstraint(REQUEST_KEY_CHECK, name="request_key_length"),
+    )
+
+    agency_id: Mapped[int] = mapped_column(
+        ForeignKey("agencies.id", ondelete="RESTRICT"), primary_key=True
+    )
+    name_fr: Mapped[str | None] = mapped_column(String(AGENCY_DETAIL_LIMITS["name_fr"]))
+    name_ar: Mapped[str | None] = mapped_column(String(AGENCY_DETAIL_LIMITS["name_ar"]))
+    address: Mapped[str | None] = mapped_column(String(AGENCY_DETAIL_LIMITS["address"]))
+    phones: Mapped[str | None] = mapped_column(String(AGENCY_DETAIL_LIMITS["phones"]))
+    email: Mapped[str | None] = mapped_column(String(AGENCY_DETAIL_LIMITS["email"]))
+    nif: Mapped[str | None] = mapped_column(String(AGENCY_DETAIL_LIMITS["nif"]))
+    bank_name: Mapped[str | None] = mapped_column(String(AGENCY_DETAIL_LIMITS["bank_name"]))
+    bank_account: Mapped[str | None] = mapped_column(String(AGENCY_DETAIL_LIMITS["bank_account"]))
+    bankily: Mapped[str | None] = mapped_column(String(AGENCY_DETAIL_LIMITS["bankily"]))
+    masrvi: Mapped[str | None] = mapped_column(String(AGENCY_DETAIL_LIMITS["masrvi"]))
+    sedad: Mapped[str | None] = mapped_column(String(AGENCY_DETAIL_LIMITS["sedad"]))
+    request_key: Mapped[str | None] = mapped_column(String(MAX_REQUEST_KEY))
+    updated_by_user_id: Mapped[int] = mapped_column(BigIntType)
+    updated_at: Mapped[datetime] = mapped_column(
+        UTCDateTime, default=_now, server_default=func.now()
+    )

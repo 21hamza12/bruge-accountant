@@ -34,6 +34,7 @@ ACTIVE_UPLOAD_NEW = "upload_new"
 ACTIVE_STAFF = "staff"
 ACTIVE_PARTNERS = "partners"
 ACTIVE_PARTNER_ACCOUNTS = "partner_accounts"
+ACTIVE_AGENCY_DETAILS = "agency_details"
 ACTIVE_SALE_NEW = "sale_new"
 ACTIVE_SALES = "sales"
 ACTIVE_DAYS = "days"
@@ -50,6 +51,7 @@ class Shell:
     sees_all: bool  # every sign of the agency (manager, accountant)
     can_manage_staff: bool
     can_manage_partners: bool
+    can_view_agency_details: bool  # « Coordonnées de l'agence » (manager, accountant)
     can_enter_sales: bool  # staff: "Saisir une vente" and "Mes ventes"
     can_see_day_sales: bool  # manager, accountant: "Ventes du jour"
     # Five tabs fit 320px, so the bottom bar differs by role (a test counts them per role):
@@ -125,6 +127,7 @@ def build_shell(db: Session, auth: AuthContext, active: str) -> Shell:
         sees_all=sees_all,
         can_manage_staff=permissions.can_manage_staff(user),
         can_manage_partners=permissions.can_manage_partners(user),
+        can_view_agency_details=permissions.can_view_agency_details(user),
         can_enter_sales=permissions.can_enter_own_sales(user),
         can_see_day_sales=permissions.can_edit_any_entry(user),
         bottom_bar_partners=permissions.can_manage_partners(user)

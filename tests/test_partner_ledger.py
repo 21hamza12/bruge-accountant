@@ -154,7 +154,7 @@ def test_every_total_has_two_decimals() -> None:
         assert value.as_tuple().exponent == -2
 
 
-@pytest.mark.parametrize("kind", ["ADM", "CHANGEMENT", "OPENING", "CORRECTION"])
+@pytest.mark.parametrize("kind", ["ADM", "CHANGEMENT", "CORRECTION"])
 def test_lines_that_need_no_decision_always_count(kind: str) -> None:
     entry = LedgerEntry(
         kind=kind, amount=d("500.00"), source="system" if kind == "CORRECTION" else "manual"
@@ -222,10 +222,53 @@ def test_a_line_with_the_wrong_sign_is_refused(kind: str, amount: str) -> None:
         compute_period(d("0"), (), (LedgerEntry(kind=kind, amount=d(amount), source=source),), ())
 
 
-def test_an_opening_line_may_be_zero_or_negative() -> None:
-    for amount in ("0.00", "-500.00"):
-        totals = compute_period(d("0"), (), (LedgerEntry(kind="OPENING", amount=d(amount)),), ())
-        assert totals.closing == d(amount)
+@pytest.mark.parametrize("amount", ["48000.00", "0.00", "-500.00"])
+def test_an_opening_line_is_refused_among_the_lines(amount: str) -> None:
+    """The opening balance is the ``opening`` argument: counting the line too would double it."""
+    with pytest.raises(ValueError, match="OPENING"):
+        compute_period(d("0"), (), (LedgerEntry(kind="OPENING", amount=d(amount)),), ())
+
+
+def test_an_opening_amount_of_any_sign_fits_its_kind() -> None:
+    for amount in ("48000.00", "0.00", "-500.00"):
+        assert ledger.check_entry_amount("OPENING", d(amount)) == d(amount)
+
+
+@pytest.mark.parametrize(
+    ("kind", "source"),
+    [
+        ("CORRECTION", "manual"),
+        ("CORRECTION", "amadeus"),
+        ("ADM", "system"),
+        ("RFND", "system"),
+        ("AJUSTEMENT", "system"),
+        ("ADM", "amadeus"),
+        ("CHANGEMENT", "amadeus"),
+        ("AJUSTEMENT", "amadeus"),
+    ],
+)
+def test_a_source_that_does_not_fit_the_kind_is_refused(kind: str, source: str) -> None:
+    """Mirror of the CHECKs of ``partner_entries``: a CORRECTION is exactly a system line, and
+    Amadeus only proposes refunds. Python never counts a line the database would refuse."""
+    amount = d("-5.00") if kind == "RFND" else d("5.00")
+    with pytest.raises(ValueError, match="source"):
+        compute_period(d("0"), (), (LedgerEntry(kind=kind, amount=amount, source=source),), ())
+
+
+@pytest.mark.parametrize("bad", [d("1E+30"), d("1000000000000.00"), d("-1000000000000.00")])
+def test_amounts_beyond_the_column_are_refused_with_a_value_error(bad: Decimal) -> None:
+    """Numeric(14, 2) holds less than 10**12; quantizing 1E+30 would raise InvalidOperation."""
+    with pytest.raises(ValueError, match="too large"):
+        compute_period(bad, (), (), ())
+    with pytest.raises(ValueError, match="too large"):
+        compute_period(d("0"), (Sale(bad),), (), ())
+    with pytest.raises(ValueError, match="too large"):
+        compute_period(d("0"), (), (), (LedgerPayment(abs(bad)),))
+
+
+def test_the_largest_amount_of_the_column_is_accepted() -> None:
+    top = d("999999999999.99")
+    assert compute_period(top, (), (), ()).closing == top
 
 
 @pytest.mark.parametrize("bad", [d("0"), d("-1.00")])
@@ -279,7 +322,6 @@ def test_the_balance_always_reconciles() -> None:
         return Decimal(rng.randint(low, high)) / 100
 
     kinds = [
-        ("OPENING", "manual", None, (-(10**8), 10**8)),
         ("ADM", "manual", None, (1, 10**7)),
         ("CHANGEMENT", "manual", None, (1, 10**7)),
         ("RFND", "manual", None, (-(10**7), -1)),

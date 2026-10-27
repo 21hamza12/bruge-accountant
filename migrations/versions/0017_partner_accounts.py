@@ -37,6 +37,26 @@ three append-only tables get BEFORE UPDATE and BEFORE DELETE triggers that abort
 The day CHECKs need ``date + 1 day``, which has no portable SQL: ``_DayAfter`` compiles it for
 each database (as ``app.models`` does; tests/test_migration_0017.py compares the two).
 
+Guards added after the F1 review (edited in place: 0017 was never released):
+
+* A period is born open (``tenant_insert`` WITH CHECK ``status = 'open'``; SQLite trigger). The
+  close is its only UPDATE: ``tenant_update`` WITH CHECK ``status = 'closed'``, and a BEFORE
+  UPDATE trigger (plpgsql; SQLite trigger) refuses any change of ``id``, ``agency_id``,
+  ``partner_id``, ``start_date``, ``end_date``, ``created_at`` and any update of a row that is not
+  open or that does not close it. Postgres only: CHECK ``closing_balance = opening_balance +
+  sales_total + entries_total - payments_total`` once closed (SQLite stores NUMERIC as a float).
+* Nothing lands in a closed period: BEFORE INSERT triggers on ``partner_entries`` (by
+  ``entry_date``), ``partner_payments`` (by ``paid_on``) and ``partner_entry_decisions`` (by its
+  entry's date) refuse a date covered by a closed period of the same partner. On Postgres they
+  also lock the covering open period FOR SHARE so a concurrent close waits (see
+  ``PG_FUNCTIONS``).
+* A decision fits its entry: ``entry_kind`` and ``entry_source`` are copied from the entry and
+  held to it by the foreign key ``(agency_id, entry_id, entry_kind, entry_source)`` ->
+  ``partner_entries (agency_id, id, kind, source)``; a CHECK admits only approve / reject of an
+  ``AJUSTEMENT`` and confirm / reject of an ``amadeus`` ``RFND``.
+* ``request_key`` (nullable, at most 64 characters) on lines and payments, unique per agency
+  where set (partial unique indexes): F2's double-click guard.
+
 THE DOWNGRADE IRREVERSIBLY DESTROYS every period, line, decision and payment; take a backup
 first. It revokes the privileges on these four tables only.
 """
@@ -102,6 +122,38 @@ INDEXES = {
     ),
 }
 ONE_OPENING = "ix_partner_entries_one_opening"
+# F2's idempotency keys: one per agency and table, rows without one are not limited.
+REQUEST_KEY_INDEXES = {
+    "ix_partner_entries_request_key": "partner_entries",
+    "ix_partner_payments_request_key": "partner_payments",
+}
+REQUEST_KEY_CHECK = "request_key IS NULL OR length(request_key) BETWEEN 1 AND 64"
+DECISION_FITS_ENTRY = (
+    "(entry_kind = 'AJUSTEMENT' AND decision IN ('approve', 'reject')) OR "
+    "(entry_kind = 'RFND' AND entry_source = 'amadeus' AND decision IN ('confirm', 'reject'))"
+)
+# Postgres only: SQLite stores NUMERIC as a float, so an exact equality there is not reliable.
+CLOSING_RECONCILES = (
+    "status <> 'closed' OR "
+    "closing_balance = opening_balance + sales_total + entries_total - payments_total"
+)
+# The columns of a period that never change, not even when it closes.
+IDENTITY = ("id", "agency_id", "partner_id", "start_date", "end_date", "created_at")
+CLOSED_MESSAGE = "the partner period of this date is closed"
+CHANGE_MESSAGE = "a partner period changes only by its close"
+
+
+def _covering_closed(agency: str, partner: str, day: str) -> str:
+    """DDL text for trigger bodies; the arguments are constant column or parameter names
+    written in this file, never data."""
+    return (
+        f"SELECT 1 FROM {PERIODS} p WHERE p.agency_id = {agency} AND p.partner_id = {partner} "  # noqa: S608
+        f"AND p.status = 'closed' AND {day} BETWEEN p.start_date AND p.end_date"
+    )
+
+
+_IDENTITY_CHANGED = " OR ".join(f"NEW.{c} IS NOT OLD.{c}" for c in IDENTITY)
+_PG_IDENTITY_CHANGED = " OR ".join(f"NEW.{c} IS DISTINCT FROM OLD.{c}" for c in IDENTITY)
 SQLITE_TRIGGERS = {
     f"trg_{table}_no_{verb}": (
         f"BEFORE {verb.upper()} ON {table} BEGIN SELECT RAISE(ABORT, '{table} is append-only'); END"
@@ -109,13 +161,126 @@ SQLITE_TRIGGERS = {
     for table in APPEND_ONLY
     for verb in ("update", "delete")
 } | {
-    f"trg_{PERIODS}_closed_no_update": (
-        f"BEFORE UPDATE ON {PERIODS} WHEN OLD.status = 'closed' BEGIN "
-        f"SELECT RAISE(ABORT, 'a closed {PERIODS} row never changes'); END"
+    f"trg_{PERIODS}_born_open": (
+        f"BEFORE INSERT ON {PERIODS} WHEN NEW.status <> 'open' BEGIN "
+        f"SELECT RAISE(ABORT, 'a partner period is born open'); END"
+    ),
+    # The close is the only update: an open row, closed, same identity (Postgres: the trigger
+    # function below plus tenant_update).
+    f"trg_{PERIODS}_only_the_close": (
+        f"BEFORE UPDATE ON {PERIODS} "
+        f"WHEN OLD.status <> 'open' OR NEW.status <> 'closed' OR {_IDENTITY_CHANGED} BEGIN "
+        f"SELECT RAISE(ABORT, '{CHANGE_MESSAGE}'); END"
     ),
     f"trg_{PERIODS}_no_delete": (
         f"BEFORE DELETE ON {PERIODS} BEGIN "
         f"SELECT RAISE(ABORT, '{PERIODS} rows are never deleted'); END"
+    ),
+    "trg_partner_entries_period_open": (
+        "BEFORE INSERT ON partner_entries "
+        f"WHEN EXISTS ({_covering_closed('NEW.agency_id', 'NEW.partner_id', 'NEW.entry_date')}) "
+        f"BEGIN SELECT RAISE(ABORT, '{CLOSED_MESSAGE}'); END"
+    ),
+    "trg_partner_payments_period_open": (
+        "BEFORE INSERT ON partner_payments "
+        f"WHEN EXISTS ({_covering_closed('NEW.agency_id', 'NEW.partner_id', 'NEW.paid_on')}) "
+        f"BEGIN SELECT RAISE(ABORT, '{CLOSED_MESSAGE}'); END"
+    ),
+    "trg_partner_entry_decisions_period_open": (
+        "BEFORE INSERT ON partner_entry_decisions WHEN EXISTS ("  # noqa: S608 - constant DDL
+        "SELECT 1 FROM partner_entries e WHERE e.agency_id = NEW.agency_id "
+        "AND e.id = NEW.entry_id AND EXISTS ("
+        f"{_covering_closed('e.agency_id', 'e.partner_id', 'e.entry_date')})) "
+        f"BEGIN SELECT RAISE(ABORT, '{CLOSED_MESSAGE}'); END"
+    ),
+}
+
+# Postgres: trigger functions in plpgsql, SECURITY INVOKER (the default), so they read under the
+# caller's row-level security and privileges. No bind-parameter syntax and no percent sign in
+# them: Alembic sends each one through a text() construct.
+#
+# partner_period_assert_open: no line, payment or decision may land in a closed period. The race
+# with a concurrent close (READ COMMITTED; each statement of a volatile function takes a new
+# snapshot):
+#   1. a plain SELECT for a covering CLOSED row: refuse if one is visible;
+#   2. SELECT ... FOR SHARE the covering OPEN row, if any. Row-level security applies the UPDATE
+#      policy's USING to a locking read, so only an open row can be locked: that is fine, a closed
+#      one was handled in step 1. If a close of that row is in flight we wait for it to end;
+#      while we hold the share lock, a close (F2 takes FOR UPDATE on the period row) waits for
+#      our transaction instead;
+#   3. a NEW plain SELECT for a covering closed row: a fresh statement sees a close committed while
+#      we waited in step 2 (the locking read itself skips a row that no longer matches).
+# A period with no row yet (built on demand) holds nothing: F2 creates the row before closing it.
+PG_FUNCTIONS = {
+    "partner_period_assert_open(integer, bigint, date)": f"""
+CREATE FUNCTION partner_period_assert_open(p_agency integer, p_partner bigint, p_day date)
+RETURNS void LANGUAGE plpgsql AS $$
+BEGIN
+    IF EXISTS ({_covering_closed("p_agency", "p_partner", "p_day")}) THEN
+        RAISE EXCEPTION '{CLOSED_MESSAGE}' USING ERRCODE = 'check_violation';
+    END IF;
+    PERFORM 1 FROM {PERIODS} p
+     WHERE p.agency_id = p_agency AND p.partner_id = p_partner AND p.status = 'open'
+       AND p_day BETWEEN p.start_date AND p.end_date
+       FOR SHARE;
+    IF EXISTS ({_covering_closed("p_agency", "p_partner", "p_day")}) THEN
+        RAISE EXCEPTION '{CLOSED_MESSAGE}' USING ERRCODE = 'check_violation';
+    END IF;
+END $$""",
+    "partner_entries_period_open()": """
+CREATE FUNCTION partner_entries_period_open() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+    PERFORM partner_period_assert_open(NEW.agency_id, NEW.partner_id, NEW.entry_date);
+    RETURN NEW;
+END $$""",
+    "partner_payments_period_open()": """
+CREATE FUNCTION partner_payments_period_open() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+    PERFORM partner_period_assert_open(NEW.agency_id, NEW.partner_id, NEW.paid_on);
+    RETURN NEW;
+END $$""",
+    # An entry that is not visible (another agency, or none) is left to the foreign key.
+    "partner_entry_decisions_period_open()": """
+CREATE FUNCTION partner_entry_decisions_period_open() RETURNS trigger LANGUAGE plpgsql AS $$
+DECLARE
+    line record;
+BEGIN
+    SELECT e.partner_id, e.entry_date INTO line
+      FROM partner_entries e WHERE e.agency_id = NEW.agency_id AND e.id = NEW.entry_id;
+    IF FOUND THEN
+        PERFORM partner_period_assert_open(NEW.agency_id, line.partner_id, line.entry_date);
+    END IF;
+    RETURN NEW;
+END $$""",
+    "partner_periods_only_the_close()": f"""
+CREATE FUNCTION partner_periods_only_the_close() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+    IF OLD.status <> 'open' OR NEW.status <> 'closed' OR {_PG_IDENTITY_CHANGED} THEN
+        RAISE EXCEPTION '{CHANGE_MESSAGE}' USING ERRCODE = 'check_violation';
+    END IF;
+    RETURN NEW;
+END $$""",
+}
+PG_TRIGGERS = {
+    "trg_partner_entries_period_open": (
+        "partner_entries",
+        "BEFORE INSERT",
+        "partner_entries_period_open()",
+    ),
+    "trg_partner_payments_period_open": (
+        "partner_payments",
+        "BEFORE INSERT",
+        "partner_payments_period_open()",
+    ),
+    "trg_partner_entry_decisions_period_open": (
+        "partner_entry_decisions",
+        "BEFORE INSERT",
+        "partner_entry_decisions_period_open()",
+    ),
+    "trg_partner_periods_only_the_close": (
+        PERIODS,
+        "BEFORE UPDATE",
+        "partner_periods_only_the_close()",
     ),
 }
 
@@ -180,10 +345,11 @@ def _check(table: str, name: str, sqltext: Any) -> sa.CheckConstraint:
     return sa.CheckConstraint(sqltext, name=op.f(f"ck_{table}_{name}"))
 
 
-def _create_periods() -> None:
+def _create_periods(postgres: bool) -> None:
     t = PERIODS
     unset = " AND ".join(f"{c} IS NULL" for c in FROZEN)
     stamped = " AND ".join(f"{c} IS NOT NULL" for c in FROZEN)
+    postgres_only = [_check(t, "closing_reconciles", CLOSING_RECONCILES)] if postgres else []
     op.create_table(
         t,
         sa.Column("id", BIGINT_ID, nullable=False),
@@ -209,6 +375,7 @@ def _create_periods() -> None:
             "frozen_iff_closed",
             f"(status = 'open' AND {unset}) OR (status = 'closed' AND {stamped})",
         ),
+        *postgres_only,
         _agency_fk(t),
         _composite_fk("fk_partner_periods_agency_partner", "partner_id", "partners"),
         _composite_fk("fk_partner_periods_agency_closed_by", "closed_by_user_id", "users"),
@@ -237,6 +404,7 @@ def _create_entries() -> None:
         sa.Column("sale_id", BIGINT_ID, nullable=True),
         sa.Column("doc_number", sa.String(length=15), nullable=True),
         sa.Column("created_by_user_id", BIGINT_ID, nullable=False),
+        sa.Column("request_key", sa.String(length=64), nullable=True),
         _created_at(),
         _check(t, "kind", f"kind IN ({KINDS})"),
         _check(t, "source", f"source IN ({SOURCES})"),
@@ -257,12 +425,19 @@ def _create_entries() -> None:
         _check(t, "sale_only_on_correction", "sale_id IS NULL OR kind = 'CORRECTION'"),
         _check(t, "doc_number_only_on_refund", "doc_number IS NULL OR kind = 'RFND'"),
         _check(t, "doc_number_format", f"doc_number IS NULL OR ({DOC_NUMBER_CHECK})"),
+        _check(t, "request_key_length", REQUEST_KEY_CHECK),
         _agency_fk(t),
         _composite_fk("fk_partner_entries_agency_partner", "partner_id", "partners"),
         _composite_fk("fk_partner_entries_agency_sale", "sale_id", "sales"),
         _composite_fk("fk_partner_entries_agency_created_by", "created_by_user_id", "users"),
         sa.PrimaryKeyConstraint("id", name=op.f("pk_partner_entries")),
-        sa.UniqueConstraint("agency_id", "id", name=op.f("uq_partner_entries_agency_id_id")),
+        sa.UniqueConstraint(
+            "agency_id",
+            "id",
+            "kind",
+            "source",
+            name=op.f("uq_partner_entries_agency_id_kind_source"),
+        ),
     )
     op.create_index(
         ONE_OPENING,
@@ -281,13 +456,27 @@ def _create_decisions() -> None:
         sa.Column("id", BIGINT_ID, nullable=False),
         sa.Column("agency_id", sa.Integer(), nullable=False),
         sa.Column("entry_id", BIGINT_ID, nullable=False),
+        sa.Column("entry_kind", sa.String(length=16), nullable=False),
+        sa.Column("entry_source", sa.String(length=8), nullable=False),
         sa.Column("decision", sa.String(length=8), nullable=False),
         sa.Column("decided_by_user_id", BIGINT_ID, nullable=False),
         sa.Column("note", sa.Text(), nullable=True),
         _created_at(),
         _check(t, "decision", f"decision IN ({DECISIONS})"),
+        _check(t, "decision_fits_entry", DECISION_FITS_ENTRY),
         _agency_fk(t),
-        _composite_fk("fk_partner_entry_decisions_agency_entry", "entry_id", "partner_entries"),
+        # The entry's own kind and source, so the CHECK above judges the real entry.
+        sa.ForeignKeyConstraint(
+            ["agency_id", "entry_id", "entry_kind", "entry_source"],
+            [
+                "partner_entries.agency_id",
+                "partner_entries.id",
+                "partner_entries.kind",
+                "partner_entries.source",
+            ],
+            name=op.f("fk_partner_entry_decisions_agency_entry"),
+            ondelete="RESTRICT",
+        ),
         _composite_fk(
             "fk_partner_entry_decisions_agency_decided_by", "decided_by_user_id", "users"
         ),
@@ -311,6 +500,7 @@ def _create_payments() -> None:
         sa.Column("reference", sa.String(length=64), nullable=True),
         sa.Column("received_by_user_id", BIGINT_ID, nullable=False),
         sa.Column("recorded_by_user_id", BIGINT_ID, nullable=False),
+        sa.Column("request_key", sa.String(length=64), nullable=True),
         _created_at(),
         _check(t, "amount_positive", "amount > 0"),
         _check(t, "method", f"method IN ({METHODS})"),
@@ -319,6 +509,7 @@ def _create_payments() -> None:
             "reference_length",
             "reference IS NULL OR length(trim(reference)) BETWEEN 1 AND 64",
         ),
+        _check(t, "request_key_length", REQUEST_KEY_CHECK),
         _agency_fk(t),
         _composite_fk("fk_partner_payments_agency_partner", "partner_id", "partners"),
         _composite_fk("fk_partner_payments_agency_received_by", "received_by_user_id", "users"),
@@ -327,13 +518,22 @@ def _create_payments() -> None:
     )
 
 
-def _create_tables() -> None:
-    _create_periods()
+def _create_tables(postgres: bool) -> None:
+    _create_periods(postgres)
     _create_entries()
     _create_decisions()
     _create_payments()
     for name, (table, columns) in INDEXES.items():
         op.create_index(name, table, columns)
+    for name, table in REQUEST_KEY_INDEXES.items():
+        op.create_index(
+            name,
+            table,
+            ["agency_id", "request_key"],
+            unique=True,
+            sqlite_where=sa.column("request_key").is_not(None),
+            postgresql_where=sa.column("request_key").is_not(None),
+        )
 
 
 def upgrade() -> None:
@@ -343,12 +543,21 @@ def upgrade() -> None:
         role = db_roles.configured_role(
             bind, os.environ.get(ROLE_ENV_VAR, ""), must_exist=True
         )  # fail before any DDL on a bad name
-    _create_tables()
-    if bind.dialect.name != "postgresql":
+    postgres = bind.dialect.name == "postgresql"
+    _create_tables(postgres)
+    if not postgres:
         for name, body in SQLITE_TRIGGERS.items():
             op.execute(f"CREATE TRIGGER {name} {body}")
         return
+    for definition in PG_FUNCTIONS.values():
+        op.execute(definition)
+    for name, (table, when, function) in PG_TRIGGERS.items():
+        op.execute(
+            f"CREATE TRIGGER {name} {when} ON {table} FOR EACH ROW EXECUTE FUNCTION {function}"
+        )
     for table in TABLES:
+        # A period is born open; the other tables only need the tenant.
+        born_open = " AND status = 'open'" if table == PERIODS else ""
         op.execute(f"ALTER TABLE {table} ENABLE ROW LEVEL SECURITY")
         op.execute(f"ALTER TABLE {table} FORCE ROW LEVEL SECURITY")
         op.execute(
@@ -356,13 +565,14 @@ def upgrade() -> None:
         )
         op.execute(
             f"CREATE POLICY tenant_insert ON {table} FOR INSERT "
-            f"WITH CHECK (agency_id = {TENANT_ID})"
+            f"WITH CHECK (agency_id = {TENANT_ID}{born_open})"
         )
-    # Closing a period is the one UPDATE: only an open row of the tenant can be its target.
+    # Closing a period is the one UPDATE: an open row of the tenant in, a closed row out (the
+    # trigger above also keeps its identity).
     op.execute(
         f"CREATE POLICY tenant_update ON {PERIODS} FOR UPDATE "
         f"USING (agency_id = {TENANT_ID} AND status = 'open') "
-        f"WITH CHECK (agency_id = {TENANT_ID})"
+        f"WITH CHECK (agency_id = {TENANT_ID} AND status = 'closed')"
     )
     if role is None:
         log.warning(
@@ -384,13 +594,21 @@ def downgrade() -> None:
         for table in TABLES:
             op.execute(f"DROP POLICY tenant_insert ON {table}")
             op.execute(f"DROP POLICY tenant_read ON {table}")
+        for name, (table, _when, _function) in PG_TRIGGERS.items():
+            op.execute(f"DROP TRIGGER {name} ON {table}")
     else:
         for name in SQLITE_TRIGGERS:
             op.execute(f"DROP TRIGGER {name}")
     for name, (table, _columns) in INDEXES.items():
+        op.drop_index(name, table_name=table)
+    for name, table in REQUEST_KEY_INDEXES.items():
         op.drop_index(name, table_name=table)
     op.drop_index(ONE_OPENING, table_name="partner_entries")
     op.drop_table("partner_payments")
     op.drop_table("partner_entry_decisions")
     op.drop_table("partner_entries")
     op.drop_table(PERIODS)
+    if bind.dialect.name == "postgresql":
+        # The trigger functions go after their triggers; the helper after the functions.
+        for signature in reversed(PG_FUNCTIONS):
+            op.execute(f"DROP FUNCTION {signature}")

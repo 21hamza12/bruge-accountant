@@ -311,7 +311,12 @@ def _seed_ledger(s: Session, agency_id: int, user_id: int, partner_id: int) -> t
     s.commit()
     s.add(
         PartnerEntryDecision(
-            agency_id=agency_id, entry_id=line.id, decision="approve", decided_by_user_id=user_id
+            agency_id=agency_id,
+            entry_id=line.id,
+            entry_kind="AJUSTEMENT",
+            entry_source="manual",
+            decision="approve",
+            decided_by_user_id=user_id,
         )
     )
     s.add(

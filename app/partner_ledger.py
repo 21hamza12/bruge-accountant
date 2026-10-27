@@ -5,8 +5,10 @@
   days after the period ends; ``due_soon`` from 3 days before the due day (the due day included),
   ``overdue`` from the day after.
 * **Balance** (``compute_period``): ``closing = opening + sales + counted lines - payments``. A
-  positive balance means the partner owes the agency. A line counts when it needs no decision
-  (``OPENING``, ``ADM``, ``CHANGEMENT``, ``CORRECTION``, a manual ``RFND``) or when its decision
+  positive balance means the partner owes the agency. The partner's ``OPENING`` line is not a
+  line here: it is the ``opening`` of its first period, so passing it among the lines (it would
+  count twice) raises. A line counts when it needs no decision
+  (``ADM``, ``CHANGEMENT``, ``CORRECTION``, a manual ``RFND``) or when its decision
   is ``approve`` (an ``AJUSTEMENT``) or ``confirm`` (an ``RFND`` proposed from Amadeus). A line
   still waiting is returned in ``pending``, a refused one in ``rejected``; neither moves the
   balance.
@@ -22,7 +24,7 @@ import calendar
 from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from typing import Protocol
 
 from app.models import (
@@ -34,13 +36,16 @@ from app.models import (
     ENTRY_CHANGEMENT,
     ENTRY_CORRECTION,
     ENTRY_KINDS,
+    ENTRY_OPENING,
     ENTRY_RFND,
     ENTRY_SOURCE_AMADEUS,
     ENTRY_SOURCE_MANUAL,
+    ENTRY_SOURCE_SYSTEM,
     ENTRY_SOURCES,
 )
 
 CENT = Decimal("0.01")
+MAX_AMOUNT = Decimal(10) ** 12  # exclusive: the columns are Numeric(14, 2)
 DUE_AFTER_DAYS = 15
 DUE_SOON_DAYS = 3
 ALERT_NONE = "none"
@@ -116,11 +121,19 @@ class PeriodTotals:
 
 
 def _money(value: object, what: str) -> Decimal:
+    """``value`` if it fits a ``Numeric(14, 2)`` column; ValueError (never InvalidOperation)
+    otherwise, TypeError when it is not a Decimal."""
     if not isinstance(value, Decimal):
         raise TypeError(f"{what} must be a Decimal, not {type(value).__name__}")
     if not value.is_finite():
         raise ValueError(f"{what} must be a finite amount")
-    if value != value.quantize(CENT):
+    if abs(value) >= MAX_AMOUNT:  # before quantize, which raises on a huge exponent
+        raise ValueError(f"{what} is too large for an amount")
+    try:
+        rounded = value.quantize(CENT)
+    except InvalidOperation:
+        raise ValueError(f"{what} is too large for an amount") from None
+    if value != rounded:
         raise ValueError(f"{what} has more than two decimals")
     return value
 
@@ -144,11 +157,23 @@ def check_entry_amount(kind: str, amount: Decimal) -> Decimal:
     return amount
 
 
+def check_entry_source(kind: str, source: str) -> str:
+    """``source`` if it fits ``kind`` (the CHECKs of ``partner_entries``: a ``CORRECTION`` is
+    exactly a ``system`` line, and Amadeus only proposes ``RFND`` lines), else ValueError."""
+    if source not in ENTRY_SOURCES:
+        raise ValueError(f"unknown entry source {source!r}")
+    if (kind == ENTRY_CORRECTION) != (source == ENTRY_SOURCE_SYSTEM):
+        raise ValueError(f"the source {source!r} does not fit a {kind} line")
+    if source == ENTRY_SOURCE_AMADEUS and kind != ENTRY_RFND:
+        raise ValueError(f"the source {source!r} does not fit a {kind} line")
+    return source
+
+
 def _accepting_decision(entry: LedgerEntry) -> str | None:
     """The decision that makes ``entry`` count, or None when it needs no decision; raises when
-    the entry carries a decision that does not fit it."""
-    if entry.source not in ENTRY_SOURCES:
-        raise ValueError(f"unknown entry source {entry.source!r}")
+    the entry carries a decision that does not fit it (the database refuses that too, since
+    migration 0017's decision CHECK: here it would mean a bug)."""
+    check_entry_source(entry.kind, entry.source)
     if not needs_decision(entry.kind, entry.source):
         if entry.decision is not None:
             raise ValueError(f"a {entry.kind} line takes no decision")
@@ -172,6 +197,10 @@ def compute_period(
     pending: list[LedgerEntry] = []
     rejected: list[LedgerEntry] = []
     for entry in entries:
+        if entry.kind == ENTRY_OPENING:
+            raise ValueError(
+                "an OPENING line is the opening balance: pass it as ``opening``, not as a line"
+            )
         check_entry_amount(entry.kind, entry.amount)
         accepting = _accepting_decision(entry)
         if accepting is None or entry.decision == accepting:

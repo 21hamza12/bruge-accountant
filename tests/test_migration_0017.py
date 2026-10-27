@@ -12,7 +12,7 @@ from typing import Any
 import pytest
 from alembic import command
 from alembic.script import ScriptDirectory
-from sqlalchemy import create_engine, delete, func, inspect, select, text, update
+from sqlalchemy import create_engine, delete, func, insert, inspect, select, text, update
 from sqlalchemy.engine import make_url
 from sqlalchemy.exc import DBAPIError, IntegrityError
 from sqlalchemy.orm import Session
@@ -163,11 +163,28 @@ def _decision(w: W, entry_id: int, **kw: Any) -> PartnerEntryDecision:
     fields: dict[str, Any] = {
         "agency_id": w.a,
         "entry_id": entry_id,
+        "entry_kind": "AJUSTEMENT",
+        "entry_source": "manual",
         "decision": "approve",
         "decided_by_user_id": w.user_a,
     }
     fields.update(kw)
     return PartnerEntryDecision(**fields)
+
+
+def _close(w: W, period_id: int, agency: int | None = None, **overrides: Any) -> None:
+    """Close an open period the only legal way: one UPDATE of its frozen columns."""
+    engine = make_engine(w.url)
+    try:
+        with make_session_factory(engine)() as s:
+            rebind_tenant(s, agency or w.a)
+            row = s.get(PartnerPeriod, period_id)
+            assert row is not None
+            for name, value in {**frozen(w), **overrides}.items():
+                setattr(row, name, value)
+            s.commit()
+    finally:
+        engine.dispose()
 
 
 def _count(w: W, agency: int, model: Any) -> int:
@@ -234,8 +251,12 @@ def test_up_and_down_on_sqlite(db_url: str) -> None:
         "trg_partner_entry_decisions_no_delete",
         "trg_partner_payments_no_update",
         "trg_partner_payments_no_delete",
-        "trg_partner_periods_closed_no_update",
+        "trg_partner_periods_born_open",
+        "trg_partner_periods_only_the_close",
         "trg_partner_periods_no_delete",
+        "trg_partner_entries_period_open",
+        "trg_partner_payments_period_open",
+        "trg_partner_entry_decisions_period_open",
     }
     command.downgrade(cfg, "0016")
     assert not set(TABLES) & _tables(db_url)
@@ -396,7 +417,7 @@ def test_one_period_per_partner_and_start_day(db_url: str) -> None:
 def test_period_checks(db_url: str, overrides: dict[str, Any]) -> None:
     migrate(db_url, revision="0017")
     w = _world(db_url)
-    with pytest.raises(IntegrityError):
+    with pytest.raises((IntegrityError, ClosedPeriodError)):  # the ORM refuses a non-open birth
         _add(w, w.a, period(w, **overrides))
 
 
@@ -416,10 +437,85 @@ def test_period_checks(db_url: str, overrides: dict[str, Any]) -> None:
 def test_a_closed_period_needs_every_frozen_column(db_url: str, missing: str) -> None:
     migrate(db_url, revision="0017")
     w = _world(db_url)
-    fields = frozen(w)
-    fields[missing] = None
+    [period_id] = _add(w, w.a, period(w))
     with pytest.raises(IntegrityError):
-        _add(w, w.a, period(w, **fields))
+        _close(w, period_id, **{missing: None})
+    assert _status(w, period_id) == "open"
+
+
+def _status(w: W, period_id: int) -> str | None:
+    engine = make_engine(w.url)
+    try:
+        with make_session_factory(engine)() as s:
+            rebind_tenant(s, w.a)
+            return s.scalar(select(PartnerPeriod.status).where(PartnerPeriod.id == period_id))
+    finally:
+        engine.dispose()
+
+
+def test_a_period_is_born_open(db_url: str) -> None:
+    """Item 4: inserting a period that is already closed is refused, frozen columns or not
+    (the SQLite trigger here; ``tenant_insert`` WITH CHECK on Postgres, tests/test_rls.py)."""
+    migrate(db_url, revision="0017")
+    w = _world(db_url)
+    row = {
+        "agency_id": w.a,
+        "partner_id": w.partner_a,
+        "start_date": date(2026, 10, 1),
+        "end_date": date(2026, 10, 15),
+        **frozen(w),
+    }
+    engine = make_engine(db_url)
+    try:
+        with make_session_factory(engine)() as s:
+            rebind_tenant(s, w.a)
+            with pytest.raises(DBAPIError, match="born open|row-level security"):
+                s.execute(insert(PartnerPeriod).values(**row))  # Core: past the ORM guard
+    finally:
+        engine.dispose()
+    assert _count(w, w.a, PartnerPeriod) == 0
+
+
+def test_the_orm_refuses_to_insert_a_closed_period(session: Session) -> None:
+    w = _orm_world(session)
+    session.add(period(w, **frozen(w)))
+    with pytest.raises(ClosedPeriodError):
+        session.flush()
+    session.rollback()
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"start_date": date(2026, 10, 16), "end_date": date(2026, 10, 31)},
+        {"created_at": CLOSED_AT},
+        {"status": "open"},  # an update that does not close it
+    ],
+    ids=lambda c: ",".join(c),
+)
+def test_an_open_period_changes_only_by_its_close(db_url: str, change: dict[str, Any]) -> None:
+    """Item 3 (SQLite trigger): the only UPDATE is the close; who, which partner and which
+    half-month never change. Postgres: the trigger and ``tenant_update`` WITH CHECK
+    (tests/test_rls.py)."""
+    if _is_postgres(db_url):
+        pytest.skip("SQLite trigger; Postgres in tests/test_rls.py")
+    migrate(db_url, revision="0017")
+    w = _world(db_url)
+    [period_id] = _add(w, w.a, period(w))
+    engine = make_engine(db_url)
+    try:
+        with make_session_factory(engine)() as s:
+            rebind_tenant(s, w.a)
+            statement = update(PartnerPeriod).where(PartnerPeriod.id == period_id)
+            with pytest.raises(DBAPIError, match="changes only by its close"):
+                s.execute(statement.values(**change))
+            s.rollback()
+            rebind_tenant(s, w.a)
+            with pytest.raises(DBAPIError, match="changes only by its close"):  # even on the close
+                s.execute(statement.values(**frozen(w), **{"partner_id": w.partner_a + 100}))
+    finally:
+        engine.dispose()
+    assert _status(w, period_id) == "open"
 
 
 def test_an_open_period_is_closed_by_one_update(db_url: str) -> None:
@@ -445,8 +541,19 @@ def test_an_open_period_is_closed_by_one_update(db_url: str) -> None:
 
 
 def _closed_period(w: W) -> int:
-    [period_id] = _add(w, w.a, period(w, **frozen(w)))
+    [period_id] = _add(w, w.a, period(w))
+    _close(w, period_id)
     return period_id
+
+
+def _orm_world(session: Session) -> W:
+    """One agency on a ``create_all`` database (no trigger): the ORM guard alone."""
+    agency = create_agency(session, "agence-o", "Agence O").id
+    user = User(agency_id=agency, phone="+22212390109", role="manager")
+    partner = Partner(agency_id=agency, name="Partenaire Test", name_key="partenaire test")
+    session.add_all([user, partner])
+    session.commit()
+    return W("", agency, 0, user.id, 0, partner.id, 0, 0)
 
 
 @pytest.mark.parametrize(
@@ -462,14 +569,12 @@ def test_the_orm_refuses_to_change_a_closed_period(
     session: Session, change: dict[str, Any]
 ) -> None:
     """The ORM guard alone (``create_all``: no trigger on this database)."""
-    agency = create_agency(session, "agence-o", "Agence O").id
-    user = User(agency_id=agency, phone="+22212390109", role="manager")
-    partner = Partner(agency_id=agency, name="Partenaire Test", name_key="partenaire test")
-    session.add_all([user, partner])
-    session.commit()
-    w = W("", agency, 0, user.id, 0, partner.id, 0, 0)
-    row = period(w, **frozen(w))
+    w = _orm_world(session)
+    row = period(w)
     session.add(row)
+    session.commit()
+    for name, value in frozen(w).items():
+        setattr(row, name, value)
     session.commit()
     for name, value in change.items():
         setattr(row, name, value)
@@ -484,12 +589,7 @@ def test_the_orm_refuses_to_change_a_closed_period(
 
 
 def test_the_orm_lets_an_open_period_close_once(session: Session) -> None:
-    agency = create_agency(session, "agence-o", "Agence O").id
-    user = User(agency_id=agency, phone="+22212390109", role="manager")
-    partner = Partner(agency_id=agency, name="Partenaire Test", name_key="partenaire test")
-    session.add_all([user, partner])
-    session.commit()
-    w = W("", agency, 0, user.id, 0, partner.id, 0, 0)
+    w = _orm_world(session)
     row = period(w)
     session.add(row)
     session.commit()
@@ -520,7 +620,7 @@ def test_the_database_refuses_to_change_or_delete_a_closed_period(db_url: str) -
                     s.execute(statement)  # no policy matches: nothing changes
                     s.commit()
                 else:
-                    with pytest.raises(DBAPIError, match="closed|never deleted"):
+                    with pytest.raises(DBAPIError, match="only by its close|never deleted"):
                         s.execute(statement)
                     s.rollback()
         with make_session_factory(engine)() as s:
@@ -684,12 +784,66 @@ def test_one_decision_per_entry(db_url: str) -> None:
     assert _count(w, w.a, PartnerEntryDecision) == 1
 
 
-@pytest.mark.parametrize("decision", ["approve", "confirm", "reject"])
-def test_the_three_decisions_are_accepted(db_url: str, decision: str) -> None:
+# Every line a person or the application can write, as (kind, source, extra columns).
+DECIDABLE_LINES: dict[str, tuple[str, str, dict[str, Any]]] = {
+    "AJUSTEMENT": ("AJUSTEMENT", "manual", {"amount": Decimal("250.00")}),
+    "RFND-amadeus": (
+        "RFND",
+        "amadeus",
+        {"amount": Decimal("-2000.00"), "doc_number": "3940000001"},
+    ),
+    "RFND-manual": ("RFND", "manual", {"amount": Decimal("-500.00")}),
+    "ADM": ("ADM", "manual", {"amount": Decimal("100.00")}),
+    "CHANGEMENT": ("CHANGEMENT", "manual", {"amount": Decimal("100.00")}),
+    "OPENING": ("OPENING", "manual", {"amount": Decimal("100.00")}),
+    "CORRECTION": ("CORRECTION", "system", {"amount": Decimal("100.00")}),
+}
+ALLOWED_DECISIONS = {
+    ("AJUSTEMENT", "approve"),
+    ("AJUSTEMENT", "reject"),
+    ("RFND-amadeus", "confirm"),
+    ("RFND-amadeus", "reject"),
+}
+
+
+@pytest.mark.parametrize(
+    ("line", "decision"),
+    [(line, decision) for line in DECIDABLE_LINES for decision in ("approve", "confirm", "reject")],
+)
+def test_a_decision_must_fit_its_entry(db_url: str, line: str, decision: str) -> None:
+    """Item 2: an AJUSTEMENT is approved or rejected, an RFND proposed from Amadeus is confirmed
+    or rejected; nothing else takes a decision (a CHECK on the kind and source the decision
+    copies, held to the entry's own by the composite foreign key)."""
+    migrate(db_url, revision="0017")
+    w = _world(db_url)
+    kind, source, extra = DECIDABLE_LINES[line]
+    [entry_id] = _add(w, w.a, entry(w, kind=kind, source=source, **extra))
+    row = _decision(w, entry_id, entry_kind=kind, entry_source=source, decision=decision)
+    if (line, decision) in ALLOWED_DECISIONS:
+        _add(w, w.a, row)
+        assert _count(w, w.a, PartnerEntryDecision) == 1
+    else:
+        with pytest.raises(IntegrityError):
+            _add(w, w.a, row)
+
+
+@pytest.mark.parametrize(
+    ("kind", "source"),
+    [("RFND", "amadeus"), ("AJUSTEMENT", "amadeus"), ("RFND", "manual"), ("ADM", "manual")],
+)
+def test_a_decision_cannot_lie_about_its_entry(db_url: str, kind: str, source: str) -> None:
+    """The kind and source a decision states must be its entry's (the composite foreign key):
+    an AJUSTEMENT cannot be 'confirmed' by claiming to be an Amadeus refund."""
     migrate(db_url, revision="0017")
     w = _world(db_url)
     [adjustment] = _add(w, w.a, entry(w, kind="AJUSTEMENT", amount=Decimal("250.00")))
-    _add(w, w.a, _decision(w, adjustment, decision=decision, note="vu avec le gérant"))
+    decision = "confirm" if source == "amadeus" else "approve"
+    with pytest.raises(IntegrityError):
+        _add(
+            w,
+            w.a,
+            _decision(w, adjustment, entry_kind=kind, entry_source=source, decision=decision),
+        )
 
 
 @pytest.mark.parametrize("decision", ["accept", "APPROVE", ""])
@@ -773,6 +927,105 @@ def test_lines_decisions_and_payments_are_append_only_on_sqlite(db_url: str) -> 
         assert _count(w, w.a, model) == 1
 
 
+# --- item 1: nothing lands in a closed period --------------------------------------------------
+
+OCT_5 = date(2026, 10, 5)  # inside the 1-15 Oct period of the world
+OCT_20 = date(2026, 10, 20)
+
+
+def test_a_line_or_payment_dated_in_a_closed_period_is_refused(db_url: str) -> None:
+    """The BEFORE INSERT triggers (SQLite here; the plpgsql ones on Postgres run in CI)."""
+    migrate(db_url, revision="0017")
+    w = _world(db_url)
+    _closed_period(w)  # 1-15 Oct, closed
+    for start, end in ((OCT_5, OCT_5), (date(2026, 10, 1), date(2026, 10, 15))):
+        for row in (
+            entry(w, entry_date=start),
+            entry(w, entry_date=end, kind="AJUSTEMENT", amount=Decimal("1.00")),
+            payment(w, paid_on=start),
+            payment(w, paid_on=end),
+        ):
+            with pytest.raises(IntegrityError, match="closed"):
+                _add(w, w.a, row)
+    assert _count(w, w.a, PartnerEntry) == 0 and _count(w, w.a, PartnerPayment) == 0
+
+
+def test_a_line_or_payment_in_an_open_period_or_without_one_is_accepted(db_url: str) -> None:
+    migrate(db_url, revision="0017")
+    w = _world(db_url)
+    _closed_period(w)  # 1-15 Oct, closed
+    [_open] = _add(w, w.a, period(w, start_date=date(2026, 10, 16), end_date=date(2026, 10, 31)))
+    _add(w, w.a, entry(w, entry_date=OCT_20), payment(w, paid_on=OCT_20))  # open period
+    _add(w, w.a, entry(w, entry_date=date(2026, 11, 3)), payment(w, paid_on=date(2026, 11, 3)))
+    # Another partner, and another agency, are not held by this partner's closed period.
+    _add(
+        w,
+        w.b,
+        entry(w, agency_id=w.b, partner_id=w.partner_b, created_by_user_id=w.user_b),
+        payment(
+            w,
+            agency_id=w.b,
+            partner_id=w.partner_b,
+            received_by_user_id=w.user_b,
+            recorded_by_user_id=w.user_b,
+            paid_on=OCT_5,
+        ),
+    )
+    assert _count(w, w.a, PartnerEntry) == 2 and _count(w, w.a, PartnerPayment) == 2
+
+
+def test_a_decision_on_a_line_of_a_closed_period_is_refused(db_url: str) -> None:
+    migrate(db_url, revision="0017")
+    w = _world(db_url)
+    [period_id] = _add(w, w.a, period(w))
+    [inside, later] = _add(
+        w,
+        w.a,
+        entry(w, entry_date=OCT_5, kind="AJUSTEMENT", amount=Decimal("250.00")),
+        entry(w, entry_date=OCT_20, kind="AJUSTEMENT", amount=Decimal("250.00")),
+    )
+    _close(w, period_id)
+    with pytest.raises(IntegrityError, match="closed"):
+        _add(w, w.a, _decision(w, inside))
+    _add(w, w.a, _decision(w, later))  # its period has no row yet: accepted
+    assert _count(w, w.a, PartnerEntryDecision) == 1
+
+
+# --- item 8: request keys for F2's double clicks -----------------------------------------------
+
+
+def test_a_request_key_is_used_once_per_agency(db_url: str) -> None:
+    migrate(db_url, revision="0017")
+    w = _world(db_url)
+    key = "0f" * 16
+    _add(w, w.a, entry(w, request_key=key), payment(w, request_key=key))  # tables are separate
+    with pytest.raises(IntegrityError):
+        _add(w, w.a, entry(w, request_key=key))
+    with pytest.raises(IntegrityError):
+        _add(w, w.a, payment(w, request_key=key))
+    # Without a key there is no limit, and another agency may use the same key.
+    _add(w, w.a, entry(w), entry(w), payment(w), payment(w))
+    other = {"agency_id": w.b, "partner_id": w.partner_b}
+    _add(
+        w,
+        w.b,
+        entry(w, created_by_user_id=w.user_b, request_key=key, **other),
+        payment(
+            w, received_by_user_id=w.user_b, recorded_by_user_id=w.user_b, request_key=key, **other
+        ),
+    )
+    assert _count(w, w.a, PartnerEntry) == 3 and _count(w, w.a, PartnerPayment) == 3
+
+
+@pytest.mark.parametrize("bad", ["", "x" * 65])
+def test_a_request_key_is_not_empty_nor_too_long(db_url: str, bad: str) -> None:
+    migrate(db_url, revision="0017")
+    w = _world(db_url)
+    for row in (entry(w, request_key=bad), payment(w, request_key=bad)):
+        with pytest.raises((IntegrityError, DBAPIError)):
+            _add(w, w.a, row)
+
+
 # --- tenancy: every reference stays inside its agency ------------------------------------------
 
 
@@ -783,7 +1036,6 @@ def test_rows_cannot_point_at_another_agencys_partner_user_sale_or_entry(db_url:
     correction = {"kind": "CORRECTION", "source": "system", "amount": Decimal("5.00")}
     forged: list[tuple[int, Any]] = [
         (w.a, period(w, partner_id=w.partner_b)),
-        (w.a, period(w, **{**frozen(w), "closed_by_user_id": w.user_b})),
         (w.a, entry(w, partner_id=w.partner_b)),
         (w.a, entry(w, created_by_user_id=w.user_b)),
         (
@@ -806,6 +1058,9 @@ def test_rows_cannot_point_at_another_agencys_partner_user_sale_or_entry(db_url:
     for agency, row in forged:
         with pytest.raises((IntegrityError, DBAPIError)):
             _add(w, agency, row)
+    [own_period] = _add(w, w.a, period(w))
+    with pytest.raises((IntegrityError, DBAPIError)):  # closed by a user of another agency
+        _close(w, own_period, closed_by_user_id=w.user_b)
 
 
 def test_each_agency_reads_only_its_own_rows(db_url: str) -> None:

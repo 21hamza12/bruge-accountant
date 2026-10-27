@@ -362,6 +362,8 @@ def rows_for_agency_b(b: Tenant) -> dict[str, Any]:
         "partner_entry_decisions": PartnerEntryDecision(
             agency_id=b.agency_id,
             entry_id=b.entry_id,
+            entry_kind="AJUSTEMENT",
+            entry_source="manual",
             decision="reject",
             decided_by_user_id=b.user_id,
         ),
@@ -712,24 +714,23 @@ def test_partner_account_grants(app_role_world: World, table: str, expected: set
 
 
 def _close(s: Session, tenant: Tenant) -> int:
-    rowcount = affected(
-        s.execute(
-            update(PartnerPeriod)
-            .where(PartnerPeriod.id == tenant.period_id)
-            .values(
-                status="closed",
-                opening_balance=Decimal("0.00"),
-                sales_total=Decimal("0.00"),
-                entries_total=Decimal("250.00"),
-                payments_total=Decimal("20000.00"),
-                closing_balance=Decimal("-19750.00"),
-                closed_at=NOW,
-                closed_by_user_id=tenant.user_id,
-                snapshot={"sales": [], "entries": [], "payments": []},
-            )
-        )
-    )
-    return rowcount
+    statement = update(PartnerPeriod).where(PartnerPeriod.id == tenant.period_id)
+    return affected(s.execute(statement.values(**_frozen(tenant))))
+
+
+def _frozen(tenant: Tenant) -> dict[str, Any]:
+    """A close that reconciles: 0 + 0 + 250 - 20 000 = -19 750."""
+    return {
+        "status": "closed",
+        "opening_balance": Decimal("0.00"),
+        "sales_total": Decimal("0.00"),
+        "entries_total": Decimal("250.00"),
+        "payments_total": Decimal("20000.00"),
+        "closing_balance": Decimal("-19750.00"),
+        "closed_at": NOW,
+        "closed_by_user_id": tenant.user_id,
+        "snapshot": {"sales": [], "entries": [], "payments": []},
+    }
 
 
 def test_the_tenant_closes_its_open_period_once_and_never_again(world: World) -> None:
@@ -779,10 +780,128 @@ def test_another_agencys_period_cannot_be_closed_or_moved(world: World) -> None:
                 .where(PartnerPeriod.id == a.period_id)
                 .values(agency_id=b.agency_id)
             )
-        assert violates_rls(info.value)
+        # The identity trigger runs before the policy's WITH CHECK; either one refuses.
+        assert "changes only by its close" in str(info.value) or violates_rls(info.value)
     with app_session(db) as s:
         bind_tenant(s, b.agency_id)
         assert s.scalars(select(PartnerPeriod.status)).all() == ["open"]
+
+
+def test_a_period_is_born_open_on_postgres(world: World) -> None:
+    """Item 4: ``tenant_insert`` on partner_periods admits open rows only."""
+    db, a, _ = world
+    with app_session(db) as s:
+        bind_tenant(s, a.agency_id)
+        with pytest.raises(DBAPIError) as info:
+            s.execute(
+                insert(PartnerPeriod).values(
+                    agency_id=a.agency_id,
+                    partner_id=a.partner_id,
+                    start_date=date(2026, 10, 1),
+                    end_date=date(2026, 10, 15),
+                    **_frozen(a),
+                )
+            )
+        assert violates_rls(info.value)
+
+
+@pytest.mark.parametrize("column", ["dates", "partner_id", "created_at"])
+def test_the_close_cannot_change_the_identity_of_a_period(world: World, column: str) -> None:
+    """Item 3: the BEFORE UPDATE trigger; even the close keeps partner, dates and creation."""
+    db, a, _ = world
+    changes: dict[str, dict[str, Any]] = {
+        "dates": {"start_date": date(2026, 11, 16), "end_date": date(2026, 11, 30)},
+        "partner_id": {"partner_id": a.partner_id + 1000},
+        "created_at": {"created_at": NOW},
+    }
+    change = changes[column]
+    with app_session(db) as s:
+        bind_tenant(s, a.agency_id)
+        statement = update(PartnerPeriod).where(PartnerPeriod.id == a.period_id)
+        with pytest.raises(DBAPIError, match="changes only by its close"):
+            s.execute(statement.values(**{**_frozen(a), **change}))
+
+
+def test_an_update_that_does_not_close_the_period_is_refused(world: World) -> None:
+    """Item 3: ``tenant_update`` WITH CHECK admits closed rows only; the trigger agrees."""
+    db, a, _ = world
+    with app_session(db) as s:
+        bind_tenant(s, a.agency_id)
+        with pytest.raises(DBAPIError) as info:
+            s.execute(update(PartnerPeriod).values(status="open"))
+        assert "changes only by its close" in str(info.value) or violates_rls(info.value)
+
+
+def test_a_close_that_does_not_reconcile_is_refused(world: World) -> None:
+    """Item 3, Postgres only: closing = opening + sales + entries - payments, exactly."""
+    db, a, _ = world
+    wrong = {**_frozen(a), "closing_balance": Decimal("-19749.99")}
+    with app_session(db) as s:
+        bind_tenant(s, a.agency_id)
+        statement = update(PartnerPeriod).where(PartnerPeriod.id == a.period_id)
+        with pytest.raises(DBAPIError, match="closing_reconciles"):
+            s.execute(statement.values(**wrong))
+
+
+def test_nothing_lands_in_a_closed_period_on_postgres(world: World) -> None:
+    """Item 1: the plpgsql BEFORE INSERT triggers, as the app role (their FOR SHARE needs its
+    UPDATE privilege on partner_periods) and as the owner in single-role mode."""
+    db, a, _ = world
+    inside = date(2026, 10, 20)  # in the seeded 16-31 Oct period
+    with app_session(db) as s:
+        bind_tenant(s, a.agency_id)
+        s.add_all(
+            [_line(a, inside, kind="AJUSTEMENT", amount=Decimal("10.00")), _payment(a, inside)]
+        )
+        s.commit()  # the period is open: accepted
+        pending = s.scalars(select(PartnerEntry.id).where(PartnerEntry.entry_date == inside)).one()
+        assert _close(s, a) == 1
+        s.commit()
+    late_decision = PartnerEntryDecision(
+        agency_id=a.agency_id,
+        entry_id=pending,
+        entry_kind="AJUSTEMENT",
+        entry_source="manual",
+        decision="approve",
+        decided_by_user_id=a.user_id,
+    )
+    for row in (_line(a, inside), _payment(a, inside), late_decision):
+        with app_session(db) as s:
+            bind_tenant(s, a.agency_id)
+            s.add(row)
+            with pytest.raises(DBAPIError, match="period of this date is closed"):
+                s.commit()
+    with app_session(db) as s:
+        bind_tenant(s, a.agency_id)
+        s.add_all([_line(a, date(2026, 11, 2)), _payment(a, date(2026, 11, 2))])
+        s.commit()  # no period row yet: accepted
+
+
+def _line(owner: Tenant, day: date, **kw: Any) -> PartnerEntry:
+    fields: dict[str, Any] = {
+        "agency_id": owner.agency_id,
+        "partner_id": owner.partner_id,
+        "entry_date": day,
+        "kind": "ADM",
+        "amount": Decimal("100.00"),
+        "reason": "pénalité compagnie",
+        "source": "manual",
+        "created_by_user_id": owner.user_id,
+    }
+    fields.update(kw)
+    return PartnerEntry(**fields)
+
+
+def _payment(owner: Tenant, day: date) -> PartnerPayment:
+    return PartnerPayment(
+        agency_id=owner.agency_id,
+        partner_id=owner.partner_id,
+        paid_on=day,
+        amount=Decimal("1.00"),
+        method="cash",
+        received_by_user_id=owner.user_id,
+        recorded_by_user_id=owner.user_id,
+    )
 
 
 def test_a_line_cannot_be_written_for_another_agencys_partner(world: World) -> None:
@@ -802,6 +921,8 @@ def test_a_line_cannot_be_written_for_another_agencys_partner(world: World) -> N
         PartnerEntryDecision(
             agency_id=a.agency_id,
             entry_id=b.entry_id,
+            entry_kind="AJUSTEMENT",
+            entry_source="manual",
             decision="approve",
             decided_by_user_id=a.user_id,
         ),

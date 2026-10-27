@@ -82,7 +82,7 @@ def test_the_fixture_totals(parsed_fixture: ParsedReport) -> None:
 def test_the_fixture_per_airline_in_descending_cost(parsed_fixture: ParsedReport) -> None:
     s = summarize(fixture_tickets(parsed_fixture))
     assert [(a.code, a.name, a.ticket_count, a.total_cost) for a in s.airlines] == [
-        ("495", "Cie 495", 19, Decimal("336190")),
+        ("495", "Mauritania Airlines", 19, Decimal("336190")),
         ("147", "Royal Air Maroc", 7, Decimal("266361")),
         ("235", "Turkish Airlines", 6, Decimal("238252")),
         ("199", "Tunisair", 14, Decimal("222125")),

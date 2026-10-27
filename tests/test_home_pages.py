@@ -146,7 +146,7 @@ def test_the_cost_chart_is_svg_with_attribute_sized_bars(env: Env) -> None:
     assert bars[0].count("bar-top") == 1 and all("bar-top" not in b for b in bars[1:])
     text = squash(chart)
     for name, count, cost in [
-        ("Cie 495", 19, 336190),
+        ("Mauritania Airlines", 19, 336190),
         ("Royal Air Maroc", 7, 266361),
         ("Turkish Airlines", 6, 238252),
         ("Tunisair", 14, 222125),
@@ -272,7 +272,10 @@ def test_the_staff_home_lists_the_report_tickets_without_a_sale(env: Env) -> Non
     first = html.split('<li class="my-row">')[1][:600]
     text = squash(first)
     assert re.search(r"\d{10}", text)
-    assert re.search(r"(Royal Air Maroc|Turkish Airlines|Tunisair|Qatar Airways|Cie \d+)", text)
+    airlines = (
+        r"(Royal Air Maroc|Turkish Airlines|Tunisair|Qatar Airways|Mauritania Airlines|Cie \d+)"
+    )
+    assert re.search(airlines, text)
     assert re.search(r"\d", text)
 
 

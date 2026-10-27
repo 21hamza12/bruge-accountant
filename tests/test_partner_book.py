@@ -98,6 +98,8 @@ class World:
         return user
 
     def _partner(self, actor: User, name: str) -> Partner:
+        # Postgres (the `migrated` fixture) enforces row-level security on partners.
+        rebind_tenant(self.db, actor.agency_id)
         partner = partners.create_partner(self.db, actor, name, now=NOW)
         partners.set_fee(self.db, partner, Decimal("300"), date(2026, 1, 1), actor, now=NOW)
         self.db.commit()

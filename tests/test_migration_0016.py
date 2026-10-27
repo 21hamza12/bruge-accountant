@@ -88,7 +88,7 @@ def test_0016_follows_0015_and_is_the_head() -> None:
     script = ScriptDirectory.from_config(alembic_config("sqlite://"))
     revision = script.get_revision("0016")
     assert revision is not None and revision.down_revision == "0015"
-    assert script.get_heads() == ["0016"]
+    assert len(script.get_heads()) == 1  # a newer migration is the head: see its own test
     assert AI_PURPOSES == ("screenshot", "chat")
 
 

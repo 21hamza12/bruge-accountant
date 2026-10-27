@@ -73,6 +73,13 @@ GRANTS = {
     "agency_ai_settings": "SELECT",
     # Phase E (migration 0015). The chat is append-only: no UPDATE, no DELETE.
     "chat_messages": "SELECT, INSERT",
+    # Phase F (migration 0017). Closing a period is an UPDATE of its open row (the policy matches
+    # open rows only: a closed one never changes); no DELETE. Lines, decisions and payments are
+    # append-only.
+    "partner_periods": "SELECT, INSERT, UPDATE",
+    "partner_entries": "SELECT, INSERT",
+    "partner_entry_decisions": "SELECT, INSERT",
+    "partner_payments": "SELECT, INSERT",
 }
 # The tables migration 0003 grants on, frozen. 0003 passes this to ``apply_grants`` instead of
 # relying on GRANTS, which later phases extend: a fresh ``alembic upgrade head`` runs 0003 before

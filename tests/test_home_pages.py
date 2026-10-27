@@ -146,7 +146,7 @@ def test_the_cost_chart_is_svg_with_attribute_sized_bars(env: Env) -> None:
     assert bars[0].count("bar-top") == 1 and all("bar-top" not in b for b in bars[1:])
     text = squash(chart)
     for name, count, cost in [
-        ("Cie 495", 19, 336190),
+        ("Mauritania Airlines", 19, 336190),
         ("Royal Air Maroc", 7, 266361),
         ("Turkish Airlines", 6, 238252),
         ("Tunisair", 14, 222125),

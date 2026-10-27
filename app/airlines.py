@@ -1,6 +1,6 @@
 """Airline names for the IATA numeric ticket prefixes (the first three digits of a ticket number).
 
-Only prefixes that are certain are listed. Anything else renders as ``Cie 495`` so the code stays
+Only prefixes that are certain are listed. Anything else renders as ``Cie 999`` so the code stays
 visible and nobody is shown a wrong airline.
 """
 
@@ -28,6 +28,7 @@ AIRLINES: Mapping[str, str] = MappingProxyType(
         "220": "Lufthansa",
         "047": "TAP Air Portugal",
         "075": "Iberia",
+        "495": "Mauritania Airlines",  # confirmed by the owner, 27 Oct 2026 (decision 16)
     }
 )
 

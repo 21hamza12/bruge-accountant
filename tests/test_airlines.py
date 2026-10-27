@@ -25,6 +25,7 @@ KNOWN = {
     "220": "Lufthansa",
     "047": "TAP Air Portugal",
     "075": "Iberia",
+    "495": "Mauritania Airlines",  # owner, 27 Oct 2026 (decision 16)
 }
 
 
@@ -38,7 +39,6 @@ def test_the_table_holds_exactly_the_agreed_prefixes() -> None:
 
 
 def test_an_unknown_code_shows_the_code() -> None:
-    assert airline_name("495") == "Cie 495"
     assert airline_name("999") == "Cie 999"
 
 

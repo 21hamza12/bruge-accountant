@@ -72,6 +72,34 @@ the home page and in the chat's answers.
 
 Estimate: F1–F2 are the bulk; the whole phase is roughly the size of phase B's sales part.
 
+**F2 must** (left to the application code by the F1 review, 27 Oct 2026; the database already
+refuses lines, payments and decisions dated in a closed period, decisions that do not fit their
+line, and any change to a period but its close):
+
+- **Roles and four eyes on decisions:** only the manager approves or rejects an `AJUSTEMENT`,
+  never the person who entered it; the accountant or the manager confirms or rejects an Amadeus
+  `RFND`.
+- **Active users only:** whoever enters, decides, receives or records must be an active user of
+  the agency.
+- **Lock the partner before the totals:** the close first takes
+  `pg_advisory_xact_lock(170017, mod(partner_id, 2147483647))` (EXCLUSIVE, the key of migration
+  0017's insert guard, which takes the shared one), and only then reads the sales, lines and
+  payments. Every insert in flight has then committed and is counted; every later one sees the
+  closed period and is refused. Two partners sharing a key only wait for each other.
+- **Close exactly one row:** the close takes the period row `FOR UPDATE`, updates it and checks
+  that exactly one row changed; anything else is a refusal, not a silent success.
+- **No close while lines wait:** a period with a pending `AJUSTEMENT` or Amadeus `RFND` cannot be
+  closed until each one is decided: once it is closed, no decision can ever be inserted for
+  them (the database refuses anything dated on or before a closed period's end).
+- **Late lines go forward:** nothing can be dated on or before the end of the latest closed
+  period, not even in a half-month that never had a row; a late line is written in the open
+  period (a `CORRECTION`, or a dated-today line whose reason names the old date).
+- **A `CORRECTION` matches its sale:** the sale it points at is a sale of the same partner.
+- **Reasons are real text:** a reason made of spaces, or padded to reach 5 characters, is refused
+  (`app.reasons`), not only by the length CHECK.
+- **Double clicks:** each form post carries a `request_key`; a repeated key returns the line
+  already written instead of a second one.
+
 ## 5. Owner's answers (27 Oct 2026)
 
 1. **Payments:** recorded by the **accountant and the manager only**. Agents do not record partner

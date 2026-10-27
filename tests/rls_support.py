@@ -22,7 +22,11 @@ from app.models import (
     FlagDecision,
     Partner,
     PartnerAlias,
+    PartnerEntry,
+    PartnerEntryDecision,
     PartnerFee,
+    PartnerPayment,
+    PartnerPeriod,
     ReportDay,
     Sale,
     SaleTicket,
@@ -56,6 +60,8 @@ class Tenant:
     run_id: int = 0  # a comparison run of the seeded day (it also has one flag)
     upload_id: int = 0
     flag_id: int = 0  # the flag of that run (it also has a decision)
+    period_id: int = 0  # an open partner period (phase F, ``ledger=True``)
+    entry_id: int = 0  # an AJUSTEMENT still waiting for its decision (another one has one)
 
 
 def seed_tenant(
@@ -67,10 +73,13 @@ def seed_tenant(
     *,
     ai: bool = True,
     chat: bool | None = None,
+    ledger: bool = False,
 ) -> Tenant:
     """One agency with a row in every agency-scoped table, written through its own tenant
     (``ai=False`` leaves out the phase D tables, for a database older than migration 0014;
-    ``chat=False`` leaves out the chat, older than 0015; it follows ``ai`` by default)."""
+    ``chat=False`` leaves out the chat, older than 0015; it follows ``ai`` by default;
+    ``ledger=True`` adds the partner account tables of 0017, off by default so the tests of the
+    older migrations can keep seeding at their own revision)."""
     chat = ai if chat is None else chat
     engine = make_engine(owner_url)
     try:
@@ -133,9 +142,12 @@ def seed_tenant(
             upload_id, run_id, flag_id = _seed_comparison(s, agency_id, user.id, day_id, sale_id)
             if ai:
                 _seed_ai(s, agency_id, user.id)
+            period_id, entry_id = (
+                _seed_ledger(s, agency_id, user.id, partner.id) if ledger else (0, 0)
+            )
             return Tenant(
                 agency_id, slug, phone, token_hash, user.id, partner.id, day_id, sale_id,
-                run_id, upload_id, flag_id,
+                run_id, upload_id, flag_id, period_id, entry_id,
             )  # fmt: skip
     finally:
         engine.dispose()
@@ -263,6 +275,63 @@ def _seed_ai(s: Session, agency_id: int, user_id: int) -> None:
     )
     s.add(AgencyAiSettings(agency_id=agency_id, enabled=True, monthly_budget_micro_usd=5_000_000))
     s.commit()
+
+
+def _seed_ledger(s: Session, agency_id: int, user_id: int, partner_id: int) -> tuple[int, int]:
+    """Phase F: an open period of the partner, an approved AJUSTEMENT, a pending one (its id is
+    returned) and a payment."""
+    period = PartnerPeriod(
+        agency_id=agency_id,
+        partner_id=partner_id,
+        start_date=date(2026, 10, 16),
+        end_date=date(2026, 10, 31),
+        status="open",
+    )
+    line = PartnerEntry(
+        agency_id=agency_id,
+        partner_id=partner_id,
+        entry_date=date(2026, 10, 18),
+        kind="AJUSTEMENT",
+        amount=Decimal("250.00"),
+        reason="geste commercial",
+        source="manual",
+        created_by_user_id=user_id,
+    )
+    pending = PartnerEntry(
+        agency_id=agency_id,
+        partner_id=partner_id,
+        entry_date=date(2026, 10, 19),
+        kind="AJUSTEMENT",
+        amount=Decimal("-100.00"),
+        reason="en attente du gérant",
+        source="manual",
+        created_by_user_id=user_id,
+    )
+    s.add_all([period, line, pending])
+    s.commit()
+    s.add(
+        PartnerEntryDecision(
+            agency_id=agency_id,
+            entry_id=line.id,
+            entry_kind="AJUSTEMENT",
+            entry_source="manual",
+            decision="approve",
+            decided_by_user_id=user_id,
+        )
+    )
+    s.add(
+        PartnerPayment(
+            agency_id=agency_id,
+            partner_id=partner_id,
+            paid_on=date(2026, 10, 20),
+            amount=Decimal("20000.00"),
+            method="cash",
+            received_by_user_id=user_id,
+            recorded_by_user_id=user_id,
+        )
+    )
+    s.commit()
+    return period.id, pending.id
 
 
 def insert_unscoped_audit_event(session: Session, event_type: str = "login_failed") -> None:

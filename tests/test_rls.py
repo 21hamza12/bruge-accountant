@@ -34,7 +34,11 @@ from app.models import (
     FlagDecision,
     Partner,
     PartnerAlias,
+    PartnerEntry,
+    PartnerEntryDecision,
     PartnerFee,
+    PartnerPayment,
+    PartnerPeriod,
     RateLimitBucket,
     ReportDay,
     Sale,
@@ -84,6 +88,10 @@ SCOPED_MODELS: list[Any] = [
     AiUsage,
     AgencyAiSettings,
     ChatMessage,
+    PartnerPeriod,
+    PartnerEntry,
+    PartnerEntryDecision,
+    PartnerPayment,
 ]
 
 
@@ -93,8 +101,12 @@ def scope_column(model: Any) -> Any:
 
 @pytest.fixture
 def world(rls_db: RlsDatabase) -> World:
-    a = seed_tenant(rls_db.owner_url, "agency-a", "+22211111111", "a1" * 32, 3940000000)
-    b = seed_tenant(rls_db.owner_url, "agency-b", "+22222222222", "b2" * 32, 3950000000)
+    a = seed_tenant(
+        rls_db.owner_url, "agency-a", "+22211111111", "a1" * 32, 3940000000, ledger=True
+    )
+    b = seed_tenant(
+        rls_db.owner_url, "agency-b", "+22222222222", "b2" * 32, 3950000000, ledger=True
+    )
     return rls_db, a, b
 
 
@@ -330,6 +342,40 @@ def rows_for_agency_b(b: Tenant) -> dict[str, Any]:
         "chat_messages": ChatMessage(
             agency_id=b.agency_id, user_id=b.user_id, role="user", text="forged"
         ),
+        "partner_periods": PartnerPeriod(
+            agency_id=b.agency_id,
+            partner_id=b.partner_id,
+            start_date=date(2026, 10, 1),
+            end_date=date(2026, 10, 15),
+            status="open",
+        ),
+        "partner_entries": PartnerEntry(
+            agency_id=b.agency_id,
+            partner_id=b.partner_id,
+            entry_date=date(2026, 10, 18),
+            kind="ADM",
+            amount=Decimal("100.00"),
+            reason="forged line",
+            source="manual",
+            created_by_user_id=b.user_id,
+        ),
+        "partner_entry_decisions": PartnerEntryDecision(
+            agency_id=b.agency_id,
+            entry_id=b.entry_id,
+            entry_kind="AJUSTEMENT",
+            entry_source="manual",
+            decision="reject",
+            decided_by_user_id=b.user_id,
+        ),
+        "partner_payments": PartnerPayment(
+            agency_id=b.agency_id,
+            partner_id=b.partner_id,
+            paid_on=date(2026, 10, 18),
+            amount=Decimal("1.00"),
+            method="cash",
+            received_by_user_id=b.user_id,
+            recorded_by_user_id=b.user_id,
+        ),
         "uploads": Upload(
             agency_id=b.agency_id,
             filename="x.xlsx",
@@ -366,6 +412,10 @@ def rows_for_agency_b(b: Tenant) -> dict[str, Any]:
         "day_acknowledgements",
         "ai_usage",
         "chat_messages",
+        "partner_periods",
+        "partner_entries",
+        "partner_entry_decisions",
+        "partner_payments",
     ],
 )
 def test_insert_for_another_agency_is_rejected(world: World, table: str) -> None:
@@ -632,6 +682,276 @@ def test_a_chat_message_of_another_agency_is_invisible_and_cannot_be_forged_for_
             s.commit()
 
 
+# --- partner accounts (migration 0017) -----------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("table", "expected"),
+    [
+        ("partner_periods", {"SELECT", "INSERT", "UPDATE"}),
+        ("partner_entries", {"SELECT", "INSERT"}),
+        ("partner_entry_decisions", {"SELECT", "INSERT"}),
+        ("partner_payments", {"SELECT", "INSERT"}),
+    ],
+)
+def test_partner_account_grants(app_role_world: World, table: str, expected: set[str]) -> None:
+    db, _, _ = app_role_world
+    engine = create_engine(db.owner_url)
+    try:
+        with engine.connect() as conn:
+            privileges = set(
+                conn.execute(
+                    text(
+                        "SELECT privilege_type FROM information_schema.role_table_grants "
+                        "WHERE table_name = :t AND grantee = :g"
+                    ),
+                    {"t": table, "g": make_url(db.app_url).username},
+                ).scalars()
+            )
+    finally:
+        engine.dispose()
+    assert privileges == expected
+
+
+def _close(s: Session, tenant: Tenant) -> int:
+    statement = update(PartnerPeriod).where(PartnerPeriod.id == tenant.period_id)
+    return affected(s.execute(statement.values(**_frozen(tenant))))
+
+
+def _frozen(tenant: Tenant) -> dict[str, Any]:
+    """A close that reconciles: 0 + 0 + 250 - 20 000 = -19 750."""
+    return {
+        "status": "closed",
+        "opening_balance": Decimal("0.00"),
+        "sales_total": Decimal("0.00"),
+        "entries_total": Decimal("250.00"),
+        "payments_total": Decimal("20000.00"),
+        "closing_balance": Decimal("-19750.00"),
+        "closed_at": NOW,
+        "closed_by_user_id": tenant.user_id,
+        "snapshot": {"sales": [], "entries": [], "payments": []},
+    }
+
+
+def test_the_tenant_closes_its_open_period_once_and_never_again(world: World) -> None:
+    db, a, _ = world
+    with app_session(db) as s:
+        bind_tenant(s, a.agency_id)
+        assert _close(s, a) == 1
+        s.commit()
+    with app_session(db) as s:
+        bind_tenant(s, a.agency_id)
+        # tenant_update only matches open rows: a closed period is out of reach of any UPDATE.
+        assert affected(s.execute(update(PartnerPeriod).values(status="open"))) == 0
+        assert (
+            affected(s.execute(update(PartnerPeriod).values(closing_balance=Decimal("0.00")))) == 0
+        )
+        s.commit()
+    with app_session(db) as s:
+        bind_tenant(s, a.agency_id)
+        assert s.execute(select(PartnerPeriod.status, PartnerPeriod.closing_balance)).all() == [
+            ("closed", Decimal("-19750.00"))
+        ]
+
+
+def test_a_period_is_never_deleted(world: World) -> None:
+    db, a, _ = world
+    with app_session(db) as s:
+        bind_tenant(s, a.agency_id)
+        if db.mode == "app-role":
+            with pytest.raises(ProgrammingError, match="permission denied"):
+                s.execute(delete(PartnerPeriod))
+            s.rollback()
+            bind_tenant(s, a.agency_id)
+        else:  # the owner: no DELETE policy, so nothing matches
+            assert affected(s.execute(delete(PartnerPeriod))) == 0
+            s.commit()
+        assert count(s, PartnerPeriod) == 1
+
+
+def test_another_agencys_period_cannot_be_closed_or_moved(world: World) -> None:
+    db, a, b = world
+    with app_session(db) as s:
+        bind_tenant(s, a.agency_id)
+        assert _close(s, b) == 0  # b's open period is invisible to a
+        with pytest.raises(DBAPIError) as info:
+            s.execute(
+                update(PartnerPeriod)
+                .where(PartnerPeriod.id == a.period_id)
+                .values(agency_id=b.agency_id)
+            )
+        # The identity trigger runs before the policy's WITH CHECK; either one refuses.
+        assert "changes only by its close" in str(info.value) or violates_rls(info.value)
+    with app_session(db) as s:
+        bind_tenant(s, b.agency_id)
+        assert s.scalars(select(PartnerPeriod.status)).all() == ["open"]
+
+
+def test_a_period_is_born_open_on_postgres(world: World) -> None:
+    """Item 4: ``tenant_insert`` on partner_periods admits open rows only."""
+    db, a, _ = world
+    with app_session(db) as s:
+        bind_tenant(s, a.agency_id)
+        with pytest.raises(DBAPIError) as info:
+            s.execute(
+                insert(PartnerPeriod).values(
+                    agency_id=a.agency_id,
+                    partner_id=a.partner_id,
+                    start_date=date(2026, 10, 1),
+                    end_date=date(2026, 10, 15),
+                    **_frozen(a),
+                )
+            )
+        assert violates_rls(info.value)
+
+
+@pytest.mark.parametrize("column", ["dates", "partner_id", "created_at"])
+def test_the_close_cannot_change_the_identity_of_a_period(world: World, column: str) -> None:
+    """Item 3: the BEFORE UPDATE trigger; even the close keeps partner, dates and creation."""
+    db, a, _ = world
+    changes: dict[str, dict[str, Any]] = {
+        "dates": {"start_date": date(2026, 11, 16), "end_date": date(2026, 11, 30)},
+        "partner_id": {"partner_id": a.partner_id + 1000},
+        "created_at": {"created_at": NOW},
+    }
+    change = changes[column]
+    with app_session(db) as s:
+        bind_tenant(s, a.agency_id)
+        statement = update(PartnerPeriod).where(PartnerPeriod.id == a.period_id)
+        with pytest.raises(DBAPIError, match="changes only by its close"):
+            s.execute(statement.values(**{**_frozen(a), **change}))
+
+
+def test_an_update_that_does_not_close_the_period_is_refused(world: World) -> None:
+    """Item 3: ``tenant_update`` WITH CHECK admits closed rows only; the trigger agrees."""
+    db, a, _ = world
+    with app_session(db) as s:
+        bind_tenant(s, a.agency_id)
+        with pytest.raises(DBAPIError) as info:
+            s.execute(update(PartnerPeriod).values(status="open"))
+        assert "changes only by its close" in str(info.value) or violates_rls(info.value)
+
+
+def test_a_close_that_does_not_reconcile_is_refused(world: World) -> None:
+    """Item 3, Postgres only: closing = opening + sales + entries - payments, exactly."""
+    db, a, _ = world
+    wrong = {**_frozen(a), "closing_balance": Decimal("-19749.99")}
+    with app_session(db) as s:
+        bind_tenant(s, a.agency_id)
+        statement = update(PartnerPeriod).where(PartnerPeriod.id == a.period_id)
+        with pytest.raises(DBAPIError, match="closing_reconciles"):
+            s.execute(statement.values(**wrong))
+
+
+def test_nothing_lands_in_a_closed_period_on_postgres(world: World) -> None:
+    """Item 1 and N3: the plpgsql BEFORE INSERT triggers (advisory lock, then the check), as the
+    app role and as the owner in single-role mode. Nothing dated on or before the end of the
+    last closed period lands, even in a half-month that never had a row."""
+    db, a, _ = world
+    inside = date(2026, 10, 20)  # in the seeded 16-31 Oct period
+    with app_session(db) as s:
+        bind_tenant(s, a.agency_id)
+        s.add_all(
+            [_line(a, inside, kind="AJUSTEMENT", amount=Decimal("10.00")), _payment(a, inside)]
+        )
+        s.commit()  # the period is open: accepted
+        pending = s.scalars(select(PartnerEntry.id).where(PartnerEntry.entry_date == inside)).one()
+        assert _close(s, a) == 1
+        s.commit()
+    late_decision = PartnerEntryDecision(
+        agency_id=a.agency_id,
+        entry_id=pending,
+        entry_kind="AJUSTEMENT",
+        entry_source="manual",
+        decision="approve",
+        decided_by_user_id=a.user_id,
+    )
+    backdated = date(2026, 10, 5)  # 1-15 Oct never had a row, but 16-31 Oct is closed
+    for row in (
+        _line(a, inside),
+        _payment(a, inside),
+        late_decision,
+        _line(a, backdated),
+        _payment(a, backdated),
+    ):
+        with app_session(db) as s:
+            bind_tenant(s, a.agency_id)
+            s.add(row)
+            with pytest.raises(DBAPIError, match="closed partner period ends on or after"):
+                s.commit()
+    with app_session(db) as s:
+        bind_tenant(s, a.agency_id)
+        s.add_all([_line(a, date(2026, 11, 2)), _payment(a, date(2026, 11, 2))])
+        s.commit()  # after the last closed period: accepted
+
+
+def _line(owner: Tenant, day: date, **kw: Any) -> PartnerEntry:
+    fields: dict[str, Any] = {
+        "agency_id": owner.agency_id,
+        "partner_id": owner.partner_id,
+        "entry_date": day,
+        "kind": "ADM",
+        "amount": Decimal("100.00"),
+        "reason": "pénalité compagnie",
+        "source": "manual",
+        "created_by_user_id": owner.user_id,
+    }
+    fields.update(kw)
+    return PartnerEntry(**fields)
+
+
+def _payment(owner: Tenant, day: date) -> PartnerPayment:
+    return PartnerPayment(
+        agency_id=owner.agency_id,
+        partner_id=owner.partner_id,
+        paid_on=day,
+        amount=Decimal("1.00"),
+        method="cash",
+        received_by_user_id=owner.user_id,
+        recorded_by_user_id=owner.user_id,
+    )
+
+
+def test_a_line_cannot_be_written_for_another_agencys_partner(world: World) -> None:
+    """The composite key ties every line, decision and payment to a row of its own agency."""
+    db, a, b = world
+    forged = [
+        PartnerEntry(
+            agency_id=a.agency_id,
+            partner_id=b.partner_id,
+            entry_date=date(2026, 10, 18),
+            kind="ADM",
+            amount=Decimal("1.00"),
+            reason="forged line",
+            source="manual",
+            created_by_user_id=a.user_id,
+        ),
+        PartnerEntryDecision(
+            agency_id=a.agency_id,
+            entry_id=b.entry_id,
+            entry_kind="AJUSTEMENT",
+            entry_source="manual",
+            decision="approve",
+            decided_by_user_id=a.user_id,
+        ),
+        PartnerPayment(
+            agency_id=a.agency_id,
+            partner_id=b.partner_id,
+            paid_on=date(2026, 10, 18),
+            amount=Decimal("1.00"),
+            method="cash",
+            received_by_user_id=a.user_id,
+            recorded_by_user_id=a.user_id,
+        ),
+    ]
+    for row in forged:
+        with app_session(db) as s:
+            bind_tenant(s, a.agency_id)
+            s.add(row)
+            with pytest.raises(DBAPIError):
+                s.commit()
+
+
 # --- partners (migration 0007) -------------------------------------------------------
 
 
@@ -785,7 +1105,16 @@ def test_the_tenant_may_edit_its_sale_and_delete_its_tickets(world: World) -> No
 
 @pytest.mark.parametrize(
     "model",
-    [DayEvent, SaleVersion, ComparisonRun, AiUsage, ChatMessage],
+    [
+        DayEvent,
+        SaleVersion,
+        ComparisonRun,
+        AiUsage,
+        ChatMessage,
+        PartnerEntry,
+        PartnerEntryDecision,
+        PartnerPayment,
+    ],
     ids=lambda m: m.__tablename__,
 )
 def test_day_events_and_sale_versions_are_append_only_for_the_tenant(
@@ -800,12 +1129,15 @@ def test_day_events_and_sale_versions_are_append_only_for_the_tenant(
         ComparisonRun: {"matched_count": 9},
         AiUsage: {"cost_micro_usd": 0},
         ChatMessage: {"text": "edited"},
+        PartnerEntry: {"amount": Decimal("1.00")},
+        PartnerEntryDecision: {"decision": "reject"},
+        PartnerPayment: {"amount": Decimal("1.00")},
     }
     change = changes[model]
     with app_session(db) as s:
         bind_tenant(s, a.agency_id)
         before = count(s, model)
-        assert before == 1
+        assert before == (2 if model is PartnerEntry else 1)
         for statement in (update(model).values(**change), delete(model)):
             if db.mode == "app-role":
                 with pytest.raises(ProgrammingError, match="permission denied"):
@@ -1164,5 +1496,14 @@ def test_the_exact_policies_installed(world: World) -> None:
         ("ai_usage", "tenant_insert", "INSERT"),
         ("chat_messages", "tenant_read", "SELECT"),
         ("chat_messages", "tenant_insert", "INSERT"),
+        ("partner_periods", "tenant_read", "SELECT"),
+        ("partner_periods", "tenant_insert", "INSERT"),
+        ("partner_periods", "tenant_update", "UPDATE"),
+        ("partner_entries", "tenant_read", "SELECT"),
+        ("partner_entries", "tenant_insert", "INSERT"),
+        ("partner_entry_decisions", "tenant_read", "SELECT"),
+        ("partner_entry_decisions", "tenant_insert", "INSERT"),
+        ("partner_payments", "tenant_read", "SELECT"),
+        ("partner_payments", "tenant_insert", "INSERT"),
     }
     assert installed == expected

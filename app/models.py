@@ -13,8 +13,10 @@ from decimal import Decimal
 from typing import Any
 
 from sqlalchemy import (
+    JSON,
     Boolean,
     CheckConstraint,
+    ColumnElement,
     Date,
     ForeignKey,
     ForeignKeyConstraint,
@@ -25,11 +27,21 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    and_,
+    column,
+    event,
+    extract,
     false,
     func,
+    inspect,
+    or_,
     true,
 )
+from sqlalchemy.dialects import postgresql
+from sqlalchemy.ext.compiler import compiles
 from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.sql.compiler import SQLCompiler
+from sqlalchemy.sql.functions import FunctionElement
 
 from app.db import Base, BigIntType, JSONType, UTCDateTime
 
@@ -569,7 +581,9 @@ class Sale(Base):
     """The head of a sale: one or more tickets sold with ONE price (P.B), AG, CLT, AP, payment.
 
     Written only by ``app/sales.py``. The content lives in the append-only ``sale_versions``;
-    ``current_version`` says which one is current. The row never moves to another day or agency.
+    ``current_version`` says which one is current. The row never moves to another agency; it
+    can move to another day (``sales.move_sale_day``, a ticket found in a later report), and the
+    move is a new version like any other change.
     """
 
     __tablename__ = "sales"
@@ -1211,3 +1225,400 @@ class ChatMessage(Base):
     created_at: Mapped[datetime] = mapped_column(
         UTCDateTime, default=_now, server_default=func.now()
     )
+
+
+# --- Phase F: partner accounts (migration 0017) ----------------------------------------------
+
+PERIOD_OPEN = "open"
+PERIOD_CLOSED = "closed"
+PERIOD_STATUSES = (PERIOD_OPEN, PERIOD_CLOSED)
+ENTRY_OPENING = "OPENING"
+ENTRY_ADM = "ADM"
+ENTRY_RFND = "RFND"
+ENTRY_CHANGEMENT = "CHANGEMENT"
+ENTRY_AJUSTEMENT = "AJUSTEMENT"
+ENTRY_CORRECTION = "CORRECTION"
+ENTRY_KINDS = (
+    ENTRY_OPENING,
+    ENTRY_ADM,
+    ENTRY_RFND,
+    ENTRY_CHANGEMENT,
+    ENTRY_AJUSTEMENT,
+    ENTRY_CORRECTION,
+)
+ENTRY_SOURCE_MANUAL = "manual"
+ENTRY_SOURCE_AMADEUS = "amadeus"  # an RFND proposed from the Amadeus report (F4)
+ENTRY_SOURCE_SYSTEM = "system"  # an automatic CORRECTION after a closed period
+ENTRY_SOURCES = (ENTRY_SOURCE_MANUAL, ENTRY_SOURCE_AMADEUS, ENTRY_SOURCE_SYSTEM)
+DECISION_APPROVE = "approve"  # an AJUSTEMENT, by the manager
+DECISION_CONFIRM = "confirm"  # an RFND proposed from Amadeus, by the accountant or the manager
+DECISION_REJECT = "reject"
+ENTRY_DECISIONS = (DECISION_APPROVE, DECISION_CONFIRM, DECISION_REJECT)
+# A partner pays with money: "credit" is how a ticket is sold on account, never how it is paid.
+PARTNER_PAYMENT_METHODS = tuple(m for m in PAYMENT_METHODS if m != "credit")
+MAX_PAYMENT_REFERENCE = 64
+# F2's idempotency key of a form post (a double click writes one line, not two).
+MAX_REQUEST_KEY = 64
+REQUEST_KEY_CHECK = f"request_key IS NULL OR length(request_key) BETWEEN 1 AND {MAX_REQUEST_KEY}"
+# The only decisions a line can take: approve / reject an AJUSTEMENT, confirm / reject an RFND
+# proposed from Amadeus (``partner_entry_decisions`` copies the entry's kind and source).
+DECISION_FITS_ENTRY_CHECK = (
+    "(entry_kind = 'AJUSTEMENT' AND decision IN ('approve', 'reject')) OR "
+    "(entry_kind = 'RFND' AND entry_source = 'amadeus' AND decision IN ('confirm', 'reject'))"
+)
+# Postgres only: on SQLite NUMERIC is stored as a float, so an exact equality is not reliable.
+CLOSING_RECONCILES_CHECK = (
+    "status <> 'closed' OR "
+    "closing_balance = opening_balance + sales_total + entries_total - payments_total"
+)
+# The frozen-at-close columns of a period: all NULL while open, all set once closed.
+PERIOD_FROZEN_COLUMNS = (
+    "opening_balance",
+    "sales_total",
+    "entries_total",
+    "payments_total",
+    "closing_balance",
+    "closed_at",
+    "closed_by_user_id",
+    "snapshot",
+)
+# SQL NULL (not the JSON ``null``) for an open period's snapshot, so the CHECK below holds.
+SnapshotType = JSON(none_as_null=True).with_variant(
+    postgresql.JSONB(none_as_null=True), "postgresql"
+)
+
+
+class _DayAfter(FunctionElement[date]):
+    """``date + 1 day`` inside a CHECK, written for each database (there is no portable SQL)."""
+
+    type = Date()
+    inherit_cache = True
+    name = "day_after"
+
+
+@compiles(_DayAfter)
+def _day_after_default(element: _DayAfter, compiler: SQLCompiler, **kw: Any) -> str:
+    return f"({compiler.process(element.clauses, **kw)} + 1)"
+
+
+@compiles(_DayAfter, "sqlite")
+def _day_after_sqlite(element: _DayAfter, compiler: SQLCompiler, **kw: Any) -> str:
+    return f"date({compiler.process(element.clauses, **kw)}, '+1 day')"
+
+
+def _day_of(name: str) -> ColumnElement[int]:
+    return extract("day", column(name))
+
+
+def _period_dates_check() -> ColumnElement[bool]:
+    """1 -> 15, or 16 -> the last day of the same month (the day after it is a 1st)."""
+    start, end = column("start_date", Date()), column("end_date", Date())
+    same_month = and_(
+        extract("year", start) == extract("year", end),
+        extract("month", start) == extract("month", end),
+    )
+    return and_(
+        same_month,
+        or_(
+            and_(_day_of("start_date") == 1, _day_of("end_date") == 15),
+            and_(_day_of("start_date") == 16, extract("day", _DayAfter(end)) == 1),
+        ),
+    )
+
+
+def _frozen_check() -> str:
+    unset = " AND ".join(f"{c} IS NULL" for c in PERIOD_FROZEN_COLUMNS)
+    stamped = " AND ".join(f"{c} IS NOT NULL" for c in PERIOD_FROZEN_COLUMNS)
+    return f"(status = '{PERIOD_OPEN}' AND {unset}) OR (status = '{PERIOD_CLOSED}' AND {stamped})"
+
+
+class ClosedPeriodError(RuntimeError):
+    """A closed partner period was about to change or be deleted: it is frozen for good."""
+
+
+class PartnerPeriod(Base):
+    """One half-month of one partner's account: 1-15 or 16-end of month, ``open`` -> ``closed``.
+
+    Built on demand (no row for an empty period before the partner's first activity). While open
+    every frozen-at-close column is NULL; closing writes them all in one UPDATE (the totals, the
+    balance, who and when, and ``snapshot``, the lines as sent), and from then on the row NEVER
+    changes and is never deleted. A period is born open, and the close is its only UPDATE: the
+    partner, the dates and the creation stamp never change. Guards (migration 0017): on Postgres
+    ``tenant_insert`` admits open rows only, ``tenant_update`` sees open rows and admits closed
+    results only, a trigger refuses any other change, and there is no DELETE policy; on SQLite
+    triggers do the same; and the ORM refuses the flush (``ClosedPeriodError``, below). Once a
+    period is closed, no line, payment or decision dated inside it can be inserted (BEFORE
+    INSERT triggers): a late correction goes into the next open period as a ``CORRECTION``.
+    """
+
+    __tablename__ = "partner_periods"
+    __table_args__ = (
+        # Also the period lookup: one partner's period starting on a day.
+        UniqueConstraint(
+            "agency_id", "partner_id", "start_date", name="uq_partner_periods_agency_partner_start"
+        ),
+        ForeignKeyConstraint(
+            ["agency_id", "partner_id"],
+            ["partners.agency_id", "partners.id"],
+            name="fk_partner_periods_agency_partner",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["agency_id", "closed_by_user_id"],
+            ["users.agency_id", "users.id"],
+            name="fk_partner_periods_agency_closed_by",
+            ondelete="RESTRICT",
+        ),
+        CheckConstraint(_in_list("status", PERIOD_STATUSES), name="status"),
+        CheckConstraint(_day_of("start_date").in_([1, 16]), name="start_day"),
+        CheckConstraint(_period_dates_check(), name="end_date"),
+        CheckConstraint(_frozen_check(), name="frozen_iff_closed"),
+        CheckConstraint(CLOSING_RECONCILES_CHECK, name="closing_reconciles").ddl_if(
+            dialect="postgresql"
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigIntType, primary_key=True)
+    agency_id: Mapped[int] = mapped_column(ForeignKey("agencies.id", ondelete="RESTRICT"))
+    partner_id: Mapped[int] = mapped_column(BigIntType)
+    start_date: Mapped[date] = mapped_column(Date)
+    end_date: Mapped[date] = mapped_column(Date)
+    status: Mapped[str] = mapped_column(String(8), default=PERIOD_OPEN)
+    # Frozen at close. A positive balance means the partner owes the agency.
+    opening_balance: Mapped[Decimal | None] = mapped_column(Numeric(14, 2))
+    sales_total: Mapped[Decimal | None] = mapped_column(Numeric(14, 2))
+    entries_total: Mapped[Decimal | None] = mapped_column(Numeric(14, 2))
+    payments_total: Mapped[Decimal | None] = mapped_column(Numeric(14, 2))
+    closing_balance: Mapped[Decimal | None] = mapped_column(Numeric(14, 2))
+    closed_at: Mapped[datetime | None] = mapped_column(UTCDateTime)
+    closed_by_user_id: Mapped[int | None] = mapped_column(BigIntType)
+    snapshot: Mapped[dict[str, Any] | None] = mapped_column(SnapshotType)
+    created_at: Mapped[datetime] = mapped_column(
+        UTCDateTime, default=_now, server_default=func.now()
+    )
+
+
+@event.listens_for(PartnerPeriod, "before_insert")
+def _refuse_inserting_a_closed_period(_mapper: Any, _conn: Any, target: PartnerPeriod) -> None:
+    if target.status is not None and target.status != PERIOD_OPEN:
+        raise ClosedPeriodError("a partner period is born open: close it with an update")
+
+
+@event.listens_for(PartnerPeriod, "before_update")
+def _refuse_changing_a_closed_period(_mapper: Any, _conn: Any, target: PartnerPeriod) -> None:
+    history = inspect(target).attrs.status.history
+    before = history.deleted[0] if history.deleted else target.status
+    if before == PERIOD_CLOSED:
+        raise ClosedPeriodError(f"partner period {target.id} is closed: it never changes")
+
+
+@event.listens_for(PartnerPeriod, "before_delete")
+def _refuse_deleting_a_period(_mapper: Any, _conn: Any, target: PartnerPeriod) -> None:
+    raise ClosedPeriodError(f"partner period {target.id} is never deleted")
+
+
+class PartnerEntry(Base):
+    """Append-only: one line of a partner account typed by a person, proposed from Amadeus or
+    written by the application.
+
+    ``amount`` is signed, positive when the partner owes more: ``ADM`` and ``CHANGEMENT`` > 0,
+    ``RFND`` < 0, ``AJUSTEMENT`` and ``CORRECTION`` non-zero, ``OPENING`` (the balance carried
+    from the partner's spreadsheet on switch-over day, at most one per partner) any sign. A
+    reason is always required. ``source``: ``manual``; ``amadeus`` (an RFND proposed from the
+    report, with its ticket number, until confirmed); ``system`` (the ``CORRECTION`` of a sale
+    changed after its period closed, pointing at that sale). An ``AJUSTEMENT`` and an ``amadeus``
+    RFND count only once a ``partner_entry_decisions`` row approves / confirms them
+    (``app.partner_ledger``). A mistake is fixed by another line, never by an edit.
+    """
+
+    __tablename__ = "partner_entries"
+    __table_args__ = (
+        # Target of the decisions' composite foreign key: a decision states the kind and the
+        # source of its entry, and this key holds them to the entry's own.
+        UniqueConstraint(
+            "agency_id", "id", "kind", "source", name="uq_partner_entries_agency_id_kind_source"
+        ),
+        ForeignKeyConstraint(
+            ["agency_id", "partner_id"],
+            ["partners.agency_id", "partners.id"],
+            name="fk_partner_entries_agency_partner",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["agency_id", "sale_id"],
+            ["sales.agency_id", "sales.id"],
+            name="fk_partner_entries_agency_sale",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["agency_id", "created_by_user_id"],
+            ["users.agency_id", "users.id"],
+            name="fk_partner_entries_agency_created_by",
+            ondelete="RESTRICT",
+        ),
+        CheckConstraint(_in_list("kind", ENTRY_KINDS), name="kind"),
+        CheckConstraint(_in_list("source", ENTRY_SOURCES), name="source"),
+        CheckConstraint(
+            "(kind NOT IN ('ADM', 'CHANGEMENT') OR amount > 0) "
+            "AND (kind <> 'RFND' OR amount < 0) "
+            "AND (kind NOT IN ('AJUSTEMENT', 'CORRECTION') OR amount <> 0)",
+            name="amount_sign",
+        ),
+        CheckConstraint(f"length(trim(reason)) >= {MIN_REASON_LENGTH}", name="reason_length"),
+        CheckConstraint("(kind = 'CORRECTION') = (source = 'system')", name="correction_is_system"),
+        CheckConstraint(
+            "source <> 'amadeus' OR (kind = 'RFND' AND doc_number IS NOT NULL)",
+            name="amadeus_is_refund_with_ticket",
+        ),
+        CheckConstraint("sale_id IS NULL OR kind = 'CORRECTION'", name="sale_only_on_correction"),
+        CheckConstraint("doc_number IS NULL OR kind = 'RFND'", name="doc_number_only_on_refund"),
+        CheckConstraint(f"doc_number IS NULL OR ({DOC_NUMBER_CHECK})", name="doc_number_format"),
+        CheckConstraint(REQUEST_KEY_CHECK, name="request_key_length"),
+        # The lines of one partner over a date range (the account, the statement).
+        Index("ix_partner_entries_agency_partner_date", "agency_id", "partner_id", "entry_date"),
+        # The foreign key's column: the corrections written for a sale.
+        Index("ix_partner_entries_agency_sale", "agency_id", "sale_id"),
+    )
+
+    id: Mapped[int] = mapped_column(BigIntType, primary_key=True)
+    agency_id: Mapped[int] = mapped_column(ForeignKey("agencies.id", ondelete="RESTRICT"))
+    partner_id: Mapped[int] = mapped_column(BigIntType)
+    entry_date: Mapped[date] = mapped_column(Date)
+    kind: Mapped[str] = mapped_column(String(16))
+    amount: Mapped[Decimal] = mapped_column(Numeric(14, 2))
+    reason: Mapped[str] = mapped_column(Text)
+    source: Mapped[str] = mapped_column(String(8), default=ENTRY_SOURCE_MANUAL)
+    sale_id: Mapped[int | None] = mapped_column(BigIntType)
+    doc_number: Mapped[str | None] = mapped_column(String(15))
+    created_by_user_id: Mapped[int] = mapped_column(BigIntType)
+    request_key: Mapped[str | None] = mapped_column(String(MAX_REQUEST_KEY))
+    created_at: Mapped[datetime] = mapped_column(
+        UTCDateTime, default=_now, server_default=func.now()
+    )
+
+
+# At most one opening balance per partner: a partial unique index, on SQLite and Postgres alike.
+Index(
+    "ix_partner_entries_one_opening",
+    PartnerEntry.agency_id,
+    PartnerEntry.partner_id,
+    unique=True,
+    sqlite_where=PartnerEntry.kind == ENTRY_OPENING,
+    postgresql_where=PartnerEntry.kind == ENTRY_OPENING,
+)
+# A request key is used once per agency (rows without one are not limited).
+Index(
+    "ix_partner_entries_request_key",
+    PartnerEntry.agency_id,
+    PartnerEntry.request_key,
+    unique=True,
+    sqlite_where=PartnerEntry.request_key.is_not(None),
+    postgresql_where=PartnerEntry.request_key.is_not(None),
+)
+
+
+class PartnerEntryDecision(Base):
+    """Append-only: the one decision on an entry that needs one. ``approve`` / ``reject`` of an
+    ``AJUSTEMENT`` (the manager); ``confirm`` / ``reject`` of an RFND proposed from Amadeus (the
+    accountant or the manager). ``UNIQUE (agency_id, entry_id)``: decided once, never changed.
+    ``entry_kind`` and ``entry_source`` copy the entry's, held to them by the composite foreign
+    key, so the database refuses a decision that does not fit its entry (CHECK). Who may take
+    it is the application's rule (F2)."""
+
+    __tablename__ = "partner_entry_decisions"
+    __table_args__ = (
+        UniqueConstraint("agency_id", "entry_id", name="uq_partner_entry_decisions_agency_entry"),
+        ForeignKeyConstraint(
+            ["agency_id", "entry_id", "entry_kind", "entry_source"],
+            [
+                "partner_entries.agency_id",
+                "partner_entries.id",
+                "partner_entries.kind",
+                "partner_entries.source",
+            ],
+            name="fk_partner_entry_decisions_agency_entry",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["agency_id", "decided_by_user_id"],
+            ["users.agency_id", "users.id"],
+            name="fk_partner_entry_decisions_agency_decided_by",
+            ondelete="RESTRICT",
+        ),
+        CheckConstraint(_in_list("decision", ENTRY_DECISIONS), name="decision"),
+        CheckConstraint(DECISION_FITS_ENTRY_CHECK, name="decision_fits_entry"),
+    )
+
+    id: Mapped[int] = mapped_column(BigIntType, primary_key=True)
+    agency_id: Mapped[int] = mapped_column(ForeignKey("agencies.id", ondelete="RESTRICT"))
+    entry_id: Mapped[int] = mapped_column(BigIntType)
+    entry_kind: Mapped[str] = mapped_column(String(16))
+    entry_source: Mapped[str] = mapped_column(String(8))
+    decision: Mapped[str] = mapped_column(String(8))
+    decided_by_user_id: Mapped[int] = mapped_column(BigIntType)
+    note: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(
+        UTCDateTime, default=_now, server_default=func.now()
+    )
+
+
+class PartnerPayment(Base):
+    """Append-only: money received from a partner, not tied to tickets. ``amount`` > 0, a method
+    of the sales' payment list except ``credit``, an optional short reference (a cheque or
+    transfer number), who received it and who recorded it (the accountant or the manager). A
+    mistake is fixed by an ``AJUSTEMENT``, never by an edit."""
+
+    __tablename__ = "partner_payments"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["agency_id", "partner_id"],
+            ["partners.agency_id", "partners.id"],
+            name="fk_partner_payments_agency_partner",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["agency_id", "received_by_user_id"],
+            ["users.agency_id", "users.id"],
+            name="fk_partner_payments_agency_received_by",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["agency_id", "recorded_by_user_id"],
+            ["users.agency_id", "users.id"],
+            name="fk_partner_payments_agency_recorded_by",
+            ondelete="RESTRICT",
+        ),
+        CheckConstraint("amount > 0", name="amount_positive"),
+        CheckConstraint(_in_list("method", PARTNER_PAYMENT_METHODS), name="method"),
+        CheckConstraint(
+            f"reference IS NULL OR length(trim(reference)) BETWEEN 1 AND {MAX_PAYMENT_REFERENCE}",
+            name="reference_length",
+        ),
+        CheckConstraint(REQUEST_KEY_CHECK, name="request_key_length"),
+        # The payments of one partner over a date range (the account, the statement).
+        Index("ix_partner_payments_agency_partner_paid_on", "agency_id", "partner_id", "paid_on"),
+    )
+
+    id: Mapped[int] = mapped_column(BigIntType, primary_key=True)
+    agency_id: Mapped[int] = mapped_column(ForeignKey("agencies.id", ondelete="RESTRICT"))
+    partner_id: Mapped[int] = mapped_column(BigIntType)
+    paid_on: Mapped[date] = mapped_column(Date)
+    amount: Mapped[Decimal] = mapped_column(Numeric(14, 2))
+    method: Mapped[str] = mapped_column(String(16))
+    reference: Mapped[str | None] = mapped_column(String(MAX_PAYMENT_REFERENCE))
+    received_by_user_id: Mapped[int] = mapped_column(BigIntType)
+    recorded_by_user_id: Mapped[int] = mapped_column(BigIntType)
+    request_key: Mapped[str | None] = mapped_column(String(MAX_REQUEST_KEY))
+    created_at: Mapped[datetime] = mapped_column(
+        UTCDateTime, default=_now, server_default=func.now()
+    )
+
+
+Index(
+    "ix_partner_payments_request_key",
+    PartnerPayment.agency_id,
+    PartnerPayment.request_key,
+    unique=True,
+    sqlite_where=PartnerPayment.request_key.is_not(None),
+    postgresql_where=PartnerPayment.request_key.is_not(None),
+)

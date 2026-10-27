@@ -974,6 +974,69 @@ def test_a_line_or_payment_in_an_open_period_or_without_one_is_accepted(db_url: 
     assert _count(w, w.a, PartnerEntry) == 2 and _count(w, w.a, PartnerPayment) == 2
 
 
+def test_nothing_is_backdated_before_the_end_of_the_last_closed_period(db_url: str) -> None:
+    """N3: the guard is "a closed period of this partner ends on or after the date", so a date
+    in a half-month that never got a row, before a closed one, is refused too; a late line goes
+    into the open period as a correction instead."""
+    migrate(db_url, revision="0017")
+    w = _world(db_url)
+    [late_october] = _add(
+        w, w.a, period(w, start_date=date(2026, 10, 16), end_date=date(2026, 10, 31))
+    )
+    _close(w, late_october)  # 16-31 Oct closed; 1-15 Oct never had a row
+    for day in (OCT_5, date(2026, 9, 2), date(2026, 10, 31)):
+        for row in (entry(w, entry_date=day), payment(w, paid_on=day)):
+            with pytest.raises(IntegrityError, match="closed"):
+                _add(w, w.a, row)
+    november = date(2026, 11, 1)  # after the last closed period
+    _add(w, w.a, entry(w, entry_date=november), payment(w, paid_on=november))
+    assert _count(w, w.a, PartnerEntry) == 1 and _count(w, w.a, PartnerPayment) == 1
+
+
+def _migration_module() -> Any:
+    import importlib.util
+
+    path = Path(__file__).resolve().parent.parent / "migrations/versions/0017_partner_accounts.py"
+    spec = importlib.util.spec_from_file_location("migration_0017_source", path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_the_postgres_functions_are_hardened() -> None:
+    """Read on any database (the functions themselves only run in the Postgres CI job): N2 every
+    plpgsql function pins its search_path; N1 the guard takes the shared advisory lock of the
+    partner first and has no FOR SHARE step left; N3 it compares with ``end_date``; and nothing
+    in them would be mangled by text(): no bind-parameter colon, no percent sign."""
+    functions: dict[str, str] = _migration_module().PG_FUNCTIONS
+    assert len(functions) == 5
+    for signature, body in functions.items():
+        assert "LANGUAGE plpgsql SET search_path = pg_catalog, public, pg_temp AS $$" in body, (
+            signature
+        )
+        assert "SECURITY DEFINER" not in body, signature
+        assert ":" not in body and "%" not in body, signature
+    guard = functions["partner_period_assert_open(integer, bigint, date)"]
+    lock = "pg_advisory_xact_lock_shared(170017, CAST(mod(p_partner, 2147483647) AS integer))"
+    assert lock in guard
+    assert guard.index(lock) < guard.index("IF EXISTS")
+    assert "FOR SHARE" not in guard
+    assert "p.end_date >= p_day" in guard and "BETWEEN" not in guard
+
+
+def test_a_decision_on_a_line_dated_before_a_closed_period_is_refused(db_url: str) -> None:
+    migrate(db_url, revision="0017")
+    w = _world(db_url)
+    [early] = _add(w, w.a, entry(w, entry_date=OCT_5, kind="AJUSTEMENT", amount=Decimal("1.00")))
+    [late_october] = _add(
+        w, w.a, period(w, start_date=date(2026, 10, 16), end_date=date(2026, 10, 31))
+    )
+    _close(w, late_october)  # the line's own half-month (1-15 Oct) has no row
+    with pytest.raises(IntegrityError, match="closed"):
+        _add(w, w.a, _decision(w, early))
+
+
 def test_a_decision_on_a_line_of_a_closed_period_is_refused(db_url: str) -> None:
     migrate(db_url, revision="0017")
     w = _world(db_url)

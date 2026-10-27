@@ -844,8 +844,9 @@ def test_a_close_that_does_not_reconcile_is_refused(world: World) -> None:
 
 
 def test_nothing_lands_in_a_closed_period_on_postgres(world: World) -> None:
-    """Item 1: the plpgsql BEFORE INSERT triggers, as the app role (their FOR SHARE needs its
-    UPDATE privilege on partner_periods) and as the owner in single-role mode."""
+    """Item 1 and N3: the plpgsql BEFORE INSERT triggers (advisory lock, then the check), as the
+    app role and as the owner in single-role mode. Nothing dated on or before the end of the
+    last closed period lands, even in a half-month that never had a row."""
     db, a, _ = world
     inside = date(2026, 10, 20)  # in the seeded 16-31 Oct period
     with app_session(db) as s:
@@ -865,16 +866,23 @@ def test_nothing_lands_in_a_closed_period_on_postgres(world: World) -> None:
         decision="approve",
         decided_by_user_id=a.user_id,
     )
-    for row in (_line(a, inside), _payment(a, inside), late_decision):
+    backdated = date(2026, 10, 5)  # 1-15 Oct never had a row, but 16-31 Oct is closed
+    for row in (
+        _line(a, inside),
+        _payment(a, inside),
+        late_decision,
+        _line(a, backdated),
+        _payment(a, backdated),
+    ):
         with app_session(db) as s:
             bind_tenant(s, a.agency_id)
             s.add(row)
-            with pytest.raises(DBAPIError, match="period of this date is closed"):
+            with pytest.raises(DBAPIError, match="closed partner period ends on or after"):
                 s.commit()
     with app_session(db) as s:
         bind_tenant(s, a.agency_id)
         s.add_all([_line(a, date(2026, 11, 2)), _payment(a, date(2026, 11, 2))])
-        s.commit()  # no period row yet: accepted
+        s.commit()  # after the last closed period: accepted
 
 
 def _line(owner: Tenant, day: date, **kw: Any) -> PartnerEntry:

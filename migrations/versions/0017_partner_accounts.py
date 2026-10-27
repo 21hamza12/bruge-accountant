@@ -45,11 +45,12 @@ Guards added after the F1 review (edited in place: 0017 was never released):
   ``partner_id``, ``start_date``, ``end_date``, ``created_at`` and any update of a row that is not
   open or that does not close it. Postgres only: CHECK ``closing_balance = opening_balance +
   sales_total + entries_total - payments_total`` once closed (SQLite stores NUMERIC as a float).
-* Nothing lands in a closed period: BEFORE INSERT triggers on ``partner_entries`` (by
+* Nothing lands in or before a closed period: BEFORE INSERT triggers on ``partner_entries`` (by
   ``entry_date``), ``partner_payments`` (by ``paid_on``) and ``partner_entry_decisions`` (by its
-  entry's date) refuse a date covered by a closed period of the same partner. On Postgres they
-  also lock the covering open period FOR SHARE so a concurrent close waits (see
-  ``PG_FUNCTIONS``).
+  entry's date) refuse a date on or before the ``end_date`` of a closed period of the same
+  partner. On Postgres they first take a shared advisory lock per partner, so a concurrent close
+  (which takes the exclusive one) and an insert never cross (see ``PG_FUNCTIONS``). Every plpgsql
+  function pins its ``search_path``.
 * A decision fits its entry: ``entry_kind`` and ``entry_source`` are copied from the entry and
   held to it by the foreign key ``(agency_id, entry_id, entry_kind, entry_source)`` ->
   ``partner_entries (agency_id, id, kind, source)``; a CHECK admits only approve / reject of an
@@ -139,16 +140,22 @@ CLOSING_RECONCILES = (
 )
 # The columns of a period that never change, not even when it closes.
 IDENTITY = ("id", "agency_id", "partner_id", "start_date", "end_date", "created_at")
-CLOSED_MESSAGE = "the partner period of this date is closed"
+CLOSED_MESSAGE = "a closed partner period ends on or after this date"
 CHANGE_MESSAGE = "a partner period changes only by its close"
+# pg_advisory_xact_lock(_shared) key: this constant namespace + the partner id folded into an
+# integer. Two partners that fold to the same key only wait for each other, never wrongly pass.
+ADVISORY_NAMESPACE = 170017
+PG_SEARCH_PATH = "SET search_path = pg_catalog, public, pg_temp"
 
 
-def _covering_closed(agency: str, partner: str, day: str) -> str:
-    """DDL text for trigger bodies; the arguments are constant column or parameter names
-    written in this file, never data."""
+def _closed_on_or_after(agency: str, partner: str, day: str) -> str:
+    """A closed period of the partner that ends on or after ``day``: nothing may be dated on or
+    before the end of the latest closed period, even in a half-month that never had a row (a
+    late line goes into the open period as a correction). DDL text for trigger bodies; the
+    arguments are constant column or parameter names written in this file, never data."""
     return (
         f"SELECT 1 FROM {PERIODS} p WHERE p.agency_id = {agency} AND p.partner_id = {partner} "  # noqa: S608
-        f"AND p.status = 'closed' AND {day} BETWEEN p.start_date AND p.end_date"
+        f"AND p.status = 'closed' AND p.end_date >= {day}"
     )
 
 
@@ -178,70 +185,70 @@ SQLITE_TRIGGERS = {
     ),
     "trg_partner_entries_period_open": (
         "BEFORE INSERT ON partner_entries "
-        f"WHEN EXISTS ({_covering_closed('NEW.agency_id', 'NEW.partner_id', 'NEW.entry_date')}) "
+        f"WHEN EXISTS ({_closed_on_or_after('NEW.agency_id', 'NEW.partner_id', 'NEW.entry_date')}) "
         f"BEGIN SELECT RAISE(ABORT, '{CLOSED_MESSAGE}'); END"
     ),
     "trg_partner_payments_period_open": (
         "BEFORE INSERT ON partner_payments "
-        f"WHEN EXISTS ({_covering_closed('NEW.agency_id', 'NEW.partner_id', 'NEW.paid_on')}) "
+        f"WHEN EXISTS ({_closed_on_or_after('NEW.agency_id', 'NEW.partner_id', 'NEW.paid_on')}) "
         f"BEGIN SELECT RAISE(ABORT, '{CLOSED_MESSAGE}'); END"
     ),
     "trg_partner_entry_decisions_period_open": (
         "BEFORE INSERT ON partner_entry_decisions WHEN EXISTS ("  # noqa: S608 - constant DDL
         "SELECT 1 FROM partner_entries e WHERE e.agency_id = NEW.agency_id "
         "AND e.id = NEW.entry_id AND EXISTS ("
-        f"{_covering_closed('e.agency_id', 'e.partner_id', 'e.entry_date')})) "
+        f"{_closed_on_or_after('e.agency_id', 'e.partner_id', 'e.entry_date')})) "
         f"BEGIN SELECT RAISE(ABORT, '{CLOSED_MESSAGE}'); END"
     ),
 }
 
 # Postgres: trigger functions in plpgsql, SECURITY INVOKER (the default), so they read under the
-# caller's row-level security and privileges. No bind-parameter syntax and no percent sign in
-# them: Alembic sends each one through a text() construct.
+# caller's row-level security and privileges. Each one pins its search_path (pg_catalog, public,
+# then pg_temp last), so a temporary table cannot shadow partner_periods or partner_entries. No
+# bind-parameter colon and no percent sign in them: Alembic sends each one through text().
 #
-# partner_period_assert_open: no line, payment or decision may land in a closed period. The race
-# with a concurrent close (READ COMMITTED; each statement of a volatile function takes a new
-# snapshot):
-#   1. a plain SELECT for a covering CLOSED row: refuse if one is visible;
-#   2. SELECT ... FOR SHARE the covering OPEN row, if any. Row-level security applies the UPDATE
-#      policy's USING to a locking read, so only an open row can be locked: that is fine, a closed
-#      one was handled in step 1. If a close of that row is in flight we wait for it to end;
-#      while we hold the share lock, a close (F2 takes FOR UPDATE on the period row) waits for
-#      our transaction instead;
-#   3. a NEW plain SELECT for a covering closed row: a fresh statement sees a close committed while
-#      we waited in step 2 (the locking read itself skips a row that no longer matches).
-# A period with no row yet (built on demand) holds nothing: F2 creates the row before closing it.
+# partner_period_assert_open: no line, payment or decision may be dated on or before the end of a
+# closed period of its partner. The race with a concurrent close, including a period whose row
+# does not exist yet (built on demand), is settled by a transaction-scoped advisory lock per
+# partner, key (ADVISORY_NAMESPACE, partner id folded into an integer):
+#   1. take the SHARED lock: inserts of the same partner run side by side, and wait while a close
+#      of that partner holds the EXCLUSIVE lock;
+#   2. then check, as a fresh statement (READ COMMITTED: a new snapshot), that no closed period of
+#      the partner ends on or after the date. A close that committed while we waited is seen.
+# F2's close MUST take pg_advisory_xact_lock (EXCLUSIVE) with the same key BEFORE it reads the
+# totals: it then waits for every insert in flight to commit, and its totals include them. A key
+# shared by two partners only makes them wait for each other; it never lets a line through.
+# The FOR SHARE lock on the open period row (the first fix) is dropped: the advisory lock covers
+# every case it covered and the one it missed (no row yet, so nothing to lock), and it no longer
+# needs the UPDATE privilege nor the update policy's USING on a read. Under REPEATABLE READ or
+# SERIALIZABLE the check would run on the transaction's first snapshot: the application uses
+# READ COMMITTED (the default).
 PG_FUNCTIONS = {
     "partner_period_assert_open(integer, bigint, date)": f"""
 CREATE FUNCTION partner_period_assert_open(p_agency integer, p_partner bigint, p_day date)
-RETURNS void LANGUAGE plpgsql AS $$
+RETURNS void LANGUAGE plpgsql {PG_SEARCH_PATH} AS $$
 BEGIN
-    IF EXISTS ({_covering_closed("p_agency", "p_partner", "p_day")}) THEN
-        RAISE EXCEPTION '{CLOSED_MESSAGE}' USING ERRCODE = 'check_violation';
-    END IF;
-    PERFORM 1 FROM {PERIODS} p
-     WHERE p.agency_id = p_agency AND p.partner_id = p_partner AND p.status = 'open'
-       AND p_day BETWEEN p.start_date AND p.end_date
-       FOR SHARE;
-    IF EXISTS ({_covering_closed("p_agency", "p_partner", "p_day")}) THEN
+    PERFORM pg_advisory_xact_lock_shared({ADVISORY_NAMESPACE}, CAST(mod(p_partner, 2147483647) AS integer));
+    IF EXISTS ({_closed_on_or_after("p_agency", "p_partner", "p_day")}) THEN
         RAISE EXCEPTION '{CLOSED_MESSAGE}' USING ERRCODE = 'check_violation';
     END IF;
 END $$""",
-    "partner_entries_period_open()": """
-CREATE FUNCTION partner_entries_period_open() RETURNS trigger LANGUAGE plpgsql AS $$
+    "partner_entries_period_open()": f"""
+CREATE FUNCTION partner_entries_period_open() RETURNS trigger LANGUAGE plpgsql {PG_SEARCH_PATH} AS $$
 BEGIN
     PERFORM partner_period_assert_open(NEW.agency_id, NEW.partner_id, NEW.entry_date);
     RETURN NEW;
 END $$""",
-    "partner_payments_period_open()": """
-CREATE FUNCTION partner_payments_period_open() RETURNS trigger LANGUAGE plpgsql AS $$
+    "partner_payments_period_open()": f"""
+CREATE FUNCTION partner_payments_period_open() RETURNS trigger LANGUAGE plpgsql {PG_SEARCH_PATH} AS $$
 BEGIN
     PERFORM partner_period_assert_open(NEW.agency_id, NEW.partner_id, NEW.paid_on);
     RETURN NEW;
 END $$""",
     # An entry that is not visible (another agency, or none) is left to the foreign key.
-    "partner_entry_decisions_period_open()": """
-CREATE FUNCTION partner_entry_decisions_period_open() RETURNS trigger LANGUAGE plpgsql AS $$
+    "partner_entry_decisions_period_open()": f"""
+CREATE FUNCTION partner_entry_decisions_period_open() RETURNS trigger
+LANGUAGE plpgsql {PG_SEARCH_PATH} AS $$
 DECLARE
     line record;
 BEGIN
@@ -251,9 +258,10 @@ BEGIN
         PERFORM partner_period_assert_open(NEW.agency_id, line.partner_id, line.entry_date);
     END IF;
     RETURN NEW;
-END $$""",
+END $$""",  # noqa: S608 - constant DDL, no data
     "partner_periods_only_the_close()": f"""
-CREATE FUNCTION partner_periods_only_the_close() RETURNS trigger LANGUAGE plpgsql AS $$
+CREATE FUNCTION partner_periods_only_the_close() RETURNS trigger
+LANGUAGE plpgsql {PG_SEARCH_PATH} AS $$
 BEGIN
     IF OLD.status <> 'open' OR NEW.status <> 'closed' OR {_PG_IDENTITY_CHANGED} THEN
         RAISE EXCEPTION '{CHANGE_MESSAGE}' USING ERRCODE = 'check_violation';

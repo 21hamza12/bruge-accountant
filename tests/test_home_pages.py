@@ -272,7 +272,9 @@ def test_the_staff_home_lists_the_report_tickets_without_a_sale(env: Env) -> Non
     first = html.split('<li class="my-row">')[1][:600]
     text = squash(first)
     assert re.search(r"\d{10}", text)
-    airlines = r"(Royal Air Maroc|Turkish Airlines|Tunisair|Qatar Airways|Mauritania Airlines|Cie \d+)"
+    airlines = (
+        r"(Royal Air Maroc|Turkish Airlines|Tunisair|Qatar Airways|Mauritania Airlines|Cie \d+)"
+    )
     assert re.search(airlines, text)
     assert re.search(r"\d", text)
 

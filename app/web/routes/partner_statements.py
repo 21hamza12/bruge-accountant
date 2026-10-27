@@ -12,6 +12,7 @@ its frozen snapshot only, an open one marked « PROVISOIRE »).
 
 from __future__ import annotations
 
+import logging
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -20,11 +21,15 @@ from starlette.responses import Response
 from app import audit, partner_statement, permissions
 from app.auth import ratelimit
 from app.partner_book import AccountNotFound
-from app.partner_statement import StatementForbidden, StatementNotFound
+from app.partner_statement import StatementError, StatementForbidden, StatementNotFound
 from app.web.csrf import csrf_protect
 from app.web.deps import AuthContext, client_ip, require_permission
+from app.web.pages import page
 from app.web.params import PartnerId, parse_day
 from app.web.sale_pages import Db, Now, throttle
+from app.web.shell import ACTIVE_PARTNER_ACCOUNTS, shell_context
+
+log = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/partner-accounts", dependencies=[Depends(csrf_protect)])
 
@@ -50,11 +55,27 @@ def statement_download(
         statement = partner_statement.statement_for(
             db, auth.user, partner_id, day, today=now.date()
         )
+        content = partner_statement.build_statement_xlsx(statement)
     except (AccountNotFound, StatementNotFound):
         raise HTTPException(status_code=404) from None
     except StatementForbidden:  # pragma: no cover - the dependency refused it already
         raise HTTPException(status_code=403) from None
-    content = partner_statement.build_statement_xlsx(statement)
+    except StatementError as exc:
+        # A frozen period that does not add up: a deliberate page, never a 500 and never a
+        # wrong statement. The log names the ids only (no name, no amount).
+        db.rollback()
+        log.error(
+            "partner statement refused: the frozen period does not add up",
+            extra={"partner_id": partner_id, "period_id": exc.period_id},
+        )
+        return page(
+            "partner_accounts/statement_error.html",
+            status_code=409,
+            headers={"Cache-Control": "no-store"},
+            **shell_context(db, auth, ACTIVE_PARTNER_ACCOUNTS),
+            partner_id=partner_id,
+            error=str(exc),
+        )
     audit.record(
         db,
         audit.PARTNER_STATEMENT_DOWNLOADED,

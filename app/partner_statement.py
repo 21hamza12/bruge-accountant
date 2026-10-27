@@ -11,19 +11,23 @@ totals and the new balance with its sign explained. Excel only (owner's answer 4
   totals from the columns written by the close (``from_snapshot``). Nothing live is read for it,
   so a sale corrected after the close never changes the statement already sent (the difference
   is a ``CORRECTION`` line of the open period). The snapshot is checked to add up to the frozen
-  totals; a snapshot that does not is refused (``StatementError``), never printed.
+  totals; a snapshot that does not is refused (``StatementError``), never printed. Only that
+  period's snapshot is read (the account defers the others). A closed period without its
+  close date is refused too: a closed statement never says « PROVISOIRE ».
 * An **open** period may be exported too, from the live account (``_from_live``), marked
   « PROVISOIRE » in its title, its status line and its file name.
 
 **Formula injection.** Every text that a person typed (the partner's name, the passenger, the
-reasons, the references, the agency's details) goes through ``export_apres.neutralise`` (a
-leading ``= + - @``, tab or CR gets an apostrophe; characters XML cannot hold are dropped) and is
-forced to a string cell. Amounts and dates are numbers and dates, never text; nothing is a
-formula.
+reasons, the references, the agency's details) is first cleaned by ``clean_text`` (bidi
+overrides, zero-width characters and the byte-order mark removed), then goes through
+``export_apres.neutralise`` (a leading ``= + - @``, tab or CR, even behind blanks such as
+U+3000, gets an apostrophe; characters XML cannot hold are dropped) and is forced to a string
+cell. Amounts and dates are numbers and dates, never text; nothing is a formula.
 
 **Formatting.** Amounts are ``Decimal`` from end to end and written as numbers with two decimals
-(``#,##0.00``), as ``export_apres`` does; dates are real dates shown ``dd/mm/yyyy``; the ticket
-header row is frozen; the columns have fixed widths.
+(``#,##0.00``), as ``export_apres`` does; dates are real dates shown ``dd/mm/yyyy``; nothing is
+frozen (a pane under the ticket header would pin the whole agency header too); the columns
+have fixed widths.
 
 Who: manager and accountant (``permissions.can_export_partner_statement``); the agency is always
 the actor's own (a partner of another agency is not found). This module only reads.
@@ -49,6 +53,7 @@ from app.airlines import airline_name
 from app.errors import UserError
 from app.export_apres import MONEY_FORMAT, XLSX_MEDIA_TYPE, neutralise
 from app.models import PERIOD_CLOSED, Agency, PartnerPeriod, User
+from app.parsing.amadeus import clean_text
 from app.partner_book import KIND_LABELS, METHOD_LABELS, PeriodView
 from app.partner_ledger import CENT, ZERO
 
@@ -79,7 +84,10 @@ _BOLD = Font(bold=True)
 
 
 class StatementError(UserError):
-    """The statement cannot be built: a frozen period that does not add up (never printed)."""
+    """The statement cannot be built: a frozen period that does not add up (never printed).
+    ``period_id`` names the frozen row when there is one (for the log line, never shown)."""
+
+    period_id: int | None = None
 
 
 class StatementNotFound(StatementError):
@@ -323,6 +331,24 @@ def _from_live(period: PeriodView) -> Body:
     )
 
 
+def closed_date(row: PartnerPeriod) -> date:
+    """The day a closed period was closed; ``StatementError`` when the row has none (a closed
+    statement is never printed without it, and never as « PROVISOIRE »)."""
+    if row.status != PERIOD_CLOSED or row.closed_at is None:
+        raise StatementError(BAD_SNAPSHOT)
+    return row.closed_at.date()
+
+
+def _snapshot_of(db: Session, agency_id: int, period_id: int) -> Mapping[str, Any] | None:
+    """The snapshot of one period row, read on its own (the account defers every snapshot)."""
+    found: Mapping[str, Any] | None = db.scalar(
+        select(PartnerPeriod.snapshot).where(
+            PartnerPeriod.agency_id == agency_id, PartnerPeriod.id == period_id
+        )
+    )
+    return found
+
+
 def statement_for(
     db: Session, actor: User, partner_id: int, start: date, *, today: date
 ) -> Statement:
@@ -331,16 +357,22 @@ def statement_for(
     ``StatementNotFound`` for a period that does not exist."""
     if not permissions.can_export_partner_statement(actor):
         raise StatementForbidden(NO_PERMISSION)
-    acc = partner_book.get_account(db, actor, partner_id, today, snapshots=True)
+    # The snapshots stay deferred: only the wanted period's is read, below.
+    acc = partner_book.get_account(db, actor, partner_id, today, snapshots=False)
     period = next((p for p in acc.periods if p.start == start), None)
     if period is None:
         raise StatementNotFound(NOT_FOUND)
+    closed_on: date | None = None
     if period.closed and period.row is not None:
-        body = from_snapshot(period.row, period.row.snapshot)
-        closed_at = period.row.closed_at
-        closed_on = closed_at.date() if closed_at is not None else None
+        row = period.row
+        try:
+            closed_on = closed_date(row)
+            body = from_snapshot(row, _snapshot_of(db, actor.agency_id, row.id))
+        except StatementError as exc:
+            exc.period_id = row.id
+            raise
     else:
-        body, closed_on = _from_live(period), None
+        body = _from_live(period)
     agency = db.scalars(select(Agency).where(Agency.id == actor.agency_id)).one()
     details = agency_details.get_details(db, actor.agency_id)
     return Statement(
@@ -386,7 +418,9 @@ class _Sheet:
         self.at += 1
 
     def text(self, col: int, value: str, *, bold: bool = False) -> None:
-        clean = neutralise(value)
+        # Bidi overrides, zero-width characters and the byte-order mark go first (they could
+        # hide or reorder what the partner reads), then a formula start is neutralised.
+        clean = neutralise(clean_text(value))
         if not clean:
             return
         cell = self.ws.cell(row=self.at, column=col)
@@ -447,8 +481,10 @@ def build_statement_xlsx(statement: Statement) -> bytes:
     ws.cell(row=sheet.at, column=1).font = Font(bold=True, size=13)
     sheet.line("Partenaire", statement.partner_name, bold=True)
     sheet.line("Période", f"du {_fr(statement.start)} au {_fr(statement.end)}", bold=True)
-    if statement.provisional or statement.closed_on is None:
+    if statement.provisional:
         state = PROVISIONAL_STATE
+    elif statement.closed_on is None:  # a closed statement is never shown as provisional
+        raise StatementError(BAD_SNAPSHOT)
     else:
         state = f"Clôturée le {_fr(statement.closed_on)}"
     sheet.line("État", state, bold=True)
@@ -456,8 +492,7 @@ def build_statement_xlsx(statement: Statement) -> bytes:
     sheet.line("Devise", statement.currency, bold=True)
     sheet.skip()
     # The tickets.
-    sheet.head(TICKET_HEAD)
-    ws.freeze_panes = f"A{sheet.at + 1}"
+    sheet.head(TICKET_HEAD)  # nothing frozen: it would pin the whole header block too
     if not body.tickets:
         sheet.line("Aucun billet dans cette période.")
     for t in body.tickets:
@@ -543,6 +578,7 @@ __all__ = [
     "StatementNotFound",
     "TicketRow",
     "build_statement_xlsx",
+    "closed_date",
     "from_snapshot",
     "statement_filename",
     "statement_for",

@@ -4,7 +4,8 @@ The manager and the accountant read the page (``can_view_agency_details``); only
 saves it (``can_edit_agency_details``); staff, and the accountant posting, get the 403 page and a
 ``permission_denied`` audit event. Always the session's own agency. CSRF on the router; the form
 carries a ``request_key`` (a double click saves once; a key replayed with other values comes back
-with a fresh one). Saves count against ``AGENCY_DETAILS_WRITE_USER``. The service is
+with a fresh one). Saves count against ``AGENCY_DETAILS_WRITE_USER``, page views against
+``AGENCY_DETAILS_READ_USER``. The service is
 ``app/agency_details.py``. ``Cache-Control: no-store``. No inline style or script.
 """
 
@@ -74,10 +75,13 @@ def _page(
 
 @router.get("")
 def details_show(
+    request: Request,
     db: Db,
+    clock: Now,
     auth: Reader,
     enregistre: Annotated[str | None, Query(max_length=4)] = None,
 ) -> Response:
+    throttle(db, request, auth, clock, write=False, limit=ratelimit.AGENCY_DETAILS_READ_USER)
     return _page(db, auth, notice=SAVED if enregistre else None)
 
 

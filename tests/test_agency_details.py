@@ -413,3 +413,97 @@ def test_the_error_class_is_a_user_error() -> None:
     from app.errors import UserError
 
     assert issubclass(DetailsError, UserError) and issubclass(DetailsForbidden, DetailsError)
+
+
+# --- review fixes (27 Oct): reads limited, digits normalised, races, non-text values -----------
+
+
+def test_reads_are_rate_limited(env: Env, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        ratelimit,
+        "AGENCY_DETAILS_READ_USER",
+        ratelimit.Limit("agency_details_read_user", 2, 3600),
+    )
+    m = env.manager_a()
+    assert [m.get(PATH).status_code for _ in range(3)] == [200, 200, 429]
+    (event,) = audit_events(env.db.owner_url, env.seeded.agency_a, "rate_limited")
+    assert event.details == {"scope": "agency_details_read_user"}
+
+
+@pytest.mark.parametrize(
+    ("typed", "kept"),
+    [
+        ("٢٢ ٣٣ ٤٤ ٥٥", "22 33 44 55"),  # Arabic-Indic digits
+        ("۲۲۳۳۴۴۵۵", "22334455"),  # Extended Arabic-Indic (Persian) digits
+        ("+222 22 33 44 55", "+222 22 33 44 55"),
+        ("22334455", "22334455"),
+        ("２２３３４４５５", "22334455"),  # full-width digits (NFKC)
+        ("+222 22–33‑44‒55", "+222 22-33-44-55"),  # en dash, non-breaking hyphen, figure dash
+        ("22 33 44 55", "22 33 44 55"),  # no-break spaces
+    ],
+)
+def test_phones_and_wallets_are_normalised_before_they_are_checked(typed: str, kept: str) -> None:
+    values = agency_details.clean_values({"phones": typed, "bankily": typed, "sedad": typed})
+    assert values["phones"] == values["bankily"] == values["sedad"] == kept
+
+
+def test_arabic_digits_are_saved_as_western_digits(env: Env) -> None:
+    assert save(env.manager_a(), {"phones": "٢٢ ٣٣ ٤٤ ٥٥", "masrvi": "٢٢٣٣٤٤٥٥"}).status_code == 303
+    row = stored(env)
+    assert row is not None and (row.phones, row.masrvi) == ("22 33 44 55", "22334455")
+
+
+@pytest.mark.parametrize("value", [123, 1.5, ["22000000"], {"x": 1}, b"22000000", True])
+def test_a_value_that_is_not_text_is_refused(value: object) -> None:
+    with pytest.raises(DetailsError, match="Texte invalide"):
+        agency_details.clean_values({"nif": value})
+    assert agency_details.clean_values({"nif": None})["nif"] is None
+
+
+def _first_save_loses_the_race(
+    env: Env, monkeypatch: pytest.MonkeyPatch, key: str, values: dict[str, str]
+) -> agency_details.Saved:
+    """Save with ``key`` and ``values`` while the row was already written by another request
+    that this one did not see (its read of the row came back empty): the insert collides."""
+    monkeypatch.setattr(agency_details, "_locked", lambda db, agency_id: None)
+    with owner_session(env.db.owner_url) as s:
+        rebind_tenant(s, env.seeded.agency_a)
+        saved = agency_details.save_details(
+            s, user(s, env.seeded.manager_a), values, request_key=key, now=T0
+        )
+        s.commit()
+        return saved
+
+
+def _won_the_race(env: Env, key: str) -> None:
+    with owner_session(env.db.owner_url) as s:
+        rebind_tenant(s, env.seeded.agency_a)
+        agency_details.save_details(
+            s, user(s, env.seeded.manager_a), DETAILS, request_key=key, now=T0
+        )
+        s.commit()
+
+
+def test_two_identical_first_saves_at_once_both_succeed(
+    env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    key = partner_book.new_request_key()
+    _won_the_race(env, key)
+    saved = _first_save_loses_the_race(env, monkeypatch, key, DETAILS)
+    assert saved.created is False and saved.fields == ()
+    assert saved.row.name_fr == "Agence Test"
+    assert len(audit_events(env.db.owner_url, env.seeded.agency_a, "agency_details_saved")) == 1
+
+
+@pytest.mark.parametrize("same_key", [True, False])
+def test_a_first_save_that_loses_to_another_one_is_told_to_reload(
+    env: Env, monkeypatch: pytest.MonkeyPatch, same_key: bool
+) -> None:
+    key = partner_book.new_request_key()
+    _won_the_race(env, key)
+    other_key = key if same_key else partner_book.new_request_key()
+    with pytest.raises(DetailsError, match="Les coordonnées ont changé pendant"):
+        _first_save_loses_the_race(env, monkeypatch, other_key, {**DETAILS, "nif": "11111111"})
+    row = stored(env)
+    assert row is not None and row.nif == "00000000"
+    assert len(audit_events(env.db.owner_url, env.seeded.agency_a, "agency_details_saved")) == 1

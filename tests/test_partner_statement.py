@@ -268,8 +268,12 @@ def test_a_closed_period_gives_exact_cells_and_totals(env: Env) -> None:
     ws = workbook(response.content)
     assert rows(ws) == closed_statement_rows()
     assert ws.title == "Relevé"
-    assert ws.freeze_panes == "A17"  # the ticket header row (16) stays on screen
+    # Nothing is frozen: a frozen pane under the ticket header would pin the whole agency
+    # header block (16 rows) on screen too (review, 27 Oct).
+    assert ws.freeze_panes is None
     assert ws["A16"].value == "Date" and ws["A16"].font.bold
+    # A closed statement never says « PROVISOIRE », anywhere.
+    assert not any("PROVISOIRE" in str(v) for r in rows(ws) for v in r)
     # Amounts are numbers with two decimals, dates real dates shown dd/mm/yyyy.
     assert ws["F17"].data_type == "n" and ws["F17"].number_format == "#,##0.00"
     assert ws["H35"].value == Decimal("13168.00") and ws["H35"].number_format == "#,##0.00"
@@ -534,3 +538,399 @@ def test_the_accountant_sees_the_buttons_too(env: Env) -> None:
     c: TestClient = env.as_user(ACCOUNTANT_PHONE, PASSWORD_S)
     assert f'href="{url(pid)}"' in c.get(f"/partner-accounts/{pid}").text
     assert f'href="{url(pid)}"' in c.get(f"/partner-accounts/{pid}/periods/2026-10-01").text
+
+
+# --- review fixes (27 Oct) ------------------------------------------------------------------------
+
+
+def dt(day: int, month: int = 10) -> datetime:
+    return datetime(2026, month, day)
+
+
+def total(label: str, amount: str) -> tuple[object, ...]:
+    return (label, None, None, None, None, None, None, D(amount))
+
+
+def new_partner(env: Env, name: str = "Partenaire Test") -> int:
+    with owner_session(env.db.owner_url) as s:
+        rebind_tenant(s, env.seeded.agency_a)
+        manager = _user(s, env.seeded.manager_a)
+        partner = partners.create_partner(s, manager, name, now=T0)
+        partners.set_fee(s, partner, Decimal("300"), date(2026, 1, 1), manager, now=T0)
+        s.commit()
+        return partner.id
+
+
+def add_sale(env: Env, pid: int, *tickets: TicketInput) -> int:
+    with owner_session(env.db.owner_url) as s:
+        rebind_tenant(s, env.seeded.agency_a)
+        result = sales.create_sale(
+            s, _user(s, env.seeded.manager_a), partner_sale(pid, *tickets), day=OCT_3, now=T0
+        )
+        s.commit()
+        return result.sale.id
+
+
+def add_line(
+    env: Env, pid: int, kind: str, amount: str, reason: str, day: str, *, by: int | None = None,
+    direction: str = "",
+) -> int:  # fmt: skip
+    with owner_session(env.db.owner_url) as s:
+        rebind_tenant(s, env.seeded.agency_a)
+        written = partner_book.add_line(
+            s, _user(s, by or env.seeded.manager_a), pid, kind=kind, amount=amount,
+            reason=reason, direction=direction, request_key=partner_book.new_request_key(),
+            entry_date=day, now=T0,
+        )  # fmt: skip
+        s.commit()
+        entry_id: int = written.row.id
+        return entry_id
+
+
+def add_payment(env: Env, pid: int, amount: str, day: str) -> None:
+    with owner_session(env.db.owner_url) as s:
+        rebind_tenant(s, env.seeded.agency_a)
+        partner_book.record_payment(
+            s, _user(s, env.seeded.manager_a), pid, amount=amount, method="cash",
+            received_by_user_id=env.seeded.manager_a,
+            request_key=partner_book.new_request_key(), paid_on=day, now=T0,
+        )  # fmt: skip
+        s.commit()
+
+
+def close_at(env: Env, pid: int, start: date, now: datetime) -> None:
+    set_days(env, "closed")
+    with owner_session(env.db.owner_url) as s:
+        rebind_tenant(s, env.seeded.agency_a)
+        partner_book.close_period(
+            s, _user(s, env.seeded.manager_a), pid, start,
+            request_key=partner_book.new_request_key(), now=now,
+        )  # fmt: skip
+        s.commit()
+
+
+def statement_rows(env: Env, pid: int, start: date, today: date | None = None) -> list[Any]:
+    from app import partner_statement
+
+    with owner_session(env.db.owner_url) as s:
+        rebind_tenant(s, env.seeded.agency_a)
+        statement = partner_statement.statement_for(
+            s, _user(s, env.seeded.manager_a), pid, start, today=today or T0.date()
+        )
+    return rows(workbook(partner_statement.build_statement_xlsx(statement)))
+
+
+def from_tickets(found: list[Any]) -> list[Any]:
+    return found[found.index(TICKET_HEAD) :]
+
+
+NOV_5 = datetime(2026, 11, 5, 9, 0, tzinfo=T0.tzinfo)
+
+
+def test_several_tickets_an_unknown_airline_a_refund_and_a_rejected_line(env: Env) -> None:
+    acc_id = add_user(
+        env.db.owner_url, env.seeded.agency_a, ACCOUNTANT_PHONE, role=ROLE_ACCOUNTANT,
+        display_name="Comptable A",
+    )  # fmt: skip
+    pid = new_partner(env)
+    unknown = TicketInput(
+        doc_number="3940000003", airline="999", total_doc="5000", pax_name="SYNTH02/PAX",
+        pax_type="ADT", rloc="XYZ789", trnc="TKTT",
+    )  # fmt: skip
+    add_sale(env, pid, ticket("3940000001", "10000"), unknown)
+    add_line(env, pid, "RFND", "700", "remboursement billet", "2026-10-10")
+    rejected = add_line(
+        env, pid, "AJUSTEMENT", "200", "frais oubliés test", "2026-10-11", by=acc_id,
+        direction="plus",
+    )  # fmt: skip
+    with owner_session(env.db.owner_url) as s:
+        rebind_tenant(s, env.seeded.agency_a)
+        partner_book.decide_line(
+            s, _user(s, env.seeded.manager_a), pid, rejected, decision="reject",
+            note="pas justifié ici", now=T0,
+        )  # fmt: skip
+        s.commit()
+    close_first_period(env, pid)
+    assert from_tickets(statement_rows(env, pid, OCT_1)) == [
+        TICKET_HEAD,
+        (dt(3), "3940000001", "Tunisair", "SYNTH01/PAX", "ABC123", D("10000"), D("300"),
+         D("10300")),
+        (dt(3), "3940000003", "Cie 999", "SYNTH02/PAX", "XYZ789", D("5000"), D("300"),
+         D("5300")),
+        ("Total des billets", None, None, None, None, D("15000"), D("600"), D("15600")),
+        (),
+        ("Lignes manuelles",),
+        LINE_HEAD,
+        (dt(10), "Remboursement (RFND)", "remboursement billet", None, None, None, "comptée",
+         D("-700")),
+        (dt(11), "Ajustement", "frais oubliés test", None, None, None,
+         "rejetée (non comptée)", D("200")),
+        total("Total des lignes comptées", "-700"),
+        (),
+        ("Paiements",),
+        PAYMENT_HEAD,
+        ("Aucun paiement.",),
+        total("Total des paiements", "0"),
+        (),
+        ("Récapitulatif",),
+        total("Solde précédent", "0"),
+        total("Billets (+)", "15600"),
+        total("Lignes manuelles (+/−)", "-700"),
+        total("Paiements (−)", "0"),
+        total("Nouveau solde", "14900"),
+        ("Sens du solde", "Le partenaire doit ce montant à l'agence."),
+        SIGN,
+    ]  # fmt: skip
+
+
+def test_a_payments_only_period_opens_on_the_closed_balance_and_ends_negative(env: Env) -> None:
+    pid = new_partner(env)
+    add_sale(env, pid, ticket("3940000001", "1000"))
+    close_first_period(env, pid)  # 1 to 15 October: 1 300 owed
+    add_payment(env, pid, "2000", "2026-10-17")
+    close_at(env, pid, OCT_16, NOV_5)
+    found = statement_rows(env, pid, OCT_16, NOV_5.date())
+    assert ("État", "Clôturée le 05/11/2026") in found
+    assert ("Période", "du 16/10/2026 au 31/10/2026") in found
+    assert from_tickets(found) == [
+        TICKET_HEAD,
+        ("Aucun billet dans cette période.",),
+        ("Total des billets", None, None, None, None, D("0"), D("0"), D("0")),
+        (),
+        ("Lignes manuelles",),
+        LINE_HEAD,
+        ("Aucune ligne.",),
+        total("Total des lignes comptées", "0"),
+        (),
+        ("Paiements",),
+        PAYMENT_HEAD,
+        (dt(17), "Espèces", None, None, None, None, None, D("2000")),
+        total("Total des paiements", "2000"),
+        (),
+        ("Récapitulatif",),
+        total("Solde précédent", "1300"),
+        total("Billets (+)", "0"),
+        total("Lignes manuelles (+/−)", "0"),
+        total("Paiements (−)", "2000"),
+        total("Nouveau solde", "-700"),
+        ("Sens du solde", "L'agence doit ce montant au partenaire."),
+        SIGN,
+    ]
+
+
+def test_a_zero_balance_says_the_account_is_settled(env: Env) -> None:
+    pid = new_partner(env)
+    add_sale(env, pid, ticket("3940000001", "1000"))
+    add_payment(env, pid, "1300", "2026-10-12")
+    found = statement_rows(env, pid, OCT_1)
+    assert found[found.index(("Récapitulatif",)) :] == [
+        ("Récapitulatif",),
+        total("Solde précédent", "0"),
+        total("Billets (+)", "1300"),
+        total("Lignes manuelles (+/−)", "0"),
+        total("Paiements (−)", "1300"),
+        total("Nouveau solde", "0"),
+        ("Sens du solde", "Compte soldé."),
+        SIGN,
+    ]
+
+
+def test_an_empty_period_has_every_section_and_its_empty_sentence(env: Env) -> None:
+    pid = new_partner(env)
+    add_sale(env, pid, ticket("3940000001", "1000"))
+    add_payment(env, pid, "1300", "2026-10-12")
+    close_first_period(env, pid)
+    found = statement_rows(env, pid, OCT_16)
+    assert ("RELEVÉ DE COMPTE PARTENAIRE — PROVISOIRE",) in found
+    assert from_tickets(found) == [
+        TICKET_HEAD,
+        ("Aucun billet dans cette période.",),
+        ("Total des billets", None, None, None, None, D("0"), D("0"), D("0")),
+        (),
+        ("Lignes manuelles",),
+        LINE_HEAD,
+        ("Aucune ligne.",),
+        total("Total des lignes comptées", "0"),
+        (),
+        ("Paiements",),
+        PAYMENT_HEAD,
+        ("Aucun paiement.",),
+        total("Total des paiements", "0"),
+        (),
+        ("Récapitulatif",),
+        total("Solde précédent", "0"),
+        total("Billets (+)", "0"),
+        total("Lignes manuelles (+/−)", "0"),
+        total("Paiements (−)", "0"),
+        total("Nouveau solde", "0"),
+        ("Sens du solde", "Compte soldé."),
+        SIGN,
+    ]
+
+
+def test_a_partner_name_starting_with_equals_is_an_exact_text_cell(env: Env) -> None:
+    save_details(env)
+    pid, _ = setup_account(env, name="=SOMME(1;2) Partenaire")
+    close_first_period(env, pid)
+    ws = workbook(env.manager_a().get(url(pid)).content)
+    assert ws["A10"].value == "Partenaire"
+    assert ws["B10"].value == "'=SOMME(1;2) Partenaire" and ws["B10"].data_type == "s"
+    assert rows(ws) == closed_statement_rows("'=SOMME(1;2) Partenaire")
+
+
+# --- invisible characters -------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "text",
+    ["　=1+1", "﻿=1+1", "​=1+1", " @SUM(A1)", " +1", " -1",
+     " 　﻿=1"],
+)  # fmt: skip
+def test_neutralise_sees_a_formula_behind_wide_or_invisible_blanks(text: str) -> None:
+    from app.export_apres import neutralise
+
+    assert neutralise(text) == "'" + text
+
+
+def _statement(**overrides: Any) -> Any:
+    from app import partner_statement as ps
+
+    zero = Decimal("0.00")
+    fields: dict[str, Any] = {
+        "header": ("Agence Test",),
+        "currency": "MRU",
+        "partner_id": 1,
+        "partner_name": "Partenaire Test",
+        "start": OCT_1,
+        "end": date(2026, 10, 15),
+        "provisional": False,
+        "closed_on": date(2026, 10, 18),
+        "issued_on": date(2026, 10, 18),
+        "period_id": 1,
+        "body": ps.Body((), (), (), zero, zero, zero, zero, zero),
+    }
+    fields.update(overrides)
+    return ps.Statement(**fields)
+
+
+def test_bidi_and_zero_width_characters_are_removed_from_every_text_cell() -> None:
+    from app import partner_statement as ps
+
+    body = ps.Body(
+        (ps.TicketRow(OCT_3, "394​0000001", "Tunisair", "SYN‮TH01/PAX", "AB﻿C",
+                      D("1.00"), D("0.00"), D("1.00")),),
+        (ps.EntryRow(OCT_3, "ADM (pénalité de la compagnie)", '　=HYPERLINK("x")',
+                     ps.COUNTED, D("1.00")),),
+        (ps.PaymentRow(OCT_3, "Espèces", "‮​+1+1", D("2.00")),),
+        D("0.00"), D("1.00"), D("1.00"), D("2.00"), D("0.00"),
+    )  # fmt: skip
+    statement = _statement(
+        partner_name="　​=Partenaire", header=("Agence‮ Test", "﻿@SUM(1)"),
+        body=body,
+    )  # fmt: skip
+    ws = workbook(ps.build_statement_xlsx(statement))
+    texts = [c.value for row in ws.iter_rows() for c in row if isinstance(c.value, str)]
+    for bad in ("‮", "​", "﻿", "　"):
+        assert not any(bad in t for t in texts), repr(bad)
+    for expected in (
+        "'=Partenaire", "Agence Test", "'@SUM(1)", "3940000001", "SYNTH01/PAX", "ABC",
+        "'=HYPERLINK(\"x\")", "'+1+1",
+    ):  # fmt: skip
+        assert expected in texts, expected
+    assert [c.coordinate for row in ws.iter_rows() for c in row if c.data_type == "f"] == []
+
+
+# --- a closed statement is never provisional ------------------------------------------------------
+
+
+def test_a_closed_statement_without_its_close_date_is_refused() -> None:
+    from app import partner_statement as ps
+
+    with pytest.raises(ps.StatementError):
+        ps.build_statement_xlsx(_statement(provisional=False, closed_on=None))
+    row = PartnerPeriod(
+        agency_id=1, partner_id=1, start_date=OCT_1, end_date=date(2026, 10, 15),
+        status="closed", closed_at=None,
+    )  # fmt: skip
+    with pytest.raises(ps.StatementError):
+        ps.closed_date(row)
+    found = rows(workbook(ps.build_statement_xlsx(_statement())))
+    assert ("État", "Clôturée le 18/10/2026") in found
+    assert not any("PROVISOIRE" in str(v) for r in found for v in r)
+
+
+# --- one snapshot read ----------------------------------------------------------------------------
+
+
+def test_only_the_snapshot_of_the_wanted_period_is_read(env: Env) -> None:
+    from sqlalchemy import event
+
+    from app import partner_statement
+
+    pid = new_partner(env)
+    add_sale(env, pid, ticket("3940000001", "1000"))
+    close_first_period(env, pid)
+    add_payment(env, pid, "500", "2026-10-17")
+    close_at(env, pid, OCT_16, NOV_5)
+    seen: list[str] = []
+
+    def listener(*args: Any) -> None:
+        seen.append(args[2])
+
+    with owner_session(env.db.owner_url) as s:
+        rebind_tenant(s, env.seeded.agency_a)
+        engine = s.get_bind()
+        event.listen(engine, "before_cursor_execute", listener)
+        try:
+            statement = partner_statement.statement_for(
+                s, _user(s, env.seeded.manager_a), pid, OCT_1, today=NOV_5.date()
+            )
+        finally:
+            event.remove(engine, "before_cursor_execute", listener)
+    assert statement.closing == Decimal("1300.00") and not statement.provisional
+    reads = [q for q in seen if "partner_periods.snapshot" in q]
+    assert len(reads) == 1, reads
+    assert "partner_periods.id =" in reads[0]
+
+
+# --- a corrupt snapshot is a 409, never a 500 -----------------------------------------------------
+
+
+def _period_id(env: Env, pid: int) -> int:
+    with owner_session(env.db.owner_url) as s:
+        rebind_tenant(s, env.seeded.agency_a)
+        found: int = s.scalars(
+            select(PartnerPeriod.id).where(PartnerPeriod.partner_id == pid)
+        ).one()
+        return found
+
+
+def test_a_corrupt_snapshot_is_a_409_page_and_one_log_line(
+    env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from app import partner_statement
+    from app.web.routes import partner_statements as routes
+
+    pid, _ = setup_account(env, name="Partenaire Secret")
+    close_first_period(env, pid)
+
+    def corrupt(*args: Any, **kwargs: Any) -> Any:
+        raise partner_statement.StatementError(partner_statement.BAD_SNAPSHOT)
+
+    logged: list[tuple[str, dict[str, Any]]] = []
+
+    class FakeLog:
+        def error(self, message: str, *, extra: dict[str, Any]) -> None:
+            logged.append((message, extra))
+
+    monkeypatch.setattr(partner_statement, "from_snapshot", corrupt)
+    monkeypatch.setattr(routes, "log", FakeLog())
+    response = env.manager_a().get(url(pid))
+    assert response.status_code == 409
+    assert response.headers["content-type"].startswith("text/html")
+    assert response.headers["cache-control"] == "no-store"
+    assert "Le relevé figé de cette période est illisible" in response.text
+    [(message, extra)] = logged
+    assert extra == {"partner_id": pid, "period_id": _period_id(env, pid)}
+    assert "Secret" not in message
+    assert audit_events(env.db.owner_url, env.seeded.agency_a, "partner_statement_downloaded") == []

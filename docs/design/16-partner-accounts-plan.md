@@ -214,8 +214,8 @@ left room:
   totals; the manual lines (date, kind, reason, state, signed amount); the payments (date,
   method, reference, amount; not who received it); the summary (previous balance, tickets,
   lines, payments, new balance), the meaning of the balance and the sign rule (« Solde positif :
-  le partenaire doit à l'agence ; solde négatif : l'agence doit au partenaire. »). The frozen
-  pane is under the ticket header row (the header block above it stays visible too). Dates are
+  le partenaire doit à l'agence ; solde négatif : l'agence doit au partenaire. »). Nothing is
+  frozen (see the review fixes below). Dates are
   real date cells shown `dd/mm/yyyy` (the TJQ APRES writes them as text; a date cell sorts and
   filters). Amounts are `Decimal` written as numbers, `#,##0.00`, like the TJQ APRES. Printed
   landscape, one page wide.
@@ -234,6 +234,37 @@ left room:
 - **Buttons:** « Télécharger le relevé (Excel) » on every period page, and on the account page for
   the first open period (the one the page shows); a closed period's statement is downloaded from
   its own page.
+
+Review fixes (27 Oct, after the two reviews of 95df1af):
+
+- **A corrupt snapshot** (`StatementError`) is a deliberate **409** page with the French message,
+  never a 500 and never a file; one log line `partner statement refused` carries only
+  `partner_id` and `period_id`. Nothing is audited as downloaded.
+- **Invisible characters:** every text cell is cleaned by `clean_text` (bidi overrides,
+  zero-width characters, the byte-order mark) before `neutralise`, and `neutralise` (shared with
+  the TJQ APRES) now also skips U+2000–U+200B, U+3000 and U+FEFF before looking for a formula
+  start (`　=1+1` gets its apostrophe).
+- **No frozen pane:** freezing under the ticket header pinned the whole agency header (16 rows)
+  too. No print title rows either: the later sections (lines, payments) have other columns, so a
+  repeated ticket header would mislead on paper.
+- **One snapshot read:** `statement_for` reads the account with every snapshot deferred, then the
+  wanted period's snapshot alone (`select(PartnerPeriod.snapshot)` by agency and id); a test
+  counts one such statement with two closed periods.
+- **A closed statement is never « PROVISOIRE »:** a closed row without `closed_at`, or a closed
+  statement without its close date, is a `StatementError` (the 409 page).
+- **Phones and wallet numbers** are normalised before they are checked and stored: NFKC
+  (full-width digits, no-break spaces), Arabic-Indic and Extended Arabic-Indic digits to 0–9,
+  every dash (U+2010–U+2015, U+2212) to `-`. `٢٢ ٣٣ ٤٤ ٥٥` is stored as `22 33 44 55`.
+- **Concurrent first saves:** the save that loses the insert reads the row again; the same key
+  and the same values are a success (one audit event), anything else is « Les coordonnées ont
+  changé pendant l'enregistrement : rechargez la page. ».
+- **Non-text values** given to `clean_values` (a number, a list, bytes, a boolean) are refused
+  (« Texte invalide. »).
+- **Read limit** on `GET /agency-details`: `AGENCY_DETAILS_READ_USER`, 300 an hour per user.
+- **More exact-cell tests:** a sale of two tickets (fee × 2), an unknown airline (« Cie 999 »), a
+  counted refund and a rejected adjustment, a payments-only period opening on the previous closed
+  balance and ending negative, a zero balance (« Compte soldé. »), an empty period, and a partner
+  name starting with `=`.
 
 Postgres-only (left to CI): the row-level security, policies and grants of `agency_details` in
 both deployment modes (`tests/test_rls.py`: isolation, insert for another agency refused, update

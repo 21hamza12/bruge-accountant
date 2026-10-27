@@ -3,6 +3,7 @@
 {% block content %}
 <p><a class="card-link card-link-back" href="/partner-accounts">{{ _("Retour aux comptes partenaires") }}</a></p>
 {% if error %}<p class="error-box" id="form-error" role="alert" tabindex="-1" autofocus>{{ error }}</p>{% endif %}
+{% if notice %}<p class="notice" id="already-notice" role="status">{{ notice }}</p>{% endif %}
 
 <section class="card" aria-labelledby="who-title">
   <h2 class="card-title" id="who-title">{{ _("Compte de %(name)s", name=acc.partner.name) }}</h2>
@@ -70,7 +71,9 @@
           <td>{{ names.get(e.entry.created_by_user_id, "-") }}</td>
           <td>
             {% if e.pending %}
-              {% if e.entry.kind == "AJUSTEMENT" %}<span class="pill pill-amber">{{ _("à approuver") }}</span>{% else %}<span class="pill pill-amber">{{ _("à confirmer") }}</span>{% endif %}
+              {% if e.entry.kind == "AJUSTEMENT" %}<span class="pill pill-amber">{{ _("à approuver") }}</span>
+              <span class="help">{{ _("Décision : un gérant autre que la personne qui l'a saisie.") }}</span>{% else %}<span class="pill pill-amber">{{ _("à confirmer") }}</span>
+              <span class="help">{{ _("Décision : le comptable ou le gérant, après vérification du montant.") }}</span>{% endif %}
               {% set mine = e.entry.created_by_user_id == me.id %}
               {% if can_write and (e.entry.kind != "AJUSTEMENT" or (can_approve and not mine)) %}
               <form class="inline-form" method="post" action="/partner-accounts/{{ acc.partner.id }}/lines/{{ e.entry.id }}/decision">

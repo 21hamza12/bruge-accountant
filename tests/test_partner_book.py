@@ -14,6 +14,7 @@ from typing import Any
 
 import pytest
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app import partner_book, partners, sales
@@ -317,11 +318,38 @@ def test_the_same_request_key_writes_one_line(w: World) -> None:
     same = key()
     first = w.line(request_key=same)
     again = partner_book.add_line(
-        w.db, w.accountant, w.partner.id, kind="ADM", amount="9999",
-        reason="double clic du formulaire", request_key=same, now=NOW,
+        w.db, w.accountant, w.partner.id, kind="ADM", amount="1 500,00",
+        reason="double clic du formulaire", request_key=same, entry_date=OCT_3.isoformat(),
+        now=NOW,
     )  # fmt: skip
     assert again.created is False and again.row.id == first.id
     assert len(w.entries()) == 1 and len(w.events("partner_entry_added")) == 1
+
+
+@pytest.mark.parametrize(
+    "changed",
+    [{"amount": "9999"}, {"kind": "CHANGEMENT"}, {"entry_date": OCT_20.isoformat()}],
+)
+def test_a_request_key_replayed_with_other_values_is_refused(
+    w: World, changed: dict[str, str]
+) -> None:
+    same = key()
+    w.line(request_key=same)
+    kind = changed.pop("kind", "ADM")
+    amount = changed.pop("amount", "1500")
+    with pytest.raises(partner_book.StaleRequestKey, match="autres valeurs"):
+        w.line(kind, amount, request_key=same, **changed)
+    assert len(w.entries()) == 1
+
+
+def test_a_payment_key_replayed_with_other_values_is_refused(w: World) -> None:
+    same = key()
+    w.pay("1000", request_key=same)
+    for changed in ({"amount": "2000"}, {"method": "cash"}, {"paid_on": OCT_20.isoformat()}):
+        amount = changed.pop("amount", "1000")
+        with pytest.raises(partner_book.StaleRequestKey, match="autres valeurs"):
+            w.pay(amount, request_key=same, **changed)
+    assert len(list(w.db.scalars(select(PartnerPayment)))) == 1
 
 
 def test_a_request_key_of_another_partner_is_refused(w: World) -> None:
@@ -351,6 +379,31 @@ def test_only_a_manager_who_did_not_enter_it_decides_an_adjustment(w: World) -> 
         (by_manager.id, w.manager2.id),
     ]
     assert w.events("partner_entry_decided")[0].details["decision"] == "approve"
+
+
+def test_an_adjustment_nobody_else_could_approve_is_refused(w: World) -> None:
+    """A manager alone would wait for ever on their own line: it is refused at entry, with the
+    plan's flow in the message (the accountant enters, the manager approves)."""
+    w.manager2.is_active = False
+    w.db.commit()
+    with pytest.raises(PartnerAccountError) as refused:
+        w.line("AJUSTEMENT", "200", direction="plus", actor=w.manager)
+    assert str(refused.value) == partner_book.NO_APPROVER
+    assert "demandez à la comptable de la saisir" in str(refused.value)
+    w.db.rollback()
+    assert w.entries() == []
+    # The accountant's line can be approved by the manager: accepted.
+    w.line("AJUSTEMENT", "200", direction="plus", actor=w.accountant)
+    # Other kinds need no approver.
+    w.line("ADM", "100", actor=w.manager)
+
+
+def test_an_accountant_alone_with_no_manager_cannot_enter_an_adjustment(w: World) -> None:
+    for manager in (w.manager, w.manager2):
+        manager.is_active = False
+    w.db.commit()
+    with pytest.raises(PartnerAccountError, match="Aucun autre gérant"):
+        w.line("AJUSTEMENT", "200", direction="plus", actor=w.accountant)
 
 
 def test_a_decision_is_taken_once(w: World) -> None:
@@ -571,9 +624,42 @@ def test_a_closed_period_refuses_backdated_lines_and_payments_in_french(w: World
 
 def test_nothing_is_dated_before_the_opening_balance(w: World) -> None:
     w.opening("50000", date(2026, 10, 5))
-    with pytest.raises(PartnerAccountError, match="solde d'ouverture"):
-        w.line(entry_date=date(2026, 9, 30).isoformat())
-    w.line(entry_date=OCT_1.isoformat())  # the opening's half-month is the first period
+    for day in (date(2026, 9, 30), OCT_1, date(2026, 10, 4)):  # even inside the half-month
+        with pytest.raises(PartnerAccountError, match="solde d'ouverture"):
+            w.line(entry_date=day.isoformat())
+        with pytest.raises(PartnerAccountError, match="solde d'ouverture"):
+            w.pay(paid_on=day.isoformat())
+    w.line(entry_date=date(2026, 10, 5).isoformat())  # the switch-over day itself
+
+
+def test_an_opening_inside_a_half_month_reads_from_the_switch_over_day(w: World) -> None:
+    """The opening (5 000, the spreadsheet's balance at the end of the 19th) is dated the 20th:
+    the sale of the 17th is in it already and is not read; the sale of the 21st is."""
+    w.opening("5000", OCT_20)
+    w.sell(partner_sale(w.partner, ticket("3940000001")), date(2026, 10, 17))
+    later = w.sell(partner_sale(w.partner, ticket("3940000002", "1000")), date(2026, 10, 21))
+    acc = w.account()
+    [period] = acc.periods
+    assert (period.start, period.opening) == (OCT_16, Decimal("5000.00"))
+    assert [line.sale_id for line in period.sales] == [later]
+    assert acc.balance == Decimal("6300.00")  # 5 000 + 1 000 + 300
+
+
+def test_the_close_and_the_corrections_ignore_what_precedes_the_opening(w: World) -> None:
+    w.opening("5000", OCT_20)
+    early = w.sell(partner_sale(w.partner, ticket("3940000001")), date(2026, 10, 17))
+    later = w.sell(partner_sale(w.partner, ticket("3940000002", "1000")), date(2026, 10, 21))
+    w.set_days("closed", OCT_16, date(2026, 10, 31))
+    closed = w.close(OCT_16, now=datetime(2026, 11, 2, 9, 0, tzinfo=UTC))
+    assert closed.row.sales_total == Decimal("1300.00")
+    assert closed.row.closing_balance == Decimal("6300.00")
+    w.set_days("open", OCT_16, date(2026, 10, 31))
+    later_now = datetime(2026, 11, 2, 10, 0, tzinfo=UTC)
+    sales.void_sale(w.db, w.manager, early, "vente en double", now=later_now)
+    sales.void_sale(w.db, w.manager, later, "vente en double", now=later_now)
+    w.db.commit()
+    # The 17th is in the opening balance: no correction for it; the 21st is.
+    assert _corrections(w) == [(w.partner.id, Decimal("-1300.00"), later, "system")]
 
 
 # --- corrections after a close ----------------------------------------------------------------
@@ -684,6 +770,7 @@ def test_a_correction_only_points_at_a_sale_of_its_partner(
     # As if the second partner's day were in a closed period too: the sale never named that
     # partner, so no correction may point at it. Refused, nothing written.
     monkeypatch.setattr(partner_book, "_covered", lambda *_a: (OCT_1, OCT_15))
+    monkeypatch.setattr(partner_book, "latest_closed_end", lambda *_a: OCT_15)
     share = partner_book.SaleShare(w.second.id, OCT_3, Decimal("100"))
     with pytest.raises(RuntimeError, match="not a sale of partner"):
         partner_book.correct_after_close(
@@ -715,12 +802,151 @@ def test_the_list_puts_overdue_accounts_first_with_the_oldest_unpaid_amount(w: W
     assert rows[1].oldest is None and rows[1].open_total == Decimal("1300.00")
 
 
+def _two_closed_periods(w: World) -> None:
+    """1-15 Sept closes at 1 300, 16-30 Sept at 21 968 (a sale of 20 368 more)."""
+    w.sell(partner_sale(w.partner, ticket("3940000001", "1000")), date(2026, 9, 3))
+    w.sell(partner_sale(w.partner, ticket("3940000002", "20368")), date(2026, 9, 20))
+    w.set_days("closed", date(2026, 9, 1), date(2026, 9, 30))
+    w.close(date(2026, 9, 1))
+    w.close(date(2026, 9, 16))
+
+
+def _oldest(w: World) -> partner_book.Overdue | None:
+    [row] = [
+        r for r in partner_book.account_rows(w.db, w.manager, NOW.date())
+        if r.partner.id == w.partner.id
+    ]  # fmt: skip
+    return row.oldest
+
+
+def test_a_refund_after_the_close_pays_the_old_debt(w: World) -> None:
+    _two_closed_periods(w)
+    w.line("RFND", "21968", entry_date=OCT_3.isoformat(), reason="remboursement des billets")
+    assert w.account().balance == Decimal("0.00")
+    assert _oldest(w) is None
+
+
+def test_a_negative_adjustment_after_the_close_counts_once_approved(w: World) -> None:
+    _two_closed_periods(w)
+    line = w.line(
+        "AJUSTEMENT", "21968", direction="moins", entry_date=OCT_3.isoformat(),
+        reason="remise accordée",
+    )  # fmt: skip
+    oldest = _oldest(w)
+    assert oldest is not None and oldest.amount == Decimal("1300.00")  # pending: not counted
+    w.decide(line, "approve", w.manager)
+    assert _oldest(w) is None
+
+
+def test_a_credit_larger_than_the_older_debt_leaves_only_what_is_owed(w: World) -> None:
+    _two_closed_periods(w)
+    w.line("RFND", "21468", entry_date=OCT_3.isoformat(), reason="remboursement des billets")
+    assert w.account().balance == Decimal("500.00")
+    oldest = _oldest(w)
+    assert oldest is not None
+    assert (oldest.start, oldest.amount) == (date(2026, 9, 1), Decimal("500.00"))
+
+
 def test_staff_get_no_list(w: World) -> None:
     with pytest.raises(AccountForbidden):
         partner_book.account_rows(w.db, w.staff, NOW.date())
 
 
 # --- the database's own refusal -----------------------------------------------------------------
+
+
+def test_the_trigger_message_is_the_migrations() -> None:
+    import importlib.util
+    from pathlib import Path
+
+    path = Path(__file__).parent.parent / "migrations" / "versions" / "0017_partner_accounts.py"
+    spec = importlib.util.spec_from_file_location("migration_0017", path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    assert module.CLOSED_MESSAGE == partner_book.CLOSED_PERIOD_TRIGGER_MESSAGE
+
+
+class _Original(Exception):
+    def __init__(self, text: str, sqlstate: str | None = None) -> None:
+        super().__init__(text)
+        self.sqlstate = sqlstate
+
+
+@pytest.mark.parametrize(
+    ("text", "sqlstate", "expected"),
+    [
+        (partner_book.CLOSED_PERIOD_TRIGGER_MESSAGE, None, True),  # SQLite RAISE(ABORT)
+        (f"ERROR: {partner_book.CLOSED_PERIOD_TRIGGER_MESSAGE}", "23514", True),  # Postgres
+        (partner_book.CLOSED_PERIOD_TRIGGER_MESSAGE, "23505", False),
+        ("CHECK constraint failed: amount_sign", None, False),
+        ('new row violates check constraint "ck_partner_entries_amount_sign"', "23514", False),
+        ("UNIQUE constraint failed: partner_entries.agency_id", None, False),
+    ],
+)
+def test_only_the_closed_period_trigger_is_period_just_closed(
+    text: str, sqlstate: str | None, expected: bool
+) -> None:
+    error = IntegrityError("INSERT ...", {}, _Original(text, sqlstate))
+    assert partner_book.is_closed_period_refusal(error) is expected
+
+
+def test_another_database_refusal_is_a_generic_french_message(
+    w: World, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    # As if the application let a wrong sign through: the CHECK amount_sign refuses it.
+    monkeypatch.setattr(partner_book, "_signed_amount", lambda *_a: Decimal("-5.00"))
+    with pytest.raises(AccountConflict) as refused:
+        w.line("ADM", "5", reason="signe faux pour le test")
+    assert str(refused.value) == partner_book.DB_REFUSED
+    assert str(refused.value).startswith("Enregistrement refusé")
+    [record] = [r for r in caplog.records if "refused by the database" in r.getMessage()]
+    assert record.__dict__["what"] == "partner_entries"
+    assert "signe faux" not in str(record.__dict__)
+
+
+def test_a_database_refusal_of_the_correction_is_a_sale_error(
+    w: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    sale_id = _closed_with_a_sale(w)
+
+    def refused(*_a: Any, **_k: Any) -> None:
+        raise IntegrityError("INSERT ...", {}, _Original("CHECK constraint failed"))
+
+    monkeypatch.setattr(partner_book, "correct_after_close", refused)
+    edited = partner_sale(w.partner, ticket("3940000001", "22000"))
+    with pytest.raises(sales.SaleError, match="correction du compte"):
+        sales.edit_sale(w.db, w.manager, sale_id, edited, "coût corrigé après envoi", now=NOW)
+
+
+def test_a_refused_close_update_is_close_lost(w: World, monkeypatch: pytest.MonkeyPatch) -> None:
+    badi_period(w)
+    real_execute = w.db.execute
+
+    def execute(statement: Any, *args: Any, **kwargs: Any) -> Any:
+        if getattr(statement, "is_update", False) and "partner_periods" in str(statement):
+            raise IntegrityError("UPDATE ...", {}, _Original("a partner period changes only"))
+        return real_execute(statement, *args, **kwargs)
+
+    monkeypatch.setattr(w.db, "execute", execute)
+    with pytest.raises(AccountConflict) as refused:
+        w.close()
+    assert str(refused.value) == partner_book.CLOSE_LOST
+
+
+def test_no_lock_and_no_correction_when_no_closed_period_could_cover_the_day(
+    w: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    locked: list[int] = []
+    monkeypatch.setattr(partner_book, "lock_partner", lambda _db, pid, **_k: locked.append(pid))
+    sale_id = w.sell(partner_sale(w.partner, ticket("3940000001")), OCT_20)
+    sales.void_sale(w.db, w.manager, sale_id, "vente en double", now=NOW)
+    w.db.commit()
+    assert locked == [] and _corrections(w) == []
+    _closed_with_a_sale(w)
+    locked.clear()
+    w.sell(partner_sale(w.partner, ticket("3940000005", "1000")), OCT_3)
+    assert locked == [w.partner.id]
 
 
 @pytest.fixture

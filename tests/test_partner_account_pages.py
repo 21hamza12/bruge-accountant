@@ -4,18 +4,22 @@ CSRF-protected, rate-limited, idempotent forms, French refusals, no inline style
 from __future__ import annotations
 
 import re
+from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import date
 from decimal import Decimal
+from typing import Any
 
 import httpx2 as httpx
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import select
+from sqlalchemy import Engine, event, select
 
 from app import partner_book, partners, sales
 from app.auth import ratelimit
 from app.models import (
     ROLE_ACCOUNTANT,
+    Partner,
     PartnerEntry,
     PartnerPayment,
     PartnerPeriod,
@@ -212,8 +216,7 @@ def test_staff_get_403_and_an_audit_event(env: Env, path: str) -> None:
 def test_staff_posts_are_refused_and_nothing_is_written(env: Env, path: str) -> None:
     """Payments included (owner's answer 1: the accountant and the manager only)."""
     pid = setup_partner(env)
-    add_accountant(env)
-    entry = pending_adjustment(env, pid, env.seeded.manager_a)
+    entry = pending_adjustment(env, pid, add_accountant(env))
     close_days(env)
     c = env.staff_a()
     response = c.post(
@@ -237,7 +240,7 @@ def test_staff_posts_are_refused_and_nothing_is_written(env: Env, path: str) -> 
 @pytest.mark.parametrize("path", GETS[1:] + POSTS)
 def test_another_agency_cannot_see_or_touch_a_partner_by_id(env: Env, path: str) -> None:
     pid = setup_partner(env)
-    entry = pending_adjustment(env, pid, env.seeded.manager_a)
+    entry = pending_adjustment(env, pid, add_accountant(env))
     close_days(env)
     b = env.manager_b()
     url = path.format(p=pid, e=entry)
@@ -495,3 +498,178 @@ def test_every_post_form_carries_a_csrf_field_and_a_request_key(env: Env) -> Non
         for form in forms:
             assert 'method="post"' in form
             assert 'name="csrf_token"' in form and 'name="request_key"' in form
+
+
+# --- review fixes: stale keys, notices, hints, read limits, query counts -------------------------
+
+
+def test_the_same_form_posted_twice_says_it_was_already_recorded(env: Env) -> None:
+    pid = setup_partner(env)
+    m = env.manager_a()
+    token, key = form_key(m, f"/partner-accounts/{pid}/payments/new")
+    data = {**PAYMENT, "received_by": str(env.seeded.manager_a), "request_key": key}
+    first = m.post(f"/partner-accounts/{pid}/payments", data={**data, "csrf_token": token},
+                   follow_redirects=False)  # fmt: skip
+    again = m.post(f"/partner-accounts/{pid}/payments", data={**data, "csrf_token": token},
+                   follow_redirects=False)  # fmt: skip
+    assert first.headers["location"] == f"/partner-accounts/{pid}"
+    assert again.headers["location"] == f"/partner-accounts/{pid}?deja=paiement"
+    assert "Ce paiement était déjà enregistré" in m.get(again.headers["location"]).text
+    assert len(rows(env, PartnerPayment)) == 1
+
+
+def test_a_key_replayed_with_other_values_comes_back_with_a_fresh_key(env: Env) -> None:
+    pid = setup_partner(env)
+    m = env.manager_a()
+    token, key = form_key(m, f"/partner-accounts/{pid}/lines/new")
+    data = {**LINE, "entry_date": "2026-10-16", "request_key": key, "csrf_token": token}
+    assert (
+        m.post(f"/partner-accounts/{pid}/lines", data=data, follow_redirects=False).status_code
+        == 303
+    )
+    changed = m.post(
+        f"/partner-accounts/{pid}/lines", data={**data, "amount": "2 000"}, follow_redirects=False
+    )
+    assert changed.status_code == 400
+    assert "Ce formulaire a déjà été envoyé avec" in changed.text
+    match = _KEY.search(changed.text)
+    assert match and match.group(1) != key
+    assert 'value="2 000"' in changed.text  # the values typed are kept
+    resent = m.post(
+        f"/partner-accounts/{pid}/lines",
+        data={**data, "amount": "2 000", "request_key": match.group(1)},
+        follow_redirects=False,
+    )
+    assert resent.status_code == 303
+    assert sorted(e.amount for e in rows(env, PartnerEntry)) == [
+        Decimal("1500.00"),
+        Decimal("2000.00"),
+    ]
+
+
+def test_a_lone_manager_is_told_to_ask_the_accountant(env: Env) -> None:
+    pid = setup_partner(env)
+    m = env.manager_a()
+    response = post(
+        m, f"/partner-accounts/{pid}/lines",
+        {"kind": "AJUSTEMENT", "amount": "200", "direction": "plus", "reason": "frais oubliés"},
+        via=f"/partner-accounts/{pid}/lines/new",
+    )  # fmt: skip
+    assert response.status_code == 400
+    assert "Aucun autre gérant ne peut approuver cette ligne" in response.text
+    assert rows(env, PartnerEntry) == []
+
+
+def test_pending_lines_say_who_may_decide_them(env: Env) -> None:
+    pid = setup_partner(env)
+    pending_adjustment(env, pid, add_accountant(env))
+    html = env.manager_a().get(f"/partner-accounts/{pid}").text
+    assert "Décision : un gérant autre que la personne qui" in html
+
+
+def test_reads_are_rate_limited(env: Env, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        ratelimit,
+        "PARTNER_ACCOUNT_READ_USER",
+        ratelimit.Limit("partner_account_read_user", 2, 3600),
+    )
+    pid = setup_partner(env)
+    m = env.manager_a()
+    codes = [
+        m.get(path).status_code
+        for path in (
+            "/partner-accounts",
+            f"/partner-accounts/{pid}",
+            f"/partner-accounts/{pid}/periods/2026-10-01",
+        )
+    ]
+    assert codes == [200, 200, 429]
+
+
+@contextmanager
+def counting(engine: Engine) -> Iterator[list[str]]:
+    """Every statement the engine executes (the pattern of tests/test_query_counts.py)."""
+    seen: list[str] = []
+
+    def listener(*args: Any) -> None:
+        seen.append(args[2])
+
+    event.listen(engine, "before_cursor_execute", listener)
+    try:
+        yield seen
+    finally:
+        event.remove(engine, "before_cursor_execute", listener)
+
+
+def _more_partners(env: Env, count: int, first_doc: int) -> None:
+    """``count`` partners, each with a sale on the 3rd, a line, a payment and a closed 1-15."""
+    with owner_session(env.db.owner_url) as s:
+        rebind_tenant(s, env.seeded.agency_a)
+        for row in s.scalars(select(ReportDay).where(ReportDay.agency_id == env.seeded.agency_a)):
+            row.status, row.closed_at, row.closed_by_user_id = "open", None, None
+        s.commit()
+    with owner_session(env.db.owner_url) as s:
+        rebind_tenant(s, env.seeded.agency_a)
+        manager = _user(s, env.seeded.manager_a)
+        for n in range(count):
+            partner = partners.create_partner(
+                s, manager, f"Partenaire Test {first_doc + n}", now=T0
+            )
+            partners.set_fee(s, partner, Decimal("300"), date(2026, 1, 1), manager, now=T0)
+            s.commit()
+            data = SaleInput(
+                ag_kind="partner", partner_id=partner.id, payment_method="credit",
+                staff_sign="0004SV",
+                tickets=(
+                    TicketInput(
+                        doc_number=str(3940001000 + first_doc + n), airline="199",
+                        total_doc="1000", pax_name="SYNTH01/PAX", pax_type="ADT",
+                        rloc="ABC123", trnc="TKTT",
+                    ),
+                ),
+            )  # fmt: skip
+            sales.create_sale(s, manager, data, day=OCT_3, now=T0)
+            s.commit()
+    close_days(env)
+    with owner_session(env.db.owner_url) as s:
+        rebind_tenant(s, env.seeded.agency_a)
+        manager = _user(s, env.seeded.manager_a)
+        for partner in s.scalars(select(Partner).where(Partner.agency_id == env.seeded.agency_a)):
+            if partner.name.endswith(tuple(str(first_doc + n) for n in range(count))):
+                partner_book.close_period(
+                    s,
+                    manager,
+                    partner.id,
+                    OCT_1,
+                    request_key=partner_book.new_request_key(),
+                    now=T0,
+                )
+                partner_book.add_line(
+                    s, manager, partner.id, kind="ADM", amount="100", reason="pénalité test",
+                    request_key=partner_book.new_request_key(), entry_date="2026-10-16", now=T0,
+                )  # fmt: skip
+                partner_book.record_payment(
+                    s, manager, partner.id, amount="50", method="cash",
+                    received_by_user_id=manager.id, request_key=partner_book.new_request_key(),
+                    paid_on="2026-10-17", now=T0,
+                )  # fmt: skip
+        s.commit()
+
+
+def _list_statements(env: Env, client: TestClient) -> list[str]:
+    engine: Engine = env.factory.app.state.engine  # type: ignore[attr-defined]
+    assert client.get("/partner-accounts").status_code == 200  # warm-up
+    with counting(engine) as seen:
+        response = client.get("/partner-accounts")
+    assert response.status_code == 200
+    return list(seen)
+
+
+def test_the_list_sends_the_same_number_of_statements_for_2_or_12_partners(env: Env) -> None:
+    m = env.manager_a()
+    _more_partners(env, 2, 0)
+    few = _list_statements(env, m)
+    _more_partners(env, 10, 100)
+    many = _list_statements(env, m)
+    assert len(many) == len(few) <= 30, (len(few), len(many))
+    assert not any("snapshot" in statement for statement in many)  # deferred on the list

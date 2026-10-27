@@ -172,6 +172,10 @@ VOIDED = "Cette vente est annulée."
 UNCHANGED = "Aucune modification à enregistrer."
 SAME_DAY = "Cette vente est déjà sur cette journée."
 BAD_SOURCE = "Source de la vente invalide."
+CORRECTION_REFUSED = (
+    "La correction du compte du partenaire a été refusée : rechargez la page et recommencez. "
+    "Si le problème persiste, prévenez le gérant."
+)
 STALE = "La vente a été modifiée entre-temps : rechargez la page et recommencez."
 DUPLICATE_SEEN = "Le billet {doc} est déjà enregistré dans une autre vente."
 DUPLICATE_HIDDEN = "Le billet {doc} est déjà enregistré par un autre agent."
@@ -1025,10 +1029,19 @@ def _correct(
     ip: str | None,
 ) -> None:
     """Phase F: a partner sale counted in a closed period that changes writes the difference
-    into the open period, in this same transaction (``partner_book.correct_after_close``)."""
-    partner_book.correct_after_close(
-        db, actor, head.id, before, after, action=action, now=moment, ip=ip
-    )
+    into the open period, in this same transaction (``partner_book.correct_after_close``). A
+    refusal by the database there is a French message (the caller rolls back), never a 500."""
+    try:
+        with db.begin_nested():
+            partner_book.correct_after_close(
+                db, actor, head.id, before, after, action=action, now=moment, ip=ip
+            )
+    except IntegrityError:
+        log.warning(
+            "partner correction refused by the database",
+            extra={"agency_id": actor.agency_id, "sale_id": head.id},
+        )
+        raise SaleError(CORRECTION_REFUSED) from None
 
 
 def _reload(db: Session, actor: User, head: Sale) -> SaleView:

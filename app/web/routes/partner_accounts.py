@@ -6,7 +6,9 @@ Manager and accountant only: every route needs ``can_manage_partners`` (reads) o
 ``can_validate_money`` (writes); staff get the 403 page and a ``permission_denied`` audit event.
 The agency is always the session's: a partner, line or period of another agency is a 404, like
 one that does not exist. CSRF on the router; every form carries a ``request_key`` (a double click
-writes once). Every write counts against ``PARTNER_ACCOUNT_WRITE_USER`` (the close against
+writes once; a key reused with other values is refused and the form comes back with a
+fresh one). Reads count against ``PARTNER_ACCOUNT_READ_USER``. Every write counts against
+``PARTNER_ACCOUNT_WRITE_USER`` (the close against
 ``PARTNER_PERIOD_CLOSE_USER``). Amounts are typed in MRU and parsed by ``app.money`` (never a
 float). The service is ``app/partner_book.py``; a refusal is a French message on the page, and a
 refusal by the database (a period closed meanwhile) too, never a 500. Pages carry names and money:
@@ -19,7 +21,7 @@ from datetime import date
 from decimal import Decimal
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 from starlette.responses import RedirectResponse, Response
@@ -34,6 +36,7 @@ from app.partner_book import (
     AccountForbidden,
     AccountNotFound,
     PartnerAccountError,
+    StaleRequestKey,
 )
 from app.web.csrf import csrf_protect
 from app.web.deps import AuthContext, client_ip, require_permission
@@ -58,6 +61,18 @@ def _text(posted: Posted, name: str) -> str:
     return raw[:MAX_FIELD] if isinstance(raw, str) else ""
 
 
+def _back(partner_id: int, already: str | None) -> Response:
+    """Back to the account; ``already`` says the same form had been posted before."""
+    query = f"?deja={already}" if already else ""
+    return RedirectResponse(f"/partner-accounts/{partner_id}{query}", status_code=303)
+
+
+def _fresh_key_if_stale(exc: PartnerAccountError, form: dict[str, str]) -> None:
+    """A key already used for other values gets a new one, so the corrected form can be sent."""
+    if isinstance(exc, StaleRequestKey):
+        form["request_key"] = partner_book.new_request_key()
+
+
 def _status(exc: PartnerAccountError) -> int:
     if isinstance(exc, AccountNotFound):
         raise HTTPException(status_code=404)
@@ -68,9 +83,13 @@ def _status(exc: PartnerAccountError) -> int:
     return 400
 
 
-def _account_or_404(db: Session, auth: AuthContext, partner_id: int, clock: Clock) -> Account:
+def _account_or_404(
+    db: Session, auth: AuthContext, partner_id: int, clock: Clock, *, snapshots: bool = False
+) -> Account:
     try:
-        return partner_book.get_account(db, auth.user, partner_id, clock().date())
+        return partner_book.get_account(
+            db, auth.user, partner_id, clock().date(), snapshots=snapshots
+        )
     except AccountNotFound:
         raise HTTPException(status_code=404) from None
 
@@ -101,6 +120,7 @@ def _account_page(
     partner_id: int,
     *,
     error: str | None = None,
+    notice: str | None = None,
     status_code: int = 200,
 ) -> Response:
     acc = _account_or_404(db, auth, partner_id, clock)
@@ -129,11 +149,25 @@ def _account_page(
         today=clock().date(),
         request_key=partner_book.new_request_key(),
         error=error,
+        notice=notice,
     )
 
 
+# What the page says when the same form was posted again (``?deja=...``): nothing new written.
+ALREADY = {
+    "ligne": "Cette ligne était déjà enregistrée : rien n'a été ajouté.",
+    "paiement": "Ce paiement était déjà enregistré : rien n'a été ajouté.",
+    "cloture": "Cette période était déjà clôturée par ce formulaire.",
+}
+
+
+def _read(db: Session, request: Request, auth: AuthContext, clock: Clock) -> None:
+    throttle(db, request, auth, clock, write=False, limit=ratelimit.PARTNER_ACCOUNT_READ_USER)
+
+
 @router.get("")
-def account_list(db: Db, clock: Now, auth: Reader) -> Response:
+def account_list(request: Request, db: Db, clock: Now, auth: Reader) -> Response:
+    _read(db, request, auth, clock)
     return page(
         "partner_accounts/list.html",
         headers=NO_STORE,
@@ -143,17 +177,35 @@ def account_list(db: Db, clock: Now, auth: Reader) -> Response:
 
 
 @router.get("/{partner_id}")
-def account_show(partner_id: PartnerId, db: Db, clock: Now, auth: Reader) -> Response:
-    return _account_page(db, auth, clock, partner_id)
+def account_show(
+    partner_id: PartnerId,
+    request: Request,
+    db: Db,
+    clock: Now,
+    auth: Reader,
+    deja: Annotated[str | None, Query(max_length=16)] = None,
+) -> Response:
+    _read(db, request, auth, clock)
+    return _account_page(db, auth, clock, partner_id, notice=ALREADY.get(deja or ""))
 
 
 @router.get("/{partner_id}/periods/{start}")
-def period_show(partner_id: PartnerId, start: str, db: Db, clock: Now, auth: Reader) -> Response:
-    """One period: a closed one from its frozen snapshot, an open one as computed now."""
+def period_show(
+    partner_id: PartnerId,
+    start: str,
+    request: Request,
+    db: Db,
+    clock: Now,
+    auth: Reader,
+    deja: Annotated[str | None, Query(max_length=16)] = None,
+) -> Response:
+    """One period: a closed one from its frozen snapshot, an open one as computed now. The only
+    page that reads the snapshots."""
+    _read(db, request, auth, clock)
     day = parse_day(start)
     if day is None:  # pragma: no cover - a path segment is never empty
         raise HTTPException(status_code=404)
-    acc = _account_or_404(db, auth, partner_id, clock)
+    acc = _account_or_404(db, auth, partner_id, clock, snapshots=True)
     period = next((p for p in acc.periods if p.start == day), None)
     if period is None:
         raise HTTPException(status_code=404)
@@ -175,6 +227,7 @@ def period_show(partner_id: PartnerId, start: str, db: Db, clock: Now, auth: Rea
         methods=partner_book.METHOD_LABELS,
         as_date=date.fromisoformat,
         as_amount=_amount,
+        notice=ALREADY.get(deja or ""),
     )
 
 
@@ -251,7 +304,7 @@ def line_add(
         for name in ("kind", "amount", "direction", "entry_date", "reason", "request_key")
     }
     try:
-        partner_book.add_line(
+        written = partner_book.add_line(
             db,
             auth.user,
             partner_id,
@@ -268,10 +321,11 @@ def line_add(
     except PartnerAccountError as exc:
         db.rollback()
         status = _status(exc)
+        _fresh_key_if_stale(exc, form)
         return _line_form(
             db, auth, clock, partner_id, form=form, error=str(exc), status_code=status
         )
-    return RedirectResponse(f"/partner-accounts/{partner_id}", status_code=303)
+    return _back(partner_id, None if written.created else "ligne")
 
 
 @router.get("/{partner_id}/payments/new")
@@ -289,7 +343,7 @@ def payment_add(
         for name in ("amount", "method", "paid_on", "reference", "received_by", "request_key")
     }
     try:
-        partner_book.record_payment(
+        written = partner_book.record_payment(
             db,
             auth.user,
             partner_id,
@@ -306,10 +360,11 @@ def payment_add(
     except PartnerAccountError as exc:
         db.rollback()
         status = _status(exc)
+        _fresh_key_if_stale(exc, form)
         return _payment_form(
             db, auth, clock, partner_id, form=form, error=str(exc), status_code=status
         )
-    return RedirectResponse(f"/partner-accounts/{partner_id}", status_code=303)
+    return _back(partner_id, None if written.created else "paiement")
 
 
 @router.post("/{partner_id}/lines/{entry_id}/decision")
@@ -324,6 +379,9 @@ def line_decide(
 ) -> Response:
     throttle(db, request, auth, clock, write=True, limit=ratelimit.PARTNER_ACCOUNT_WRITE_USER)
     try:
+        # Kept on purpose: every partner-account form posts a key, so a post without one (a
+        # page from before a deploy, a forged request) is refused the same way everywhere. A
+        # decision itself is idempotent by its own unique key (one decision per line).
         partner_book.check_request_key(_text(posted, "request_key"))
         partner_book.decide_line(
             db,
@@ -383,7 +441,7 @@ def period_close(
     throttle(db, request, auth, clock, write=True, limit=ratelimit.PARTNER_PERIOD_CLOSE_USER)
     day = _period_start(start)
     try:
-        partner_book.close_period(
+        written = partner_book.close_period(
             db,
             auth.user,
             partner_id,
@@ -397,8 +455,9 @@ def period_close(
         db.rollback()
         status = _status(exc)
         return _account_page(db, auth, clock, partner_id, error=str(exc), status_code=status)
+    again = "" if written.created else "?deja=cloture"
     return RedirectResponse(
-        f"/partner-accounts/{partner_id}/periods/{day.isoformat()}", status_code=303
+        f"/partner-accounts/{partner_id}/periods/{day.isoformat()}{again}", status_code=303
     )
 
 

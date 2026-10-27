@@ -3,27 +3,33 @@ manual lines and their decisions, its payments, the close of a period, and the c
 written when a sale counted in a closed period changes.
 
 **Periods.** A period is a half-month (``partner_ledger.half_month``). They run from the
-partner's first period to the one holding today, in order: the first one starts at the
-half-month of the ``OPENING`` line when there is one (activity before the switch-over is the
-spreadsheet's), else at the half-month of the earliest closed period or of the earliest
+partner's first period to the one holding today, in order: the first one is the half-month of
+the ``OPENING`` line when there is one, else of the earliest closed period or of the earliest
 activity (a sale, a line, a payment). A ``partner_periods`` row is only written when a period
 closes (built on demand): an open period is computed from the live data every time it is shown,
 and a closed one is read from its row and its snapshot, never recomputed. The opening of a
 period is the previous period's closing balance, or the ``OPENING`` amount (else 0) for the
-first one.
+first one. Reads defer the snapshot column (only the period page loads it).
+
+**Opening balance.** The ``OPENING`` line's date is the switch-over day and its amount is the
+spreadsheet's balance at the end of the day before. Nothing dated before the switch-over day is
+read (sales, lines, payments, even inside the first half-month), accepted (``_check_date``) or
+corrected (``_covered``): it is in the spreadsheet's balance already.
 
 **Who.** Every write needs an active manager or accountant of the agency
 (``permissions.can_validate_money``); an ``AJUSTEMENT`` is approved or rejected only by a manager
-(``permissions.can_approve_partner_adjustment``) who did not enter it (four eyes); an ``RFND``
-proposed from Amadeus is confirmed or rejected by the accountant or the manager. A refused
-attempt is a ``permission_denied`` audit event, committed before the error is raised.
+(``permissions.can_approve_partner_adjustment``) who did not enter it (four eyes), so one is only
+accepted when another active user could approve it (``NO_APPROVER``: a manager alone asks the
+accountant to enter it); an ``RFND`` proposed from Amadeus is confirmed or rejected by the
+accountant or the manager. A refused attempt is a ``permission_denied`` audit event, committed
+before the error is raised.
 
 **Dates.** A line or a payment is dated today or earlier in an open period: never after today,
 never on or before the end of the latest closed period (``BACKDATED``: a late line is written
-today, its reason naming the old date), never before the first period of a partner with an
-``OPENING`` line. The database refuses the same thing (migration 0017's triggers, which take a
-shared advisory lock per partner); a refusal that slips past the check here is shown as
-``PERIOD_JUST_CLOSED``, never as a 500.
+today, its reason naming the old date), never before the opening balance's day. The database
+refuses the same thing (migration 0017's triggers, which take a shared advisory lock per
+partner); that refusal, if it slips past the check here, is shown as ``PERIOD_JUST_CLOSED``, and
+any other refusal by the database as ``DB_REFUSED`` (logged without data), never as a 500.
 
 **Closing** (``close_period``): the EXCLUSIVE ``pg_advisory_xact_lock(170017, partner id folded
 into an integer)`` first (Postgres; nothing on SQLite), so every line, payment or decision in
@@ -37,12 +43,15 @@ waits for a decision. The totals and the snapshot are computed here by
 **Corrections** (``correct_after_close``, called by ``app.sales`` in the sale's transaction): a
 partner sale counted in a closed period that is created, edited, voided, moved to another day or
 to another partner writes the difference into the open period as a ``CORRECTION`` dated today
-(``source=system``, ``sale_id`` set, and the sale is checked to be one of that partner's).
+(``source=system``, ``sale_id`` set, and the sale is checked to be one of that partner's). The
+shared advisory lock is only taken when a closed period could cover the sale's day.
 
-**Double clicks.** A line and a payment carry the form's ``request_key`` (unique per agency): a
-key seen before returns the row already written. A close keeps its key in the snapshot, so the
-same form posted twice returns the closed period. A decision is idempotent by its own key (one
-decision per line): the same decision by the same person returns the one stored.
+**Double clicks.** A line and a payment carry the form's ``request_key`` (unique per agency): the
+same form posted again returns the row already written (``Written.created`` is False); a key
+whose stored row differs (kind, amount, date, method) is refused (``StaleRequestKey``). A close
+keeps its key in the snapshot, so the same form posted twice returns the closed period. A
+decision is idempotent by its own key (one decision per line): the same decision by the same
+person returns the one stored.
 
 **Audit** (ids and amounts only, never a name or a reason): ``partner_entry_added``,
 ``partner_entry_decided``, ``partner_payment_recorded``, ``partner_period_closed``,
@@ -54,18 +63,19 @@ commit, except the audit row of a refusal; after an error the caller rolls back.
 
 from __future__ import annotations
 
+import logging
 import re
 import secrets
 from collections import defaultdict
-from collections.abc import Callable, Iterable, Sequence
-from dataclasses import dataclass
+from collections.abc import Callable, Collection, Iterable, Sequence
+from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 from decimal import Decimal
 from typing import Any
 
 from sqlalchemy import Integer, and_, cast, func, literal, select, update
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, defer
 
 from app import audit, money, permissions, reasons
 from app.clock import utc_now
@@ -102,7 +112,7 @@ from app.models import (
     User,
 )
 from app.parsing.amadeus import clean_text
-from app.partner_accounts import PartnerSaleLine, partner_sale_lines
+from app.partner_accounts import PartnerSaleLine, partner_sale_lines, partner_sale_lines_many
 from app.partner_ledger import (
     ALERT_DUE_SOON,
     ALERT_NONE,
@@ -121,9 +131,15 @@ from app.partner_ledger import (
 )
 from app.sales_rules import ticket_json
 
+log = logging.getLogger(__name__)
+
 # migration 0017's advisory-lock namespace and the fold of a partner id into an integer.
 ADVISORY_NAMESPACE = 170017
 ADVISORY_MODULUS = 2147483647
+# migration 0017's closed-period triggers raise this text (Postgres: sqlstate 23514,
+# check_violation; SQLite: RAISE(ABORT, ...)). tests/test_partner_book.py pins the two equal.
+CLOSED_PERIOD_TRIGGER_MESSAGE = "a closed partner period ends on or after this date"
+CHECK_VIOLATION = "23514"
 
 MANUAL_KINDS = (ENTRY_ADM, ENTRY_RFND, ENTRY_CHANGEMENT, ENTRY_AJUSTEMENT)
 KIND_LABELS = {
@@ -150,7 +166,7 @@ ACTION_EDITED = "modifiée"
 ACTION_VOIDED = "annulée"
 ACTION_MOVED = "déplacée"
 
-# Audit events (also listed in app.audit's docstring style: ids and amounts only).
+# Audit events: ids and amounts only.
 ENTRY_ADDED = "partner_entry_added"
 ENTRY_DECIDED = "partner_entry_decided"
 PAYMENT_RECORDED = "partner_payment_recorded"
@@ -160,6 +176,10 @@ CORRECTION_ADDED = "partner_correction_added"
 NO_PERMISSION = "Seuls le gérant et le comptable gèrent les comptes partenaires."
 NOT_MANAGER = "Seul le gérant peut approuver ou rejeter un ajustement."
 OWN_LINE = "Vous avez saisi cet ajustement : un autre gérant doit l'approuver ou le rejeter."
+NO_APPROVER = (
+    "Aucun autre gérant ne peut approuver cette ligne : demandez à la comptable de la saisir, "
+    "le gérant l'approuvera."
+)
 INACTIVE_ACTOR = "Votre compte est désactivé."
 NOT_FOUND = "Compte partenaire introuvable."
 LINE_NOT_FOUND = "Ligne introuvable."
@@ -174,12 +194,19 @@ BACKDATED = (
     "une date de la période ouverte, par exemple aujourd'hui, et citez l'ancienne date dans "
     "le motif."
 )
-BEFORE_OPENING = "Cette date est antérieure au solde d'ouverture du partenaire ({start})."
+BEFORE_OPENING = (
+    "Cette date est antérieure au solde d'ouverture du partenaire ({start}) : ce qui précède "
+    "est déjà compris dans ce solde."
+)
 BAD_METHOD = "Choisissez un mode de paiement."
 BAD_RECEIVER = "Choisissez la personne qui a reçu le paiement parmi les utilisateurs actifs."
 REFERENCE_TOO_LONG = f"La référence ne peut pas dépasser {MAX_PAYMENT_REFERENCE} caractères."
 BAD_REQUEST_KEY = "Ce formulaire n'est plus valable : rechargez la page et recommencez."
 KEY_USED_ELSEWHERE = "Ce formulaire a déjà servi pour un autre compte : rechargez la page."
+KEY_REUSED = (
+    "Ce formulaire a déjà été envoyé avec d'autres valeurs. Vérifiez la saisie et envoyez-le "
+    "de nouveau."
+)
 NO_DECISION_NEEDED = "Cette ligne n'attend aucune décision."
 BAD_DECISION = "Cette décision ne convient pas à cette ligne."
 ALREADY_DECIDED = "Cette ligne a déjà été traitée."
@@ -190,8 +217,12 @@ DAYS_NOT_CLOSED = "Des journées de la période ne sont pas clôturées : {days}
 LINES_PENDING = "Des lignes attendent encore une décision : traitez-les avant de clôturer."
 CLOSE_LOST = "La période a changé pendant la clôture : rechargez la page et recommencez."
 PERIOD_JUST_CLOSED = (
-    "Enregistrement refusé : la période vient d'être clôturée ou le formulaire a déjà été "
-    "envoyé. Rechargez la page."
+    "Enregistrement refusé : la période vient d'être clôturée. Rechargez la page et saisissez "
+    "la ligne dans la période ouverte."
+)
+DB_REFUSED = (
+    "Enregistrement refusé : la saisie ne respecte pas une règle du compte. Rechargez la page "
+    "et vérifiez la saisie."
 )
 CORRECTION_REASON = "Vente #{sale} {action} après la clôture de la période du {start} au {end}"
 
@@ -213,6 +244,11 @@ class AccountForbidden(PartnerAccountError):
 
 class AccountConflict(PartnerAccountError):
     """The state does not allow it now: closed, already decided, lines waiting (a 409)."""
+
+
+class StaleRequestKey(PartnerAccountError):
+    """The form's key was used already, for other values or another account: the form must be
+    shown again with a fresh key."""
 
 
 # --- small helpers ----------------------------------------------------------------------------
@@ -279,6 +315,34 @@ def lock_partner(db: Session, partner_id: int, *, shared: bool) -> None:
             )
         )
     )
+
+
+def is_closed_period_refusal(exc: IntegrityError) -> bool:
+    """The database refused a row because a closed period covers its date: migration 0017's
+    trigger (its message, and on Postgres its sqlstate ``check_violation``). Anything else (a
+    CHECK, a foreign key, a unique key) is not this refusal."""
+    original = exc.orig
+    if CLOSED_PERIOD_TRIGGER_MESSAGE not in str(original):
+        return False
+    sqlstate = getattr(original, "sqlstate", None) or getattr(original, "pgcode", None)
+    return sqlstate is None or sqlstate == CHECK_VIOLATION
+
+
+def _refused_by_database(exc: IntegrityError, what: str) -> AccountConflict:
+    """The French refusal for a write the database turned down; the log names the kind of
+    refusal only (no value, no name)."""
+    if is_closed_period_refusal(exc):
+        return AccountConflict(PERIOD_JUST_CLOSED)
+    original = exc.orig
+    log.warning(
+        "partner account write refused by the database",
+        extra={
+            "what": what,
+            "error": type(original).__name__,
+            "sqlstate": getattr(original, "sqlstate", None),
+        },
+    )
+    return AccountConflict(DB_REFUSED)
 
 
 def _refuse(
@@ -376,6 +440,8 @@ class Account:
     partner: Partner
     opening_entry: PartnerEntry | None
     periods: tuple[PeriodView, ...]  # oldest first
+    # Payments dated after the end of the first closed period (``oldest_unpaid``).
+    later_payments: tuple[PartnerPayment, ...] = ()
 
     @property
     def balance(self) -> Decimal:
@@ -384,6 +450,11 @@ class Account:
     @property
     def opening_amount(self) -> Decimal:
         return ZERO if self.opening_entry is None else self.opening_entry.amount
+
+    @property
+    def floor(self) -> date | None:
+        """The switch-over day: nothing dated before it belongs to this account."""
+        return None if self.opening_entry is None else self.opening_entry.entry_date
 
     @property
     def current(self) -> PeriodView | None:
@@ -396,17 +467,6 @@ class Account:
     @property
     def newest_first(self) -> tuple[PeriodView, ...]:
         return tuple(reversed(self.periods))
-
-
-def _rows(db: Session, agency_id: int, partner_id: int) -> list[PartnerPeriod]:
-    return list(
-        db.scalars(
-            select(PartnerPeriod)
-            .where(PartnerPeriod.agency_id == agency_id, PartnerPeriod.partner_id == partner_id)
-            .order_by(PartnerPeriod.start_date)
-            .execution_options(populate_existing=True)
-        )
-    )
 
 
 def opening_entry(db: Session, agency_id: int, partner_id: int) -> PartnerEntry | None:
@@ -431,51 +491,8 @@ def latest_closed_end(db: Session, agency_id: int, partner_id: int) -> date | No
     return found
 
 
-def _first_activity(db: Session, agency_id: int, partner_id: int) -> date | None:
-    """The earliest day of a current partner sale, a line (not the opening) or a payment."""
-    sale_day = db.scalar(
-        select(func.min(ReportDay.day))
-        .select_from(Sale)
-        .join(
-            SaleVersion,
-            and_(
-                SaleVersion.agency_id == Sale.agency_id,
-                SaleVersion.sale_id == Sale.id,
-                SaleVersion.version_no == Sale.current_version,
-            ),
-        )
-        .join(
-            ReportDay,
-            and_(ReportDay.agency_id == Sale.agency_id, ReportDay.id == Sale.report_day_id),
-        )
-        .where(
-            Sale.agency_id == agency_id,
-            Sale.status == SALE_ACTIVE,
-            SaleVersion.voided.is_(False),
-            SaleVersion.ag_kind == AG_PARTNER,
-            SaleVersion.partner_id == partner_id,
-        )
-    )
-    entry_day = db.scalar(
-        select(func.min(PartnerEntry.entry_date)).where(
-            PartnerEntry.agency_id == agency_id,
-            PartnerEntry.partner_id == partner_id,
-            PartnerEntry.kind != ENTRY_OPENING,
-        )
-    )
-    paid_day = db.scalar(
-        select(func.min(PartnerPayment.paid_on)).where(
-            PartnerPayment.agency_id == agency_id, PartnerPayment.partner_id == partner_id
-        )
-    )
-    found = [d for d in (sale_day, entry_day, paid_day) if d is not None]
-    return min(found) if found else None
-
-
-def _entries(
-    db: Session, agency_id: int, partner_id: int, start: date, end: date
-) -> list[EntryView]:
-    rows = db.execute(
+def _entries_query(agency_id: int) -> Any:
+    return (
         select(PartnerEntry, PartnerEntryDecision)
         .outerjoin(
             PartnerEntryDecision,
@@ -484,15 +501,21 @@ def _entries(
                 PartnerEntryDecision.entry_id == PartnerEntry.id,
             ),
         )
-        .where(
-            PartnerEntry.agency_id == agency_id,
+        .where(PartnerEntry.agency_id == agency_id, PartnerEntry.kind != ENTRY_OPENING)
+        .order_by(PartnerEntry.entry_date, PartnerEntry.id)
+        .execution_options(populate_existing=True)
+    )
+
+
+def _entries(
+    db: Session, agency_id: int, partner_id: int, start: date, end: date
+) -> list[EntryView]:
+    rows = db.execute(
+        _entries_query(agency_id).where(
             PartnerEntry.partner_id == partner_id,
-            PartnerEntry.kind != ENTRY_OPENING,
             PartnerEntry.entry_date >= start,
             PartnerEntry.entry_date <= end,
         )
-        .order_by(PartnerEntry.entry_date, PartnerEntry.id)
-        .execution_options(populate_existing=True)
     )
     return [EntryView(entry, decision) for entry, decision in rows]
 
@@ -515,50 +538,210 @@ def _payments(
     )
 
 
-def _live(
-    db: Session, agency_id: int, partner_id: int, start: date, end: date, opening: Decimal
-) -> tuple[PeriodTotals, list[PartnerSaleLine], list[EntryView], list[PartnerPayment]]:
-    """The totals of an open period from what the database holds now (fresh statements)."""
-    sale_lines = partner_sale_lines(db, agency_id, partner_id, start, end)
-    entries = _entries(db, agency_id, partner_id, start, end)
-    payments = _payments(db, agency_id, partner_id, start, end)
-    totals = compute_period(
+def _totals(
+    opening: Decimal,
+    sale_lines: Sequence[PartnerSaleLine],
+    entries: Sequence[EntryView],
+    payments: Sequence[PartnerPayment],
+) -> PeriodTotals:
+    return compute_period(
         opening,
         sale_lines,
         [e.ledger for e in entries],
         [LedgerPayment(p.amount, p.id) for p in payments],
     )
-    return totals, sale_lines, entries, payments
 
 
-def _first_start(
+def _live(
     db: Session,
     agency_id: int,
     partner_id: int,
-    rows: Sequence[PartnerPeriod],
-    opening: PartnerEntry | None,
-) -> date | None:
-    if opening is not None:
-        return half_month(opening.entry_date)[0]
-    closed = [r for r in rows if r.status == PERIOD_CLOSED]
-    if closed:
-        return closed[0].start_date
-    starts = [r.start_date for r in rows]
-    activity = _first_activity(db, agency_id, partner_id)
-    if activity is not None:
-        starts.append(half_month(activity)[0])
-    return min(starts) if starts else None
+    start: date,
+    end: date,
+    opening: Decimal,
+    floor: date | None,
+) -> tuple[PeriodTotals, list[PartnerSaleLine], list[EntryView], list[PartnerPayment]]:
+    """The totals of an open period from what the database holds now (fresh statements), from
+    ``floor`` (the switch-over day) when it falls inside the period."""
+    since = max(start, floor) if floor is not None else start
+    sale_lines = partner_sale_lines(db, agency_id, partner_id, since, end) if since <= end else []
+    entries = _entries(db, agency_id, partner_id, since, end)
+    payments = _payments(db, agency_id, partner_id, since, end)
+    return _totals(opening, sale_lines, entries, payments), sale_lines, entries, payments
 
 
-def account(db: Session, agency_id: int, partner: Partner, today: date) -> Account:
-    """The account of ``partner`` (of ``agency_id``): its periods from the first one to the one
-    holding today, closed ones from their rows, open ones computed now."""
-    rows = _rows(db, agency_id, partner.id)
-    opening = opening_entry(db, agency_id, partner.id)
-    first = _first_start(db, agency_id, partner.id, rows, opening)
+@dataclass
+class _Loaded:
+    """What the accounts of several partners of one agency need, read in a constant number of
+    queries (never one per partner)."""
+
+    rows: dict[int, list[PartnerPeriod]] = field(default_factory=dict)
+    openings: dict[int, PartnerEntry] = field(default_factory=dict)
+    first: dict[int, date] = field(default_factory=dict)  # the first period's start
+    live_from: dict[int, date] = field(default_factory=dict)  # first day read live
+    sales: dict[int, list[PartnerSaleLine]] = field(default_factory=dict)
+    entries: dict[int, list[EntryView]] = field(default_factory=dict)
+    payments: dict[int, list[PartnerPayment]] = field(default_factory=dict)
+
+
+def _first_activity(db: Session, agency_id: int, partner_ids: Collection[int]) -> dict[int, date]:
+    """The earliest day of a current partner sale, a line (not the opening) or a payment, per
+    partner: three grouped queries for all of them."""
+    ids = sorted(set(partner_ids))
+    found: dict[int, date] = {}
+
+    def keep(pairs: Iterable[Any]) -> None:
+        for partner_id, day in pairs:
+            if partner_id is not None and day is not None:
+                found[partner_id] = min(day, found.get(partner_id, day))
+
+    keep(
+        db.execute(
+            select(SaleVersion.partner_id, func.min(ReportDay.day))
+            .select_from(Sale)
+            .join(
+                SaleVersion,
+                and_(
+                    SaleVersion.agency_id == Sale.agency_id,
+                    SaleVersion.sale_id == Sale.id,
+                    SaleVersion.version_no == Sale.current_version,
+                ),
+            )
+            .join(
+                ReportDay,
+                and_(ReportDay.agency_id == Sale.agency_id, ReportDay.id == Sale.report_day_id),
+            )
+            .where(
+                Sale.agency_id == agency_id,
+                Sale.status == SALE_ACTIVE,
+                SaleVersion.voided.is_(False),
+                SaleVersion.ag_kind == AG_PARTNER,
+                SaleVersion.partner_id.in_(ids),
+            )
+            .group_by(SaleVersion.partner_id)
+        )
+    )
+    keep(
+        db.execute(
+            select(PartnerEntry.partner_id, func.min(PartnerEntry.entry_date))
+            .where(
+                PartnerEntry.agency_id == agency_id,
+                PartnerEntry.partner_id.in_(ids),
+                PartnerEntry.kind != ENTRY_OPENING,
+            )
+            .group_by(PartnerEntry.partner_id)
+        )
+    )
+    keep(
+        db.execute(
+            select(PartnerPayment.partner_id, func.min(PartnerPayment.paid_on))
+            .where(PartnerPayment.agency_id == agency_id, PartnerPayment.partner_id.in_(ids))
+            .group_by(PartnerPayment.partner_id)
+        )
+    )
+    return found
+
+
+def _load(
+    db: Session,
+    agency_id: int,
+    partner_ids: Collection[int],
+    today: date,
+    *,
+    snapshots: bool = False,
+) -> _Loaded:
+    """Read the accounts of ``partner_ids`` (of ``agency_id``): at most eight queries whatever
+    their number. Only the open periods after each partner's last closed one are read live; the
+    closed ones come from their rows (the snapshot deferred unless ``snapshots``)."""
+    loaded = _Loaded()
+    ids = sorted(set(partner_ids))
+    if not ids:
+        return loaded
+    rows_query = (
+        select(PartnerPeriod)
+        .where(PartnerPeriod.agency_id == agency_id, PartnerPeriod.partner_id.in_(ids))
+        .order_by(PartnerPeriod.partner_id, PartnerPeriod.start_date)
+        .execution_options(populate_existing=True)
+    )
+    if not snapshots:
+        rows_query = rows_query.options(defer(PartnerPeriod.snapshot))
+    for row in db.scalars(rows_query):
+        loaded.rows.setdefault(row.partner_id, []).append(row)
+    for entry in db.scalars(
+        select(PartnerEntry).where(
+            PartnerEntry.agency_id == agency_id,
+            PartnerEntry.partner_id.in_(ids),
+            PartnerEntry.kind == ENTRY_OPENING,
+        )
+    ):
+        loaded.openings[entry.partner_id] = entry
+    need_activity: list[int] = []
+    for partner_id in ids:
+        opening = loaded.openings.get(partner_id)
+        closed = [r for r in loaded.rows.get(partner_id, []) if r.status == PERIOD_CLOSED]
+        if opening is not None:
+            loaded.first[partner_id] = half_month(opening.entry_date)[0]
+        elif closed:
+            loaded.first[partner_id] = closed[0].start_date
+        else:
+            need_activity.append(partner_id)
+    activity = _first_activity(db, agency_id, need_activity) if need_activity else {}
+    for partner_id in need_activity:
+        starts = [r.start_date for r in loaded.rows.get(partner_id, [])]
+        if partner_id in activity:
+            starts.append(half_month(activity[partner_id])[0])
+        if starts:
+            loaded.first[partner_id] = min(starts)
+    pay_from: dict[int, date] = {}
+    for partner_id, first in loaded.first.items():
+        closed = [r for r in loaded.rows.get(partner_id, []) if r.status == PERIOD_CLOSED]
+        live = _next_start(closed[-1].end_date) if closed else first
+        opening = loaded.openings.get(partner_id)
+        if opening is not None:
+            live = max(live, opening.entry_date)
+        loaded.live_from[partner_id] = live
+        pay_from[partner_id] = min(live, _next_start(closed[0].end_date)) if closed else live
+    if not loaded.live_from:
+        return loaded
+    live_ids = sorted(loaded.live_from)
+    since = min(loaded.live_from.values())
+    until = max(half_month(today)[1], since)
+    for partner_id, lines in partner_sale_lines_many(db, agency_id, live_ids, since, until).items():
+        start = loaded.live_from[partner_id]
+        loaded.sales[partner_id] = [line for line in lines if line.day >= start]
+    for entry, decision in db.execute(
+        _entries_query(agency_id).where(
+            PartnerEntry.partner_id.in_(live_ids), PartnerEntry.entry_date >= since
+        )
+    ):
+        if entry.entry_date >= loaded.live_from[entry.partner_id]:
+            loaded.entries.setdefault(entry.partner_id, []).append(EntryView(entry, decision))
+    for payment in db.scalars(
+        select(PartnerPayment)
+        .where(
+            PartnerPayment.agency_id == agency_id,
+            PartnerPayment.partner_id.in_(live_ids),
+            PartnerPayment.paid_on >= min(pay_from.values()),
+        )
+        .order_by(PartnerPayment.paid_on, PartnerPayment.id)
+        .execution_options(populate_existing=True)
+    ):
+        if payment.paid_on >= pay_from[payment.partner_id]:
+            loaded.payments.setdefault(payment.partner_id, []).append(payment)
+    return loaded
+
+
+def _assemble(partner: Partner, loaded: _Loaded, today: date) -> Account:
+    """The account of ``partner`` from what ``_load`` read: no query."""
+    opening = loaded.openings.get(partner.id)
+    first = loaded.first.get(partner.id)
     if first is None:
         return Account(partner, opening, ())
-    by_start = {r.start_date: r for r in rows}
+    by_start = {r.start_date: r for r in loaded.rows.get(partner.id, [])}
+    live_from = loaded.live_from[partner.id]
+    sales = loaded.sales.get(partner.id, [])
+    entries = loaded.entries.get(partner.id, [])
+    payments = loaded.payments.get(partner.id, [])
     balance = ZERO if opening is None else opening.amount
     periods: list[PeriodView] = []
     for start, end in half_months(first, max(today, first)):
@@ -569,9 +752,11 @@ def account(db: Session, agency_id: int, partner: Partner, today: date) -> Accou
             periods.append(PeriodView(start, end, row, row.opening_balance, row.closing_balance))
             balance = row.closing_balance
             continue
-        totals, sale_lines, entries, payments = _live(
-            db, agency_id, partner.id, start, end, balance
-        )
+        since = max(start, live_from)
+        in_sales = tuple(s for s in sales if since <= s.day <= end)
+        in_entries = tuple(e for e in entries if since <= e.entry.entry_date <= end)
+        in_payments = tuple(p for p in payments if since <= p.paid_on <= end)
+        totals = _totals(balance, in_sales, in_entries, in_payments)
         periods.append(
             PeriodView(
                 start,
@@ -580,20 +765,33 @@ def account(db: Session, agency_id: int, partner: Partner, today: date) -> Accou
                 totals.opening,
                 totals.closing,
                 totals,
-                tuple(sale_lines),
-                tuple(entries),
-                tuple(payments),
+                in_sales,
+                in_entries,
+                in_payments,
             )
         )
         balance = totals.closing
-    return Account(partner, opening, tuple(periods))
+    closed = [p for p in periods if p.closed]
+    later = tuple(p for p in payments if closed and p.paid_on > closed[0].end)
+    return Account(partner, opening, tuple(periods), later)
 
 
-def get_account(db: Session, actor: User, partner_id: int, today: date) -> Account:
+def account(
+    db: Session, agency_id: int, partner: Partner, today: date, *, snapshots: bool = False
+) -> Account:
+    """The account of ``partner`` (of ``agency_id``): its periods from the first one to the one
+    holding today, closed ones from their rows, open ones computed now."""
+    return _assemble(partner, _load(db, agency_id, [partner.id], today, snapshots=snapshots), today)
+
+
+def get_account(
+    db: Session, actor: User, partner_id: int, today: date, *, snapshots: bool = False
+) -> Account:
     """The account as a manager or accountant may read it; ``AccountNotFound`` otherwise."""
     if not permissions.can_manage_partners(actor):
         raise AccountForbidden(NO_PERMISSION)
-    return account(db, actor.agency_id, _partner_or_404(db, actor, partner_id), today)
+    partner = _partner_or_404(db, actor, partner_id)
+    return account(db, actor.agency_id, partner, today, snapshots=snapshots)
 
 
 # --- the list of every partner ----------------------------------------------------------------
@@ -624,25 +822,17 @@ class AccountRow:
         return {ALERT_OVERDUE: 0, ALERT_DUE_SOON: 1}.get(level, 2)
 
 
-def oldest_unpaid(db: Session, agency_id: int, acc: Account, today: date) -> Overdue | None:
-    """First in, first out: what a closed period still lacks is its closing balance minus every
-    payment dated after its end. The oldest closed period still lacking something is the one
-    returned (None when everything is paid)."""
-    closed = [p for p in acc.periods if p.closed]
-    if not closed:
+def oldest_unpaid(acc: Account, today: date) -> Overdue | None:
+    """First in, first out, never more than what is owed now: what a closed period still lacks
+    is its closing balance minus every payment dated after its end, capped by today's balance
+    (a refund or a credit after the close pays the oldest debt too). The oldest closed period
+    still lacking something is returned; None when nothing is owed."""
+    owed = max(ZERO, acc.balance)
+    if owed == 0:
         return None
-    payments = list(
-        db.execute(
-            select(PartnerPayment.paid_on, PartnerPayment.amount).where(
-                PartnerPayment.agency_id == agency_id,
-                PartnerPayment.partner_id == acc.partner.id,
-                PartnerPayment.paid_on > closed[0].end,
-            )
-        )
-    )
-    for period in closed:
-        paid_after = sum((amount for day, amount in payments if day > period.end), ZERO)
-        lacking = period.closing - paid_after
+    for period in (p for p in acc.periods if p.closed):
+        paid_after = sum((p.amount for p in acc.later_payments if p.paid_on > period.end), ZERO)
+        lacking = min(period.closing - paid_after, owed)
         if lacking > 0:
             due = due_date(period.end)
             return Overdue(
@@ -658,25 +848,26 @@ def oldest_unpaid(db: Session, agency_id: int, acc: Account, today: date) -> Ove
 
 def account_rows(db: Session, actor: User, today: date) -> list[AccountRow]:
     """Every active partner of the actor's agency with its balance: overdue first, then due
-    soon, then the oldest debt, then by name."""
+    soon, then the oldest debt, then by name. A constant number of queries (``_load``)."""
     if not permissions.can_manage_partners(actor):
         raise AccountForbidden(NO_PERMISSION)
     agency_id = actor.agency_id
-    found = db.scalars(
-        select(Partner)
-        .where(Partner.agency_id == agency_id, Partner.is_active.is_(True))
-        .order_by(Partner.name_key, Partner.id)
+    found = list(
+        db.scalars(
+            select(Partner)
+            .where(Partner.agency_id == agency_id, Partner.is_active.is_(True))
+            .order_by(Partner.name_key, Partner.id)
+        )
     )
+    loaded = _load(db, agency_id, [p.id for p in found], today)
     rows: list[AccountRow] = []
     for partner in found:
-        acc = account(db, agency_id, partner, today)
+        acc = _assemble(partner, loaded, today)
         current = acc.current
         open_total = ZERO
         if current is not None and current.totals is not None:
             open_total = current.closing - current.opening
-        rows.append(
-            AccountRow(partner, acc.balance, open_total, oldest_unpaid(db, agency_id, acc, today))
-        )
+        rows.append(AccountRow(partner, acc.balance, open_total, oldest_unpaid(acc, today)))
     return sorted(
         rows,
         key=lambda r: (r.rank, -(r.oldest.age_days if r.oldest else 0), r.partner.name_key),
@@ -687,17 +878,15 @@ def account_rows(db: Session, actor: User, today: date) -> list[AccountRow]:
 
 
 def _check_date(db: Session, agency_id: int, partner_id: int, day: date, today: date) -> None:
-    """Today or earlier, after the latest closed period, not before the opening's period."""
+    """Today or earlier, after the latest closed period, not before the switch-over day."""
     if day > today:
         raise PartnerAccountError(FUTURE_DATE)
     closed_end = latest_closed_end(db, agency_id, partner_id)
     if closed_end is not None and day <= closed_end:
         raise PartnerAccountError(BACKDATED.format(end=date_fr(closed_end)))
     opening = opening_entry(db, agency_id, partner_id)
-    if opening is not None:
-        first = half_month(opening.entry_date)[0]
-        if day < first:
-            raise PartnerAccountError(BEFORE_OPENING.format(start=date_fr(first)))
+    if opening is not None and day < opening.entry_date:
+        raise PartnerAccountError(BEFORE_OPENING.format(start=date_fr(opening.entry_date)))
 
 
 def _active_user(db: Session, agency_id: int, user_id: int | None) -> User | None:
@@ -710,36 +899,51 @@ def _active_user(db: Session, agency_id: int, user_id: int | None) -> User | Non
     ).one_or_none()
 
 
-def _insert(
-    db: Session,
-    row: PartnerEntry | PartnerPayment,
-    find: Callable[[], PartnerEntry | PartnerPayment | None],
-) -> tuple[PartnerEntry | PartnerPayment, bool]:
-    """Insert ``row`` in a savepoint. A unique violation on the request key returns the row
-    stored by the request that won; any other refusal of the database (the closed-period
-    triggers, a CHECK) becomes ``PERIOD_JUST_CLOSED``, never a 500."""
-    try:
-        with db.begin_nested():
-            db.add(row)
-            db.flush()
-    except IntegrityError:
-        existing = find()
-        if existing is not None:
-            return existing, False
-        raise AccountConflict(PERIOD_JUST_CLOSED) from None
-    return row, True
-
-
-# --- add a manual line ------------------------------------------------------------------------
+def _someone_else_approves(db: Session, actor: User) -> bool:
+    """Another active user of the agency could approve an AJUSTEMENT ``actor`` enters."""
+    others = db.scalars(
+        select(User).where(
+            User.agency_id == actor.agency_id, User.is_active.is_(True), User.id != actor.id
+        )
+    )
+    return any(permissions.can_approve_partner_adjustment(u) for u in others)
 
 
 @dataclass(frozen=True)
 class Written:
-    """What a write produced: the row, and whether this request wrote it (False: the request
-    key was seen before and the row is the one already stored)."""
+    """What a write produced: the row, and whether this request wrote it (False: the same form
+    was posted before and the row is the one already stored)."""
 
     row: Any
     created: bool
+
+
+def _insert(
+    db: Session,
+    row: PartnerEntry | PartnerPayment,
+    find: Callable[[], PartnerEntry | PartnerPayment | None],
+    same: Callable[[Any], bool],
+    what: str,
+) -> tuple[PartnerEntry | PartnerPayment, bool]:
+    """Insert ``row`` in a savepoint. A unique violation on the request key returns the row
+    stored by the request that won (when it holds the same values, else ``StaleRequestKey``);
+    the closed-period trigger becomes ``PERIOD_JUST_CLOSED``, any other refusal ``DB_REFUSED``,
+    never a 500."""
+    try:
+        with db.begin_nested():
+            db.add(row)
+            db.flush()
+    except IntegrityError as exc:
+        existing = find()
+        if existing is not None:
+            if not same(existing):
+                raise StaleRequestKey(KEY_REUSED) from None
+            return existing, False
+        raise _refused_by_database(exc, what) from None
+    return row, True
+
+
+# --- add a manual line ------------------------------------------------------------------------
 
 
 def _entry_by_key(db: Session, agency_id: int, key: str) -> PartnerEntry | None:
@@ -795,20 +999,33 @@ def add_line(
     _require_writer(db, actor, "add_partner_line", moment, ip)
     key = check_request_key(request_key)
     partner = _partner_or_404(db, actor, partner_id)
-    existing = _entry_by_key(db, actor.agency_id, key)
-    if existing is not None:
-        if existing.partner_id != partner.id:
-            raise PartnerAccountError(KEY_USED_ELSEWHERE)
-        return Written(existing, False)
     if kind not in MANUAL_KINDS:
         raise PartnerAccountError(BAD_KIND)
     signed = _signed_amount(kind, amount, direction)
+    today = moment.date()
+    day = parse_day(entry_date, today)
+
+    def same(row: PartnerEntry) -> bool:
+        return (row.partner_id, row.kind, row.amount, row.entry_date) == (
+            partner.id,
+            kind,
+            signed,
+            day,
+        )
+
+    existing = _entry_by_key(db, actor.agency_id, key)
+    if existing is not None:
+        if existing.partner_id != partner.id:
+            raise StaleRequestKey(KEY_USED_ELSEWHERE)
+        if not same(existing):
+            raise StaleRequestKey(KEY_REUSED)
+        return Written(existing, False)
     try:
         clean = reasons.required_reason(reason)
     except reasons.ReasonError as exc:
         raise PartnerAccountError(str(exc)) from None
-    today = moment.date()
-    day = parse_day(entry_date, today)
+    if kind == ENTRY_AJUSTEMENT and not _someone_else_approves(db, actor):
+        raise PartnerAccountError(NO_APPROVER)
     lock_partner(db, partner.id, shared=True)
     _check_date(db, actor.agency_id, partner.id, day, today)
     row = PartnerEntry(
@@ -823,7 +1040,9 @@ def add_line(
         request_key=key,
         created_at=moment,
     )
-    stored, created = _insert(db, row, lambda: _entry_by_key(db, actor.agency_id, key))
+    stored, created = _insert(
+        db, row, lambda: _entry_by_key(db, actor.agency_id, key), same, "partner_entries"
+    )
     if not created:
         return Written(stored, False)
     audit.record(
@@ -916,15 +1135,13 @@ def decide_line(
         with db.begin_nested():
             db.add(row)
             db.flush()
-    except IntegrityError:
+    except IntegrityError as exc:
         stored = _decision_of(db, actor.agency_id, entry.id)
-        if (
-            stored is not None
-            and stored.decision == decision
-            and stored.decided_by_user_id == actor.id
-        ):
+        if stored is None:
+            raise _refused_by_database(exc, "partner_entry_decisions") from None
+        if stored.decision == decision and stored.decided_by_user_id == actor.id:
             return Written(stored, False)
-        raise AccountConflict(ALREADY_DECIDED if stored else PERIOD_JUST_CLOSED) from None
+        raise AccountConflict(ALREADY_DECIDED) from None
     audit.record(
         db,
         ENTRY_DECIDED,
@@ -988,11 +1205,6 @@ def record_payment(
     _require_writer(db, actor, "record_partner_payment", moment, ip)
     key = check_request_key(request_key)
     partner = _partner_or_404(db, actor, partner_id)
-    existing = _payment_by_key(db, actor.agency_id, key)
-    if existing is not None:
-        if existing.partner_id != partner.id:
-            raise PartnerAccountError(KEY_USED_ELSEWHERE)
-        return Written(existing, False)
     try:
         value = money.parse_amount(amount)
     except money.MoneyError as exc:
@@ -1001,12 +1213,28 @@ def record_payment(
         raise PartnerAccountError(ZERO_AMOUNT)
     if method not in PARTNER_PAYMENT_METHODS:
         raise PartnerAccountError(BAD_METHOD)
+    today = moment.date()
+    day = parse_day(paid_on, today)
+
+    def same(row: PartnerPayment) -> bool:
+        return (row.partner_id, row.amount, row.method, row.paid_on) == (
+            partner.id,
+            value,
+            method,
+            day,
+        )
+
+    existing = _payment_by_key(db, actor.agency_id, key)
+    if existing is not None:
+        if existing.partner_id != partner.id:
+            raise StaleRequestKey(KEY_USED_ELSEWHERE)
+        if not same(existing):
+            raise StaleRequestKey(KEY_REUSED)
+        return Written(existing, False)
     receiver = _active_user(db, actor.agency_id, received_by_user_id)
     if receiver is None:
         raise PartnerAccountError(BAD_RECEIVER)
     ref = _clean_reference(reference)
-    today = moment.date()
-    day = parse_day(paid_on, today)
     lock_partner(db, partner.id, shared=True)
     _check_date(db, actor.agency_id, partner.id, day, today)
     row = PartnerPayment(
@@ -1021,7 +1249,9 @@ def record_payment(
         request_key=key,
         created_at=moment,
     )
-    stored, created = _insert(db, row, lambda: _payment_by_key(db, actor.agency_id, key))
+    stored, created = _insert(
+        db, row, lambda: _payment_by_key(db, actor.agency_id, key), same, "partner_payments"
+    )
     if not created:
         return Written(stored, False)
     audit.record(
@@ -1127,6 +1357,7 @@ def _period_row(db: Session, agency_id: int, partner_id: int, start: date) -> Pa
             PartnerPeriod.partner_id == partner_id,
             PartnerPeriod.start_date == start,
         )
+        .options(defer(PartnerPeriod.snapshot))
         .with_for_update()
         .execution_options(populate_existing=True)
     ).one_or_none()
@@ -1158,8 +1389,8 @@ def close_period(
     if target is None:
         raise AccountNotFound(PERIOD_NOT_FOUND)
     if target.closed:
-        snapshot = (target.row.snapshot if target.row is not None else None) or {}
-        if snapshot.get("request_key") == key:
+        stored = (target.row.snapshot if target.row is not None else None) or {}
+        if stored.get("request_key") == key:
             return Written(target.row, False)
         raise AccountConflict(ALREADY_CLOSED)
     earlier = next((p for p in acc.periods if p.start < start and not p.closed), None)
@@ -1195,36 +1426,40 @@ def close_period(
     if row is None or row.status != PERIOD_OPEN:
         raise AccountConflict(CLOSE_LOST)
     # 4. Only now the totals, each a fresh statement.
-    previous = acc.periods[acc.periods.index(target) - 1] if acc.periods[0] is not target else None
-    opening = previous.closing if previous is not None else acc.opening_amount
+    index = acc.periods.index(target)
+    opening = acc.periods[index - 1].closing if index > 0 else acc.opening_amount
     totals, sale_lines, entries, payments = _live(
-        db, agency_id, partner.id, target.start, target.end, opening
+        db, agency_id, partner.id, target.start, target.end, opening, acc.floor
     )
     if totals.pending:
         raise AccountConflict(LINES_PENDING)
     snapshot = _snapshot(key, totals, sale_lines, entries, payments)
-    result = db.execute(
-        update(PartnerPeriod)
-        .where(
-            PartnerPeriod.agency_id == agency_id,
-            PartnerPeriod.id == row.id,
-            PartnerPeriod.status == PERIOD_OPEN,
-        )
-        .values(
-            status=PERIOD_CLOSED,
-            opening_balance=totals.opening,
-            sales_total=totals.sales_total,
-            entries_total=totals.entries_total,
-            payments_total=totals.payments_total,
-            closing_balance=totals.closing,
-            closed_at=moment,
-            closed_by_user_id=actor.id,
-            snapshot=snapshot,
-        )
-        .execution_options(synchronize_session=False)
-    )
-    if getattr(result, "rowcount", None) != 1:
-        raise AccountConflict(CLOSE_LOST)
+    try:
+        with db.begin_nested():
+            result = db.execute(
+                update(PartnerPeriod)
+                .where(
+                    PartnerPeriod.agency_id == agency_id,
+                    PartnerPeriod.id == row.id,
+                    PartnerPeriod.status == PERIOD_OPEN,
+                )
+                .values(
+                    status=PERIOD_CLOSED,
+                    opening_balance=totals.opening,
+                    sales_total=totals.sales_total,
+                    entries_total=totals.entries_total,
+                    payments_total=totals.payments_total,
+                    closing_balance=totals.closing,
+                    closed_at=moment,
+                    closed_by_user_id=actor.id,
+                    snapshot=snapshot,
+                )
+                .execution_options(synchronize_session=False)
+            )
+            if getattr(result, "rowcount", None) != 1:
+                raise AccountConflict(CLOSE_LOST)
+    except IntegrityError:
+        raise AccountConflict(CLOSE_LOST) from None
     db.refresh(row)
     audit.record(
         db,
@@ -1265,12 +1500,12 @@ class SaleShare:
 
 def _covered(db: Session, agency_id: int, share: SaleShare) -> tuple[date, date] | None:
     """The closed period that counted ``share`` (its half-month), or None when that day is
-    still in an open period (or before the partner's opening balance)."""
+    still in an open period, or before the switch-over day (in the opening balance)."""
     closed_end = latest_closed_end(db, agency_id, share.partner_id)
     if closed_end is None or share.day > closed_end:
         return None
     opening = opening_entry(db, agency_id, share.partner_id)
-    if opening is not None and share.day < half_month(opening.entry_date)[0]:
+    if opening is not None and share.day < opening.entry_date:
         return None
     return half_month(share.day)
 
@@ -1309,16 +1544,24 @@ def correct_after_close(
     closed periods counted (``before``, when its day is in a closed period) and what they would
     count now (``after``, likewise) goes into the open period, dated today. A day still in an
     open period needs nothing: the open period reads the sale live. Called by ``app.sales`` in
-    the sale's own transaction, after the new version is flushed."""
+    the sale's own transaction, after the new version is flushed.
+
+    The shared advisory lock is only taken for a partner with a closed period that could cover
+    the day (checked first without it); everything is checked again under the lock."""
     shares = [(s, sign) for s, sign in ((before, -1), (after, 1)) if s is not None]
-    if not shares:
+    candidates: set[int] = set()
+    for share, _sign in shares:
+        closed_end = latest_closed_end(db, actor.agency_id, share.partner_id)
+        if closed_end is not None and share.day <= closed_end:
+            candidates.add(share.partner_id)
+    if not candidates:
         return []
-    for partner_id in sorted({s.partner_id for s, _ in shares}):
+    for partner_id in sorted(candidates):
         lock_partner(db, partner_id, shared=True)
     delta: dict[int, Decimal] = defaultdict(lambda: ZERO)
     label: dict[int, tuple[date, date]] = {}
     for share, sign in shares:
-        period = _covered(db, actor.agency_id, share)
+        period = _covered(db, actor.agency_id, share)  # again, under the lock
         if period is None:
             continue
         delta[share.partner_id] += sign * share.pb
@@ -1380,6 +1623,7 @@ __all__ = [
     "PartnerAccountError",
     "PeriodView",
     "SaleShare",
+    "StaleRequestKey",
     "Written",
     "account",
     "account_rows",
@@ -1388,6 +1632,8 @@ __all__ = [
     "correct_after_close",
     "decide_line",
     "get_account",
+    "is_closed_period_refusal",
     "new_request_key",
+    "oldest_unpaid",
     "record_payment",
 ]

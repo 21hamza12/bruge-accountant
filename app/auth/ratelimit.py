@@ -82,6 +82,9 @@ CHAT_AI_AGENCY = Limit("chat_ai_agency", 120, 3600)
 # Partner accounts (phase F): adding a line, deciding one, recording a payment. A busy
 # accountant writes a few dozen a day; 120 an hour for each user stops a script, not a person.
 PARTNER_ACCOUNT_WRITE_USER = Limit("partner_account_write_user", 120, 3600)
+# Reading partner accounts (the list, one account, one period): each page computes balances, so
+# 600 an hour for each user, a person clicking around, not a script polling.
+PARTNER_ACCOUNT_READ_USER = Limit("partner_account_read_user", 600, 3600)
 # Closing a partner period: twice a month per partner, so 30 an hour for each user is plenty.
 PARTNER_PERIOD_CLOSE_USER = Limit("partner_period_close_user", 30, 3600)
 # Guesses at the current password of a logged-in account (stolen-session brute force).

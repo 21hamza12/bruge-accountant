@@ -111,9 +111,12 @@ plan left room, and why:
   (then closed in the same transaction). Open periods are computed from the live data each time
   they are shown, so a page view never writes, and the database holds no open row that could
   drift. The periods shown run from the first one to the one holding today, in order.
-- **First period.** With an `OPENING` line: the half-month of its date (activity before it is
-  the spreadsheet's and is not read). Otherwise: the earliest closed period, else the earliest
-  activity (a sale, a line, a payment).
+- **First period and opening balance** (review, 27 Oct). The `OPENING` line's date is the
+  switch-over day, and its amount is the spreadsheet's balance at the end of the day before.
+  Nothing dated before the switch-over day is read, accepted or corrected (sales, lines,
+  payments), even inside the first half-month: an opening on the 20th leaves out a sale of the
+  17th and counts one of the 21st. The first period is the half-month of the opening; without
+  one, the earliest closed period, else the earliest activity.
 - **The close also needs the period to be over** (its last day before today). Then a
   `CORRECTION` dated today always lands after every closed period.
 - **The close locks the report days of the period `FOR SHARE`** after the advisory lock, so no
@@ -127,10 +130,33 @@ plan left room, and why:
   person returns the stored one, anything else is "déjà traitée". The close stores its request
   key in the snapshot: the same form posted twice returns the closed period.
 - **An `AJUSTEMENT` entered by a manager needs another manager** (four eyes); the accountant never
-  decides one.
-- **"Plus ancien impayé"** is first in, first out: what a closed period still lacks is its
-  closing balance minus every payment dated after its end; the oldest period still lacking
-  something is shown with its due date (end + 15 days) and its age in days since its end.
+  decides one. Review, 27 Oct: an `AJUSTEMENT` is refused at entry when no other active user
+  could approve it (« Aucun autre gérant ne peut approuver cette ligne : demandez à la comptable
+  de la saisir, le gérant l'approuvera. »), so a manager alone never waits on their own line.
+  A pending line says who may decide it.
+- **"Plus ancien impayé"** is first in, first out, capped by what is owed now (review, 27 Oct):
+  `owed = max(0, balance)`; nothing is shown when `owed` is 0; otherwise what a closed period
+  still lacks is `min(closing − payments dated after its end, owed)`, so a refund, a credit or
+  a negative adjustment after the close pays the oldest debt too. The oldest period still
+  lacking something is shown with its due date (end + 15 days) and its age in days since its
+  end.
+- **A request key replayed with other values** (kind, amount, date; for a payment amount,
+  method, date) is refused with a French message, and the form comes back with a fresh key
+  (review, 27 Oct). The same form posted again returns the stored row, and the page says so
+  (« Cette ligne était déjà enregistrée »).
+- **Database refusals** (review, 27 Oct): only the closed-period trigger (its message, and on
+  Postgres sqlstate `23514`) is « la période vient d'être clôturée »; any other refusal is a
+  generic « Enregistrement refusé », logged without data. A refused close `UPDATE` is « la
+  période a changé pendant la clôture »; a refused correction during a sale change is a French
+  sale error, never a 500.
+- **Cost of the pages** (review, 27 Oct): the snapshot column is deferred everywhere but the
+  period page; the list reads every partner of the agency in a constant number of queries
+  (about eight, whatever the number of partners; a test pins it), computing live only the open
+  periods after each partner's last closed one. Reads have their own rate limit
+  (`PARTNER_ACCOUNT_READ_USER`, 600 an hour per user).
+- **Corrections take the advisory lock only when needed**: the latest closed end is read first
+  without the lock; the lock is taken only when a closed period could cover the sale's day, and
+  everything is read again under it.
 - **Amounts are typed positive**: the kind gives the sign (`RFND` negative), and an
   `AJUSTEMENT` has a direction (« le partenaire doit plus / moins »).
 - **Advisory lock** via `func.pg_advisory_xact_lock(_shared)` with bound, cast parameters (no
@@ -140,6 +166,10 @@ Postgres-only (left to CI): the advisory locks and their interplay with the inse
 `FOR SHARE` / `FOR UPDATE` row locks, the closed-period triggers raising `check_violation`
 (SQLite's triggers are exercised by a test on a migrated database), the `closing_reconciles`
 CHECK, and the row-level security of the four tables under the app role.
+`tests/test_partner_book_postgres.py` covers these on a server, in both deployment modes: the
+whole flow as the application role (close, line, decision, payment, sale correction), the
+trigger's refusal shown in French, and a two-session test where a close waits for a line in
+flight (shared advisory lock held by the insert trigger) and counts it.
 
 ## 5. Owner's answers (27 Oct 2026)
 

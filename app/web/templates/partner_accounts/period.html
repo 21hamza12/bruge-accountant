@@ -2,6 +2,7 @@
 {% block title %}{{ _("Période du %(label)s", label=period.label) }}{% endblock %}
 {% block content %}
 <p><a class="card-link card-link-back" href="/partner-accounts/{{ acc.partner.id }}">{{ _("Retour au compte") }}</a></p>
+{% if notice %}<p class="notice" id="already-notice" role="status">{{ notice }}</p>{% endif %}
 <section class="card" aria-labelledby="period-title">
   <h2 class="card-title" id="period-title">{{ _("%(name)s : période du %(label)s", name=acc.partner.name, label=period.label) }}</h2>
   {% if snapshot %}

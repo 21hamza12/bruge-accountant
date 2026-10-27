@@ -531,26 +531,53 @@ Fill in as you go. Leave "not done" until you have really checked it.
 
 | Check | Date | Result | Notes |
 |---|---|---|---|
-| Blueprint created, plans and region as expected | | not done | |
-| Postgres major version used | | not done | |
-| First deploy healthy (`/healthz` 200) | | not done | |
-| Default Postgres user can `CREATE ROLE` | | not done | paste the Shell output |
-| Mode in use: separate role or single-role | | not done | section 3 |
+| Blueprint created, plans and region as expected | 27 Oct 2026 | done | web and cron Starter, Postgres basic-256mb, all Frankfurt. Host: `bruge-accountant.onrender.com` |
+| Postgres major version used | 27 Oct 2026 | done | 16 |
+| First deploy healthy (`/healthz` 200) | 27 Oct 2026 | done | after `DATABASE_URL` was set; first deploy failed on purpose without it. `/healthz` shows `e6e359c` |
+| Default Postgres user can `CREATE ROLE` | 27 Oct 2026 | done | `current role: ('bruge_user', False, True)`, `CREATE ROLE: OK` |
+| Mode in use: separate role or single-role | 27 Oct 2026 | done | **separate role** `bruge_app`, created after 0003 ran, then `grant-app-role bruge_app` (27 tables). The web app connects as `('bruge_app', False, False)` (no superuser, no BYPASSRLS). `APP_DB_ROLE=bruge_app` on the web service. The cron job uses the same app URL |
 | `X-Forwarded-For` format and rightmost hop | | not done | |
 | `TRUSTED_PROXY_HOPS` confirmed value | | not done | |
 | `X-Forwarded-Proto` value | | not done | |
 | Host header sent by the health check | | not done | |
 | Rollback: `preDeployCommand` re-runs? | | not done | |
 | Rollback: env vars restored or current? | | not done | |
-| Uptime monitor created, alert and recovery received | | not done | |
+| Uptime monitor created, alert and recovery received | 27 Oct 2026 | partly | UptimeRobot, 5 min, `/healthz`, e-mail to the founder. Alert and recovery e-mails not yet triggered; no second contact yet |
 | Deploy-failure email received | | not done | |
 | Offline page in a real browser | | not done | |
 | Rollback across 0003 (`downgrade 0002`, redeploy N, upgrade again) | | not done | section 5 |
 | Restore drill (managed backup restored, counts non-zero, login works) | | not done | section 8 |
-| `purge-expired` hourly cron (`bruge-purge`) triggered by hand, then once on schedule | | not done | section 3 |
+| `purge-expired` hourly cron (`bruge-purge`) triggered by hand, then once on schedule | 27 Oct 2026 | partly | Trigger Run printed the JSON counts (all 0), no error. Scheduled run not yet checked |
 | `reset-password` rehearsed for a locked-out manager | | not done | section 3 |
-| Plan names in `render.yaml` still accepted (web, cron) | | not done | section 1 |
-| Sentry alert drill: event sent and e-mail received, no request/user data in it | | not done | section 9 |
+| Plan names in `render.yaml` still accepted (web, cron) | 27 Oct 2026 | done | the blueprint sync accepted `starter` for both |
+| Sentry alert drill: event sent and e-mail received, no request/user data in it | 27 Oct 2026 | done | `RuntimeError: alert drill, ignore` arrived (EU region, `ingest.de.sentry.io`), Users 0. No repository connected, error monitoring only |
 | Failed `bruge-purge` produces one Sentry event tagged `job` | | not done | section 9 |
 | Log stream to Better Stack working, one request found by `request_id` | | not done | section 10 |
-| `python -m app ai-smoke` prints ok; one chat question and one screenshot work | | not done | section 2, AI settings |
+| `python -m app ai-smoke` prints ok; one chat question and one screenshot work | 27 Oct 2026 | done | `ai-smoke: ok model=claude-haiku-5-5 input_tokens=393 output_tokens=4`; the owner asked one chat question and read one ticket screenshot on the live site |
+
+**Also checked on the live site (27 Oct 2026).** `/nope` is 404 with the French page and no
+framework name; `Host: evil.example` is 403; no `Access-Control-Allow-Origin` for a foreign
+`Origin`; a login POST without the form's origin is 403 (CSRF); five wrong passwords for one
+phone number, then 429 « Trop de tentatives » (the limiter is in the database, so it holds across
+instances). The `Server` header reads `cloudflare`: Render's edge adds it, the app sends none.
+First agency `bruge-voyages` (id 1) and its manager created with `bootstrap-agency`; the manager
+logged in.
+
+**Accepted risks (owner's decision, 27 Oct 2026).**
+
+- The owner password of `bruge_user` was printed once in Render Shell (a paste added terminal
+  control characters, and bash echoed the expanded variable in its error) and that screenshot is
+  in the build conversation. The database has no public access (`ipAllowList: []`), so the
+  password works only from inside Render. Rotation (Render's credential guide: new
+  default credential, blueprint sync, redeploy, then delete the old user) was offered and
+  deferred by the owner. Do it before a second person gets dashboard access.
+- The `bruge_app` password shown in the same conversation was rotated at once (`ALTER ROLE`);
+  the one in use was never shown.
+- The live site uses the founder's development Anthropic key, not a dedicated `bruge-prod` key.
+  Usage of tests and of the agency is therefore mixed in the Console, and revoking the key stops
+  both. Replace it with a dedicated key with a spend limit when convenient.
+
+**Lesson for Render Shell.** Never put a secret-bearing variable as the first word of a pasted
+line (`DATABASE_URL="$MIGRATION_DATABASE_URL" python ...`): if the paste goes wrong, bash prints
+the expanded value. Run `export DATABASE_URL="$MIGRATION_DATABASE_URL"` on its own line first, then
+the command.

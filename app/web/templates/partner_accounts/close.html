@@ -1,0 +1,29 @@
+{% extends "base.html" %}
+{% block title %}{{ _("Clôturer la période") }}{% endblock %}
+{% block content %}
+<p><a class="card-link card-link-back" href="/partner-accounts/{{ acc.partner.id }}">{{ _("Retour au compte") }}</a></p>
+<section class="card" aria-labelledby="close-title">
+  <h2 class="card-title" id="close-title">{{ _("Clôturer la période du %(label)s de %(name)s ?", label=period.label, name=acc.partner.name) }}</h2>
+  <div class="table-wrap" tabindex="0" role="region" aria-label="{{ _('Totaux de la période') }}">
+    <table class="table">
+      <tbody>
+        <tr><th scope="row">{{ _("Solde précédent") }}</th><td class="num">{{ period.opening | money_fr }}</td></tr>
+        <tr><th scope="row">{{ _("Ventes") }}</th><td class="num">{{ period.totals.sales_total | money_fr }}</td></tr>
+        <tr><th scope="row">{{ _("Lignes comptées") }}</th><td class="num">{{ period.totals.entries_total | money_fr }}</td></tr>
+        <tr><th scope="row">{{ _("Paiements") }}</th><td class="num">{{ period.totals.payments_total | money_fr }}</td></tr>
+        <tr><th scope="row">{{ _("Nouveau solde") }}</th><td class="num"><strong>{{ period.closing | money_fr }}</strong> {{ agency.currency }}</td></tr>
+      </tbody>
+    </table>
+  </div>
+  {% if period.pending %}<p class="error-box" role="status">{{ _("Des lignes attendent encore une décision : traitez-les avant de clôturer.") }}</p>{% endif %}
+  <p class="muted">{{ _("Une période clôturée ne change plus : le relevé reste celui envoyé. Une vente corrigée ensuite, ou une ligne oubliée, va dans la période ouverte.") }}</p>
+  <form class="form" method="post" action="/partner-accounts/{{ acc.partner.id }}/periods/{{ period.start.isoformat() }}/close">
+    {% include "_csrf.html" %}
+    <input type="hidden" name="request_key" value="{{ request_key }}">
+    <div class="actions">
+      <button class="btn btn-primary" type="submit">{{ _("Oui, clôturer la période") }}</button>
+      <a class="btn" href="/partner-accounts/{{ acc.partner.id }}">{{ _("Non, garder ouverte") }}</a>
+    </div>
+  </form>
+</section>
+{% endblock %}

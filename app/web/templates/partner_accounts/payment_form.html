@@ -1,0 +1,38 @@
+{% extends "base.html" %}
+{% block title %}{{ _("Enregistrer un paiement") }}{% endblock %}
+{% block content %}
+<p><a class="card-link card-link-back" href="/partner-accounts/{{ acc.partner.id }}">{{ _("Retour au compte") }}</a></p>
+{% if error %}<p class="error-box" id="form-error" role="alert" tabindex="-1" autofocus>{{ error }}</p>{% endif %}
+<section class="card" aria-labelledby="pay-title">
+  <h2 class="card-title" id="pay-title">{{ _("Paiement reçu de %(name)s", name=acc.partner.name) }}</h2>
+  <form class="form" method="post" action="/partner-accounts/{{ acc.partner.id }}/payments">
+    {% include "_csrf.html" %}
+    <input type="hidden" name="request_key" value="{{ form.request_key }}">
+    <div class="field">
+      <label for="amount">{{ _("Montant (MRU)") }}</label>
+      <input id="amount" name="amount" type="text" inputmode="decimal" required maxlength="64" value="{{ form.amount or '' }}"{% if error %} aria-describedby="form-error"{% endif %}>
+    </div>
+    <div class="field">
+      <label for="method">{{ _("Mode de paiement") }}</label>
+      <select id="method" name="method" required>
+        {% for code, label in methods %}<option value="{{ code }}"{% if form.method == code %} selected{% endif %}>{{ label }}</option>{% endfor %}
+      </select>
+    </div>
+    <div class="field">
+      <label for="paid_on">{{ _("Date du paiement") }}</label>
+      <input id="paid_on" name="paid_on" type="date" required max="{{ today.isoformat() }}" value="{{ form.paid_on or today.isoformat() }}"{% if error %} aria-describedby="form-error"{% endif %}>
+    </div>
+    <div class="field">
+      <label for="reference">{{ _("Référence (facultatif : numéro de chèque ou de virement)") }}</label>
+      <input id="reference" name="reference" type="text" maxlength="64" value="{{ form.reference or '' }}">
+    </div>
+    <div class="field">
+      <label for="received_by">{{ _("Reçu par") }}</label>
+      <select id="received_by" name="received_by" required>
+        {% for u in receivers %}<option value="{{ u.id }}"{% if form.received_by == u.id | string %} selected{% endif %}>{{ (u.display_name or "").strip() or u.role }}</option>{% endfor %}
+      </select>
+    </div>
+    <button class="btn btn-primary" type="submit">{{ _("Enregistrer le paiement") }}</button>
+  </form>
+</section>
+{% endblock %}

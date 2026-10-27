@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+{% block title %}{{ _("Comptes partenaires") }}{% endblock %}
+{% block content %}
+<section class="card" aria-labelledby="accounts-title">
+  <h2 class="card-title" id="accounts-title">{{ _("Comptes partenaires") }}</h2>
+  <p class="help">{{ _("Un solde positif est ce que le partenaire doit à l'agence. Le solde d'une période clôturée est dû 15 jours après la fin de la période ; les comptes en retard sont en tête.") }}</p>
+  {% if rows %}
+  <div class="table-wrap" tabindex="0" role="region" aria-label="{{ _('Comptes partenaires (défilement horizontal)') }}">
+    <table class="table" aria-labelledby="accounts-title">
+      <thead>
+        <tr><th scope="col">{{ _("Partenaire") }}</th><th scope="col">{{ _("Solde actuel") }}</th><th scope="col">{{ _("Période en cours") }}</th><th scope="col">{{ _("Plus ancien impayé") }}</th><th scope="col">{{ _("Échéance") }}</th></tr>
+      </thead>
+      <tbody>
+      {% for row in rows %}
+        <tr>
+          <td><a href="/partner-accounts/{{ row.partner.id }}">{{ row.partner.name }}</a></td>
+          <td class="num">{{ row.balance | money_fr }} {{ agency.currency }}</td>
+          <td class="num">{{ row.open_total | money_fr }}</td>
+          <td>{% if row.oldest %}<span class="num">{{ row.oldest.amount | money_fr }}</span> ({{ _("période du %(start)s au %(end)s", start=row.oldest.start.day, end=row.oldest.end | date_fr) }}, {{ ngettext("%(num)d jour", "%(num)d jours", row.oldest.age_days) }}){% else %}<span class="muted">{{ _("Rien d'impayé") }}</span>{% endif %}</td>
+          <td>{% if row.oldest %}{% if row.oldest.level == "overdue" %}<span class="pill pill-red">{{ _("En retard") }}</span>{% elif row.oldest.level == "due_soon" %}<span class="pill pill-amber">{{ _("Bientôt dû") }}</span>{% else %}<span class="pill pill-neutral">{{ _("À payer") }}</span>{% endif %} {{ _("le %(date)s", date=row.oldest.due | date_fr) }}{% else %}-{% endif %}</td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <p class="muted">{{ _("Aucun partenaire actif.") }}</p>
+  {% endif %}
+</section>
+{% endblock %}

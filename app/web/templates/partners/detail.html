@@ -11,6 +11,7 @@
     - {{ _("Frais actuels") }} :
     {% if current_fee %}<strong class="num">{{ current_fee.fee | money_fr }}</strong> ({{ _("depuis le") }} {{ current_fee.valid_from | date_fr }}){% else %}<span class="muted">{{ _("aucun tarif en vigueur") }}</span>{% endif %}
   </p>
+  <p><a class="card-link" href="/partner-accounts/{{ partner.id }}">{{ _("Voir le compte du partenaire") }}</a></p>
 </section>
 
 {% if partner.is_active %}

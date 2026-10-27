@@ -35,6 +35,12 @@ def can_validate_money(user: User) -> bool:
     return user.role in _MANAGER_OR_ACCOUNTANT
 
 
+def can_approve_partner_adjustment(user: User) -> bool:
+    """Approve or reject an ``AJUSTEMENT`` of a partner account (phase F): the manager only, and
+    never on a line they entered themselves (four eyes, checked by ``app/partner_book.py``)."""
+    return user.role in _MANAGER_ONLY
+
+
 def can_close_day(user: User) -> bool:
     return user.role in _MANAGER_OR_ACCOUNTANT
 

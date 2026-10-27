@@ -100,6 +100,47 @@ line, and any change to a period but its close):
 - **Double clicks:** each form post carries a `request_key`; a repeated key returns the line
   already written instead of a second one.
 
+### F2 as built (27 Oct 2026)
+
+Service `app/partner_book.py`, pages `app/web/routes/partner_accounts.py` (`/partner-accounts`),
+the correction hook in `app/sales.py`. Each "F2 must" above is enforced there and tested in
+`tests/test_partner_book.py` and `tests/test_partner_account_pages.py`. Choices made where the
+plan left room, and why:
+
+- **Built on demand = written on close.** A `partner_periods` row is only inserted by the close
+  (then closed in the same transaction). Open periods are computed from the live data each time
+  they are shown, so a page view never writes, and the database holds no open row that could
+  drift. The periods shown run from the first one to the one holding today, in order.
+- **First period.** With an `OPENING` line: the half-month of its date (activity before it is
+  the spreadsheet's and is not read). Otherwise: the earliest closed period, else the earliest
+  activity (a sale, a line, a payment).
+- **The close also needs the period to be over** (its last day before today). Then a
+  `CORRECTION` dated today always lands after every closed period.
+- **The close locks the report days of the period `FOR SHARE`** after the advisory lock, so no
+  day is reopened while the totals are read.
+- **Corrections also cover a sale created late** on a reopened day of a closed period
+  ("Vente #N ajoutée après la clôture ..."), not only edits, voids and moves; without that the
+  sale would be counted nowhere. A correction carries no request key: it is written in the
+  sale's own transaction, under the sale's own locks.
+- **Idempotency of decisions and closes.** The decisions table has no `request_key` column: a
+  decision is idempotent by its own unique key (one per line): the same decision by the same
+  person returns the stored one, anything else is "déjà traitée". The close stores its request
+  key in the snapshot: the same form posted twice returns the closed period.
+- **An `AJUSTEMENT` entered by a manager needs another manager** (four eyes); the accountant never
+  decides one.
+- **"Plus ancien impayé"** is first in, first out: what a closed period still lacks is its
+  closing balance minus every payment dated after its end; the oldest period still lacking
+  something is shown with its due date (end + 15 days) and its age in days since its end.
+- **Amounts are typed positive**: the kind gives the sign (`RFND` negative), and an
+  `AJUSTEMENT` has a direction (« le partenaire doit plus / moins »).
+- **Advisory lock** via `func.pg_advisory_xact_lock(_shared)` with bound, cast parameters (no
+  SQL text), so `tests/test_code_guards.py` needed no allowlist entry.
+
+Postgres-only (left to CI): the advisory locks and their interplay with the insert triggers, the
+`FOR SHARE` / `FOR UPDATE` row locks, the closed-period triggers raising `check_violation`
+(SQLite's triggers are exercised by a test on a migrated database), the `closing_reconciles`
+CHECK, and the row-level security of the four tables under the app role.
+
 ## 5. Owner's answers (27 Oct 2026)
 
 1. **Payments:** recorded by the **accountant and the manager only**. Agents do not record partner

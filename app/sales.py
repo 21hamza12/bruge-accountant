@@ -32,6 +32,9 @@ callers import everything from ``app.sales``.
   audit events carry ``fee_applied`` and ``fee_override``; ``overrides_for_day`` lists the active
   sales whose current version is an override. B9 routes them to accountant/manager
   validation (``app/approvals.py``; the approval itself is a ``day_acknowledgements`` row).
+* **Partner accounts** (phase F): a partner sale counted in a closed partner period that is
+  created, edited, voided or moved (to another day or partner) writes a ``CORRECTION`` line into
+  the open period, in the same transaction (``partner_book.correct_after_close``).
 * **Audit** events (ids and amounts only, never a name, phone or reason): ``sale_created``,
   ``sale_edited``, ``sale_voided``, ``sale_moved``; a refused attempt is ``permission_denied``
   with the action name only.
@@ -55,7 +58,7 @@ from sqlalchemy import Select, and_, delete, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from app import audit, days, partners, permissions
+from app import audit, days, partner_book, partners, permissions
 from app.accounts import AccountError, get_signs, is_unique_violation, normalize_staff_sign
 from app.clock import utc_now
 from app.errors import UserError
@@ -169,6 +172,10 @@ VOIDED = "Cette vente est annulée."
 UNCHANGED = "Aucune modification à enregistrer."
 SAME_DAY = "Cette vente est déjà sur cette journée."
 BAD_SOURCE = "Source de la vente invalide."
+CORRECTION_REFUSED = (
+    "La correction du compte du partenaire a été refusée : rechargez la page et recommencez. "
+    "Si le problème persiste, prévenez le gérant."
+)
 STALE = "La vente a été modifiée entre-temps : rechargez la page et recommencez."
 DUPLICATE_SEEN = "Le billet {doc} est déjà enregistré dans une autre vente."
 DUPLICATE_HIDDEN = "Le billet {doc} est déjà enregistré par un autre agent."
@@ -1004,6 +1011,39 @@ def _audit(
     )
 
 
+def _share(sale: ValidatedSale, day: date) -> partner_book.SaleShare | None:
+    """What this content of a sale puts on a partner's account (None for a direct sale)."""
+    if sale.ag_kind != AG_PARTNER or sale.partner_id is None:
+        return None
+    return partner_book.SaleShare(sale.partner_id, day, sale.pb)
+
+
+def _correct(
+    db: Session,
+    actor: User,
+    head: Sale,
+    before: partner_book.SaleShare | None,
+    after: partner_book.SaleShare | None,
+    action: str,
+    moment: datetime,
+    ip: str | None,
+) -> None:
+    """Phase F: a partner sale counted in a closed period that changes writes the difference
+    into the open period, in this same transaction (``partner_book.correct_after_close``). A
+    refusal by the database there is a French message (the caller rolls back), never a 500."""
+    try:
+        with db.begin_nested():
+            partner_book.correct_after_close(
+                db, actor, head.id, before, after, action=action, now=moment, ip=ip
+            )
+    except IntegrityError:
+        log.warning(
+            "partner correction refused by the database",
+            extra={"agency_id": actor.agency_id, "sale_id": head.id},
+        )
+        raise SaleError(CORRECTION_REFUSED) from None
+
+
 def _reload(db: Session, actor: User, head: Sale) -> SaleView:
     """The sale just written, as a view (``one()``: it is in this transaction)."""
     row = db.execute(_current(actor.agency_id).where(Sale.id == head.id)).one()
@@ -1116,6 +1156,9 @@ def create_sale(
             db.flush()
     except IntegrityError as exc:
         _raise_unique(db, actor, exc, docs, None)
+    _correct(
+        db, actor, head, None, _share(result, report_day.day), partner_book.ACTION_ADDED, moment, ip
+    )
     _audit(db, audit.SALE_CREATED, actor, head, 1, result, now=moment, ip=ip)
     if scope != ALL and chosen != today:
         log.info(
@@ -1208,6 +1251,11 @@ def edit_sale(
             db.flush()
     except IntegrityError as exc:
         _raise_unique(db, actor, exc, docs, head.id)
+    _correct(
+        db, actor, head,
+        _share(_validated_from(previous), report_day.day), _share(result, report_day.day),
+        partner_book.ACTION_EDITED, moment, ip,
+    )  # fmt: skip
     _audit(db, audit.SALE_EDITED, actor, head, number, result, now=moment, ip=ip)
     warnings = result.warnings + _sign_warnings(db, actor, scope, sign)
     return SaleResult(_reload(db, actor, head), warnings)
@@ -1228,7 +1276,7 @@ def void_sale(
     sale leaves the day's totals, its ticket numbers become free, its history stays.
     ``expected_version`` as for ``edit_sale``."""
     moment = now or utc_now()
-    head, _ = _access(db, actor, sale_id, moment.date(), lock=True)
+    head, report_day = _access(db, actor, sale_id, moment.date(), lock=True)
     _check_expected(head, expected_version)
     try:
         clean = required_reason(reason)
@@ -1263,6 +1311,9 @@ def void_sale(
             db.flush()
     except IntegrityError as exc:
         _raise_unique(db, actor, exc, [], head.id)
+    _correct(
+        db, actor, head, _share(kept, report_day.day), None, partner_book.ACTION_VOIDED, moment, ip
+    )
     _audit(db, audit.SALE_VOIDED, actor, head, number, kept, now=moment, ip=ip)
     return _reload(db, actor, head)
 
@@ -1351,6 +1402,10 @@ def move_sale_day(
             db.flush()
     except IntegrityError as exc:
         _raise_unique(db, actor, exc, [], locked.id)
+    _correct(
+        db, actor, locked, _share(kept, old_day.day), _share(kept, target.day),
+        partner_book.ACTION_MOVED, moment, ip,
+    )  # fmt: skip
     _audit(
         db, audit.SALE_MOVED, actor, locked, number, kept, now=moment, ip=ip,
         extra={"from_report_day_id": old_day.id, "to_report_day_id": target.id},

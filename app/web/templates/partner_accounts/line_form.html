@@ -1,0 +1,42 @@
+{% extends "base.html" %}
+{% block title %}{{ _("Ajouter une ligne") }}{% endblock %}
+{% block content %}
+<p><a class="card-link card-link-back" href="/partner-accounts/{{ acc.partner.id }}">{{ _("Retour au compte") }}</a></p>
+{% if error %}<p class="error-box" id="form-error" role="alert" tabindex="-1" autofocus>{{ error }}</p>{% endif %}
+<section class="card" aria-labelledby="line-title">
+  <h2 class="card-title" id="line-title">{{ _("Ajouter une ligne au compte de %(name)s", name=acc.partner.name) }}</h2>
+  <p class="help">{{ _("Un ajustement ne compte qu'une fois approuvé par le gérant (pas celui qui l'a saisi). Une ligne se date aujourd'hui ou dans la période ouverte ; jamais dans une période clôturée.") }}</p>
+  <form class="form" method="post" action="/partner-accounts/{{ acc.partner.id }}/lines">
+    {% include "_csrf.html" %}
+    <input type="hidden" name="request_key" value="{{ form.request_key }}">
+    <div class="field">
+      <label for="kind">{{ _("Type de ligne") }}</label>
+      <select id="kind" name="kind" required{% if error %} aria-describedby="form-error"{% endif %}>
+        {% for code, label in kinds %}<option value="{{ code }}"{% if form.kind == code %} selected{% endif %}>{{ label }}</option>{% endfor %}
+      </select>
+    </div>
+    <div class="field">
+      <label for="amount">{{ _("Montant (MRU)") }}</label>
+      <input id="amount" name="amount" type="text" inputmode="decimal" required maxlength="64" value="{{ form.amount or '' }}"{% if error %} aria-describedby="form-error"{% endif %}>
+      <p class="help">{{ _("Toujours positif : un remboursement est déduit, un ADM ou des frais de changement sont ajoutés.") }}</p>
+    </div>
+    <div class="field">
+      <label for="direction">{{ _("Sens de l'ajustement (ajustement seulement)") }}</label>
+      <select id="direction" name="direction">
+        <option value="">-</option>
+        <option value="plus"{% if form.direction == "plus" %} selected{% endif %}>{{ _("Le partenaire doit plus") }}</option>
+        <option value="moins"{% if form.direction == "moins" %} selected{% endif %}>{{ _("Le partenaire doit moins") }}</option>
+      </select>
+    </div>
+    <div class="field">
+      <label for="entry_date">{{ _("Date") }}</label>
+      <input id="entry_date" name="entry_date" type="date" required max="{{ today.isoformat() }}" value="{{ form.entry_date or today.isoformat() }}"{% if error %} aria-describedby="form-error"{% endif %}>
+    </div>
+    <div class="field">
+      <label for="reason">{{ _("Motif") }}</label>
+      <input id="reason" name="reason" type="text" required minlength="5" maxlength="500" value="{{ form.reason or '' }}"{% if error %} aria-describedby="form-error"{% endif %}>
+    </div>
+    <button class="btn btn-primary" type="submit">{{ _("Ajouter la ligne") }}</button>
+  </form>
+</section>
+{% endblock %}

@@ -1,0 +1,106 @@
+{% extends "base.html" %}
+{% block title %}{{ _("Période du %(label)s", label=period.label) }}{% endblock %}
+{% block content %}
+<p><a class="card-link card-link-back" href="/partner-accounts/{{ acc.partner.id }}">{{ _("Retour au compte") }}</a></p>
+{% if notice %}<p class="notice" id="already-notice" role="status">{{ notice }}</p>{% endif %}
+<section class="card" aria-labelledby="period-title">
+  <h2 class="card-title" id="period-title">{{ _("%(name)s : période du %(label)s", name=acc.partner.name, label=period.label) }}</h2>
+  {% if snapshot %}
+  <p><span class="pill pill-neutral">{{ _("Clôturée") }}</span>
+    {{ _("le %(date)s par %(who)s", date=period.row.closed_at | datetime_fr, who=names.get(period.row.closed_by_user_id, "-")) }}</p>
+  <div class="table-wrap" tabindex="0" role="region" aria-label="{{ _('Totaux de la période') }}">
+    <table class="table">
+      <tbody>
+        <tr><th scope="row">{{ _("Solde précédent") }}</th><td class="num" id="frozen-opening">{{ period.row.opening_balance | money_fr }}</td></tr>
+        <tr><th scope="row">{{ _("Ventes") }}</th><td class="num" id="frozen-sales">{{ period.row.sales_total | money_fr }}</td></tr>
+        <tr><th scope="row">{{ _("Lignes comptées") }}</th><td class="num" id="frozen-entries">{{ period.row.entries_total | money_fr }}</td></tr>
+        <tr><th scope="row">{{ _("Paiements") }}</th><td class="num" id="frozen-payments">{{ period.row.payments_total | money_fr }}</td></tr>
+        <tr><th scope="row">{{ _("Nouveau solde") }}</th><td class="num" id="frozen-closing"><strong>{{ period.row.closing_balance | money_fr }}</strong> {{ agency.currency }}</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3>{{ _("Ventes") }}</h3>
+  {% if snapshot.sales %}
+  <div class="table-wrap" tabindex="0" role="region" aria-label="{{ _('Ventes (défilement horizontal)') }}">
+    <table class="table">
+      <thead><tr><th scope="col">{{ _("Date") }}</th><th scope="col">{{ _("N° billet") }}</th><th scope="col">{{ _("Compagnie") }}</th><th scope="col">{{ _("Passager") }}</th><th scope="col">{{ _("PNR") }}</th><th scope="col">{{ _("Coût") }}</th></tr></thead>
+      <tbody>
+      {% for s in snapshot.sales %}{% for t in s.tickets %}
+        <tr>
+          <td>{{ as_date(s.day) | date_fr }}</td>
+          <td>{{ t.doc_number }}</td>
+          <td>{{ t.airline }}</td>
+          <td>{{ t.pax_name }}</td>
+          <td>{{ t.rloc }}</td>
+          <td class="num">{{ as_amount(t.total_doc) | money_fr }}</td>
+        </tr>
+      {% endfor %}
+        <tr><th scope="row" colspan="5">{{ _("Vente #%(id)s : frais %(fee)s par billet, P.T", id=s.sale_id, fee=as_amount(s.fee) | money_fr) }}</th><td class="num">{{ as_amount(s.pb) | money_fr }}</td></tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <p class="muted">{{ _("Aucune vente dans cette période.") }}</p>
+  {% endif %}
+
+  <h3>{{ _("Lignes") }}</h3>
+  {% if snapshot.entries %}
+  <div class="table-wrap" tabindex="0" role="region" aria-label="{{ _('Lignes (défilement horizontal)') }}">
+    <table class="table">
+      <thead><tr><th scope="col">{{ _("Date") }}</th><th scope="col">{{ _("Type") }}</th><th scope="col">{{ _("Montant") }}</th><th scope="col">{{ _("Motif") }}</th><th scope="col">{{ _("Compté") }}</th></tr></thead>
+      <tbody>
+      {% for e in snapshot.entries %}
+        <tr>
+          <td>{{ as_date(e.date) | date_fr }}</td>
+          <td>{{ kinds.get(e.kind, e.kind) }}</td>
+          <td class="num">{{ as_amount(e.amount) | money_fr }}</td>
+          <td>{{ e.reason }}</td>
+          <td>{% if e.counted %}{{ _("oui") }}{% else %}{{ _("non (rejetée)") }}{% endif %}</td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <p class="muted">{{ _("Aucune ligne.") }}</p>
+  {% endif %}
+
+  <h3>{{ _("Paiements") }}</h3>
+  {% if snapshot.payments %}
+  <div class="table-wrap" tabindex="0" role="region" aria-label="{{ _('Paiements (défilement horizontal)') }}">
+    <table class="table">
+      <thead><tr><th scope="col">{{ _("Date") }}</th><th scope="col">{{ _("Montant") }}</th><th scope="col">{{ _("Mode") }}</th><th scope="col">{{ _("Référence") }}</th><th scope="col">{{ _("Reçu par") }}</th></tr></thead>
+      <tbody>
+      {% for pay in snapshot.payments %}
+        <tr>
+          <td>{{ as_date(pay.date) | date_fr }}</td>
+          <td class="num">{{ as_amount(pay.amount) | money_fr }}</td>
+          <td>{{ methods.get(pay.method, pay.method) }}</td>
+          <td>{{ pay.reference or "-" }}</td>
+          <td>{{ names.get(pay.received_by_user_id, "-") }}</td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <p class="muted">{{ _("Aucun paiement.") }}</p>
+  {% endif %}
+  {% else %}
+  <p><span class="pill pill-green">{{ _("Ouverte") }}</span> {{ _("Les totaux sont calculés maintenant et changent jusqu'à la clôture.") }}</p>
+  <div class="table-wrap" tabindex="0" role="region" aria-label="{{ _('Totaux de la période') }}">
+    <table class="table">
+      <tbody>
+        <tr><th scope="row">{{ _("Solde précédent") }}</th><td class="num">{{ period.opening | money_fr }}</td></tr>
+        <tr><th scope="row">{{ _("Ventes") }}</th><td class="num">{{ period.totals.sales_total | money_fr }}</td></tr>
+        <tr><th scope="row">{{ _("Lignes comptées") }}</th><td class="num">{{ period.totals.entries_total | money_fr }}</td></tr>
+        <tr><th scope="row">{{ _("Paiements") }}</th><td class="num">{{ period.totals.payments_total | money_fr }}</td></tr>
+        <tr><th scope="row">{{ _("Nouveau solde") }}</th><td class="num"><strong>{{ period.closing | money_fr }}</strong> {{ agency.currency }}</td></tr>
+      </tbody>
+    </table>
+  </div>
+  {% endif %}
+</section>
+{% endblock %}

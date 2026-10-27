@@ -1,0 +1,155 @@
+{% extends "base.html" %}
+{% block title %}{{ _("Compte de %(name)s", name=acc.partner.name) }}{% endblock %}
+{% block content %}
+<p><a class="card-link card-link-back" href="/partner-accounts">{{ _("Retour aux comptes partenaires") }}</a></p>
+{% if error %}<p class="error-box" id="form-error" role="alert" tabindex="-1" autofocus>{{ error }}</p>{% endif %}
+{% if notice %}<p class="notice" id="already-notice" role="status">{{ notice }}</p>{% endif %}
+
+<section class="card" aria-labelledby="who-title">
+  <h2 class="card-title" id="who-title">{{ _("Compte de %(name)s", name=acc.partner.name) }}</h2>
+  <p>{{ _("Solde actuel") }} : <strong class="num" id="balance">{{ acc.balance | money_fr }}</strong> {{ agency.currency }}
+    <span class="muted">{{ _("(positif : le partenaire doit à l'agence)") }}</span></p>
+  {% if can_write %}
+  <div class="actions">
+    <a class="btn btn-primary" href="/partner-accounts/{{ acc.partner.id }}/lines/new">{{ _("Ajouter une ligne") }}</a>
+    <a class="btn" href="/partner-accounts/{{ acc.partner.id }}/payments/new">{{ _("Enregistrer un paiement") }}</a>
+    {% if current and current.end < today %}<a class="btn" href="/partner-accounts/{{ acc.partner.id }}/periods/{{ current.start.isoformat() }}/close">{{ _("Clôturer la période") }}</a>{% endif %}
+  </div>
+  {% endif %}
+</section>
+
+{% for p in acc.newest_first if not p.closed %}
+<section class="card" aria-labelledby="open-{{ p.start.isoformat() }}">
+  <h2 class="card-title" id="open-{{ p.start.isoformat() }}">{{ _("Période ouverte du %(label)s", label=p.label) }}</h2>
+  <div class="table-wrap" tabindex="0" role="region" aria-label="{{ _('Totaux de la période') }}">
+    <table class="table">
+      <tbody>
+        <tr><th scope="row">{{ _("Solde précédent") }}</th><td class="num">{{ p.opening | money_fr }}</td></tr>
+        <tr><th scope="row">{{ _("Ventes") }}</th><td class="num">{{ p.totals.sales_total | money_fr }}</td></tr>
+        <tr><th scope="row">{{ _("Lignes comptées") }}</th><td class="num">{{ p.totals.entries_total | money_fr }}</td></tr>
+        <tr><th scope="row">{{ _("Paiements") }}</th><td class="num">{{ p.totals.payments_total | money_fr }}</td></tr>
+        <tr><th scope="row">{{ _("Nouveau solde") }}</th><td class="num"><strong>{{ p.closing | money_fr }}</strong></td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3>{{ _("Ventes") }}</h3>
+  {% if p.sales %}
+  <div class="table-wrap" tabindex="0" role="region" aria-label="{{ _('Ventes de la période (défilement horizontal)') }}">
+    <table class="table">
+      <thead><tr><th scope="col">{{ _("Date") }}</th><th scope="col">{{ _("Vente") }}</th><th scope="col">{{ _("Billets") }}</th><th scope="col">{{ _("Coût") }}</th><th scope="col">{{ _("Frais") }}</th><th scope="col">{{ _("P.T") }}</th></tr></thead>
+      <tbody>
+      {% for line in p.sales %}
+        <tr>
+          <td>{{ line.day | date_fr }}</td>
+          <td><a href="/sales/{{ line.sale_id }}">#{{ line.sale_id }}</a></td>
+          <td>{% for t in line.tickets %}{{ t.doc_number }}{% if not loop.last %}, {% endif %}{% endfor %}</td>
+          <td class="num">{{ line.cost_total | money_fr }}</td>
+          <td class="num">{{ line.fee | money_fr }}</td>
+          <td class="num">{{ line.pb | money_fr }}</td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <p class="muted">{{ _("Aucune vente dans cette période.") }}</p>
+  {% endif %}
+
+  <h3>{{ _("Lignes") }}</h3>
+  {% if p.entries %}
+  <div class="table-wrap" tabindex="0" role="region" aria-label="{{ _('Lignes (défilement horizontal)') }}">
+    <table class="table">
+      <thead><tr><th scope="col">{{ _("Date") }}</th><th scope="col">{{ _("Type") }}</th><th scope="col">{{ _("Montant") }}</th><th scope="col">{{ _("Motif") }}</th><th scope="col">{{ _("Saisi par") }}</th><th scope="col">{{ _("État") }}</th></tr></thead>
+      <tbody>
+      {% for e in p.entries %}
+        <tr>
+          <td>{{ e.entry.entry_date | date_fr }}</td>
+          <td>{{ kinds.get(e.entry.kind, e.entry.kind) }}</td>
+          <td class="num">{{ e.entry.amount | money_fr }}</td>
+          <td>{{ e.entry.reason }}</td>
+          <td>{{ names.get(e.entry.created_by_user_id, "-") }}</td>
+          <td>
+            {% if e.pending %}
+              {% if e.entry.kind == "AJUSTEMENT" %}<span class="pill pill-amber">{{ _("à approuver") }}</span>
+              <span class="help">{{ _("Décision : un gérant autre que la personne qui l'a saisie.") }}</span>{% else %}<span class="pill pill-amber">{{ _("à confirmer") }}</span>
+              <span class="help">{{ _("Décision : le comptable ou le gérant, après vérification du montant.") }}</span>{% endif %}
+              {% set mine = e.entry.created_by_user_id == me.id %}
+              {% if can_write and (e.entry.kind != "AJUSTEMENT" or (can_approve and not mine)) %}
+              <form class="inline-form" method="post" action="/partner-accounts/{{ acc.partner.id }}/lines/{{ e.entry.id }}/decision">
+                {% include "_csrf.html" %}
+                <input type="hidden" name="request_key" value="{{ request_key }}">
+                <input type="hidden" name="decision" value="{{ 'approve' if e.entry.kind == 'AJUSTEMENT' else 'confirm' }}">
+                <button class="btn btn-primary" type="submit">{% if e.entry.kind == "AJUSTEMENT" %}{{ _("Approuver") }}{% else %}{{ _("Confirmer") }}{% endif %}<span class="visually-hidden"> {{ _("la ligne du %(date)s", date=e.entry.entry_date | date_fr) }}</span></button>
+              </form>
+              <form class="inline-form" method="post" action="/partner-accounts/{{ acc.partner.id }}/lines/{{ e.entry.id }}/decision">
+                {% include "_csrf.html" %}
+                <input type="hidden" name="request_key" value="{{ request_key }}">
+                <input type="hidden" name="decision" value="reject">
+                <label class="visually-hidden" for="note-{{ e.entry.id }}">{{ _("Motif du rejet") }}</label>
+                <input id="note-{{ e.entry.id }}" name="note" type="text" maxlength="500" required>
+                <button class="btn btn-danger" type="submit">{{ _("Rejeter") }}<span class="visually-hidden"> {{ _("la ligne du %(date)s", date=e.entry.entry_date | date_fr) }}</span></button>
+              </form>
+              {% elif e.entry.kind == "AJUSTEMENT" and mine %}
+              <span class="muted">{{ _("Un autre gérant doit l'approuver.") }}</span>
+              {% endif %}
+            {% elif e.decision and e.decision.decision == "reject" %}<span class="pill pill-neutral">{{ _("rejetée") }}</span>
+            {% elif e.decision %}<span class="pill pill-green">{{ _("validée") }}</span>
+            {% else %}<span class="pill pill-green">{{ _("comptée") }}</span>{% endif %}
+          </td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <p class="muted">{{ _("Aucune ligne.") }}</p>
+  {% endif %}
+
+  <h3>{{ _("Paiements") }}</h3>
+  {% if p.payments %}
+  <div class="table-wrap" tabindex="0" role="region" aria-label="{{ _('Paiements (défilement horizontal)') }}">
+    <table class="table">
+      <thead><tr><th scope="col">{{ _("Date") }}</th><th scope="col">{{ _("Montant") }}</th><th scope="col">{{ _("Mode") }}</th><th scope="col">{{ _("Référence") }}</th><th scope="col">{{ _("Reçu par") }}</th></tr></thead>
+      <tbody>
+      {% for pay in p.payments %}
+        <tr>
+          <td>{{ pay.paid_on | date_fr }}</td>
+          <td class="num">{{ pay.amount | money_fr }}</td>
+          <td>{{ methods.get(pay.method, pay.method) }}</td>
+          <td>{{ pay.reference or "-" }}</td>
+          <td>{{ names.get(pay.received_by_user_id, "-") }}</td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <p class="muted">{{ _("Aucun paiement.") }}</p>
+  {% endif %}
+</section>
+{% endfor %}
+
+<section class="card" aria-labelledby="periods-title">
+  <h2 class="card-title" id="periods-title">{{ _("Périodes") }}</h2>
+  {% if acc.periods %}
+  <div class="table-wrap" tabindex="0" role="region" aria-label="{{ _('Périodes (défilement horizontal)') }}">
+    <table class="table" aria-labelledby="periods-title">
+      <thead><tr><th scope="col">{{ _("Période") }}</th><th scope="col">{{ _("État") }}</th><th scope="col">{{ _("Solde précédent") }}</th><th scope="col">{{ _("Nouveau solde") }}</th></tr></thead>
+      <tbody>
+      {% for p in acc.newest_first %}
+        <tr>
+          <td><a href="/partner-accounts/{{ acc.partner.id }}/periods/{{ p.start.isoformat() }}">{{ _("du %(label)s", label=p.label) }}</a></td>
+          <td>{% if p.closed %}<span class="pill pill-neutral">{{ _("Clôturée") }}</span>{% else %}<span class="pill pill-green">{{ _("Ouverte") }}</span>{% if p.pending %} <span class="pill pill-amber">{{ ngettext("%(num)d ligne en attente", "%(num)d lignes en attente", p.pending | length) }}</span>{% endif %}{% endif %}</td>
+          <td class="num">{{ p.opening | money_fr }}</td>
+          <td class="num">{{ p.closing | money_fr }}</td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <p class="muted">{{ _("Aucune activité pour ce partenaire.") }}</p>
+  {% endif %}
+</section>
+{% endblock %}

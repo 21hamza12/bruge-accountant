@@ -73,6 +73,9 @@
           <span class="nav-label">{{ icon("partners") }}{{ _("Partenaires") }}</span>
           {% if shell.pending_aliases %}<span class="badge">{{ shell.pending_aliases }}<span class="visually-hidden"> {{ _("noms d'agence à valider") }}</span></span>{% endif %}
         </a>
+        <a class="nav-link" href="/partner-accounts"{% if shell.active == "partner_accounts" %} aria-current="page"{% endif %}>
+          <span class="nav-label">{{ icon("cash") }}{{ _("Comptes partenaires") }}</span>
+        </a>
         {% endif %}
         {% if shell.can_manage_staff %}
         <a class="nav-link" href="/staff"{% if shell.active == "staff" %} aria-current="page"{% endif %}>

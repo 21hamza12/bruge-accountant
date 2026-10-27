@@ -38,6 +38,7 @@ MATRIX: dict[str, frozenset[str]] = {
     "can_manage_staff": frozenset({ROLE_MANAGER}),
     "can_manage_partners": frozenset({ROLE_MANAGER, ROLE_ACCOUNTANT}),
     "can_validate_money": frozenset({ROLE_MANAGER, ROLE_ACCOUNTANT}),
+    "can_approve_partner_adjustment": frozenset({ROLE_MANAGER}),
     "can_close_day": frozenset({ROLE_MANAGER, ROLE_ACCOUNTANT}),
     "can_reopen_day": frozenset({ROLE_MANAGER}),
     "can_edit_any_entry": frozenset({ROLE_MANAGER, ROLE_ACCOUNTANT}),

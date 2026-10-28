@@ -5,6 +5,10 @@
 {% if notice %}<p class="notice" id="already-notice" role="status">{{ notice }}</p>{% endif %}
 <section class="card" aria-labelledby="period-title">
   <h2 class="card-title" id="period-title">{{ _("%(name)s : période du %(label)s", name=acc.partner.name, label=period.label) }}</h2>
+  <div class="actions">
+    <a class="btn" href="/partner-accounts/{{ acc.partner.id }}/periods/{{ period.start.isoformat() }}/statement.xlsx" download>{{ _("Télécharger le relevé (Excel)") }}</a>
+  </div>
+  {% if not snapshot %}<p class="help">{{ _("La période est ouverte : le relevé est marqué « PROVISOIRE ».") }}</p>{% endif %}
   {% if snapshot %}
   <p><span class="pill pill-neutral">{{ _("Clôturée") }}</span>
     {{ _("le %(date)s par %(who)s", date=period.row.closed_at | datetime_fr, who=names.get(period.row.closed_by_user_id, "-")) }}</p>

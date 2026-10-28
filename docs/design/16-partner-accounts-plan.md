@@ -171,6 +171,105 @@ whole flow as the application role (close, line, decision, payment, sale correct
 trigger's refusal shown in French, and a two-session test where a close waits for a line in
 flight (shared advisory lock held by the insert trigger) and counts it.
 
+### F3 as built (27 Oct 2026)
+
+Service `app/partner_statement.py` (the workbook), `app/agency_details.py` (the header), pages
+`app/web/routes/partner_statements.py` (`GET /partner-accounts/{id}/periods/{start}/statement.xlsx`)
+and `app/web/routes/agency_details.py` (`/agency-details`), migration 0018. Tests:
+`tests/test_partner_statement.py`, `tests/test_agency_details.py`, `tests/test_migration_0018.py`,
+and the `agency_details` cases of `tests/test_rls.py` (Postgres, CI). Choices made where the plan
+left room:
+
+- **Agency details in their own table** (`agency_details`, one row per agency, migration 0018):
+  the app role only reads `agencies`. RLS ENABLE + FORCE with `tenant_read`, `tenant_insert` and
+  `tenant_update`; grants SELECT, INSERT, UPDATE; never deleted (no policy, no grant; a SQLite
+  trigger). Every field is optional with a length CHECK. The values are made-up placeholders
+  until the owner supplies them (answer 5 is still open); the page works without any.
+- **Who:** the manager edits, the accountant reads (« Seul le gérant modifie ces
+  coordonnées. »), staff get a 403. The sidebar link « Coordonnées de l'agence » is for both.
+  Phones are checked loosely (digits, `+ ( ) . -` and spaces, several numbers separated by
+  `/ , ;`, 8 to 15 digits each); Bankily / Masrvi / Sedad 4 to 15 digits; the e-mail by its
+  shape only. The audit event `agency_details_saved` lists the names of the fields that changed,
+  never a value; a save that changes nothing writes nothing (« Aucune modification »). The row
+  keeps the `request_key` of its last save: the same form posted twice saves once, the same key
+  with other values is refused and the form comes back with a fresh key.
+- **The header** is built from the details: French name (else `agencies.name`), Arabic name,
+  address, « Tél. · E-mail », NIF, « Banque · RIB », « Bankily · Masrvi · Sedad »; a missing detail
+  is left out. Each line starts with its label, so a typed value can only start a cell on the
+  name, Arabic name and address lines, and those are neutralised like any typed text.
+- **A closed statement reads only its frozen row:** the totals from the columns written by the
+  close, the lines from the snapshot (`from_snapshot`); the snapshot must add up to the frozen
+  totals (Σ P.T = sales, Σ counted lines = lines, Σ payments = payments, and the balance
+  equation), otherwise the download fails rather than print a wrong statement. A test edits the
+  sale after the close and checks every cell of the closed statement is unchanged, and another
+  replaces the live builder by one that fails. The partner's **name** is the current one (it is
+  not in the snapshot; it is not a figure).
+- **An open period** is built from the live account, title « RELEVÉ DE COMPTE PARTENAIRE —
+  PROVISOIRE », status « PROVISOIRE : période ouverte, les montants peuvent encore changer », and
+  `-PROVISOIRE` in the file name. A pending `AJUSTEMENT` is listed as « en attente (non comptée) »
+  and a rejected one as « rejetée (non comptée) ».
+- **Layout:** one sheet « Relevé »: agency header, title, partner, period, status, issue date,
+  currency; then the tickets (one row per ticket: date of the sale's day, ticket number, airline
+  name from `app/airlines.py`, passenger, PNR, cost, fee per ticket, P.T = cost + fee) with their
+  totals; the manual lines (date, kind, reason, state, signed amount); the payments (date,
+  method, reference, amount; not who received it); the summary (previous balance, tickets,
+  lines, payments, new balance), the meaning of the balance and the sign rule (« Solde positif :
+  le partenaire doit à l'agence ; solde négatif : l'agence doit au partenaire. »). Nothing is
+  frozen (see the review fixes below). Dates are
+  real date cells shown `dd/mm/yyyy` (the TJQ APRES writes them as text; a date cell sorts and
+  filters). Amounts are `Decimal` written as numbers, `#,##0.00`, like the TJQ APRES. Printed
+  landscape, one page wide.
+- **Formula injection:** every typed text goes through `export_apres.neutralise` and is forced to
+  a string cell (no new sanitiser was needed). A test writes a partner named `=HYPERLINK(...)`, a
+  reason `+1+1 frais` (a reason needs 5 characters, so not `+1+1` alone), a reference
+  `=cmd|...`, and agency details `=1+1` / `@SUM(...)`, and finds no formula cell and no `<f>` in
+  the sheet XML.
+- **Download:** manager and accountant (`permissions.can_export_partner_statement`); a partner of
+  another agency, or a period that does not exist, is a 404. Rate limit `PARTNER_STATEMENT_USER`
+  (60 an hour per user); saves of the details `AGENCY_DETAILS_WRITE_USER` (20 an hour). Audit
+  `partner_statement_downloaded` with `partner_id`, `period_start`, `period_id` (None when open)
+  and `provisional`. File `releve-partenaire-<id>-<start>-<end>[-PROVISOIRE].xlsx`;
+  `Content-Disposition: attachment`, `Cache-Control: no-store`, `nosniff`. The statement route
+  is its own router, so the F2 router keeps its exact list of routes.
+- **Buttons:** « Télécharger le relevé (Excel) » on every period page, and on the account page for
+  the first open period (the one the page shows); a closed period's statement is downloaded from
+  its own page.
+
+Review fixes (27 Oct, after the two reviews of 95df1af):
+
+- **A corrupt snapshot** (`StatementError`) is a deliberate **409** page with the French message,
+  never a 500 and never a file; one log line `partner statement refused` carries only
+  `partner_id` and `period_id`. Nothing is audited as downloaded.
+- **Invisible characters:** every text cell is cleaned by `clean_text` (bidi overrides,
+  zero-width characters, the byte-order mark) before `neutralise`, and `neutralise` (shared with
+  the TJQ APRES) now also skips U+2000–U+200B, U+3000 and U+FEFF before looking for a formula
+  start (`　=1+1` gets its apostrophe).
+- **No frozen pane:** freezing under the ticket header pinned the whole agency header (16 rows)
+  too. No print title rows either: the later sections (lines, payments) have other columns, so a
+  repeated ticket header would mislead on paper.
+- **One snapshot read:** `statement_for` reads the account with every snapshot deferred, then the
+  wanted period's snapshot alone (`select(PartnerPeriod.snapshot)` by agency and id); a test
+  counts one such statement with two closed periods.
+- **A closed statement is never « PROVISOIRE »:** a closed row without `closed_at`, or a closed
+  statement without its close date, is a `StatementError` (the 409 page).
+- **Phones and wallet numbers** are normalised before they are checked and stored: NFKC
+  (full-width digits, no-break spaces), Arabic-Indic and Extended Arabic-Indic digits to 0–9,
+  every dash (U+2010–U+2015, U+2212) to `-`. `٢٢ ٣٣ ٤٤ ٥٥` is stored as `22 33 44 55`.
+- **Concurrent first saves:** the save that loses the insert reads the row again; the same key
+  and the same values are a success (one audit event), anything else is « Les coordonnées ont
+  changé pendant l'enregistrement : rechargez la page. ».
+- **Non-text values** given to `clean_values` (a number, a list, bytes, a boolean) are refused
+  (« Texte invalide. »).
+- **Read limit** on `GET /agency-details`: `AGENCY_DETAILS_READ_USER`, 300 an hour per user.
+- **More exact-cell tests:** a sale of two tickets (fee × 2), an unknown airline (« Cie 999 »), a
+  counted refund and a rejected adjustment, a payments-only period opening on the previous closed
+  balance and ending negative, a zero balance (« Compte soldé. »), an empty period, and a partner
+  name starting with `=`.
+
+Postgres-only (left to CI): the row-level security, policies and grants of `agency_details` in
+both deployment modes (`tests/test_rls.py`: isolation, insert for another agency refused, update
+of the own row only, no DELETE, exact policies and grants).
+
 ## 5. Owner's answers (27 Oct 2026)
 
 1. **Payments:** recorded by the **accountant and the manager only**. Agents do not record partner

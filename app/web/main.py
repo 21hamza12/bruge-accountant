@@ -41,6 +41,7 @@ from app.web.errors import (
     validation_exception_handler,
 )
 from app.web.middleware import build_middleware
+from app.web.routes import agency_details as agency_details_routes
 from app.web.routes import apres_compare as apres_compare_routes
 from app.web.routes import auth as auth_routes
 from app.web.routes import chat as chat_routes
@@ -49,6 +50,7 @@ from app.web.routes import flag_actions as flag_action_routes
 from app.web.routes import flags as flag_routes
 from app.web.routes import home as home_routes
 from app.web.routes import partner_accounts as partner_account_routes
+from app.web.routes import partner_statements as partner_statement_routes
 from app.web.routes import partners as partner_routes
 from app.web.routes import password as password_routes
 from app.web.routes import sale_entry as sale_entry_routes
@@ -187,6 +189,8 @@ def create_app(
     app.include_router(password_routes.router)
     app.include_router(partner_routes.router)
     app.include_router(partner_account_routes.router)
+    app.include_router(partner_statement_routes.router)
+    app.include_router(agency_details_routes.router)
     app.include_router(sale_entry_routes.screenshot_router)  # before /sales/{sale_id}
     app.include_router(sale_entry_routes.router)  # first: /sales/new before /sales/{sale_id}
     app.include_router(sales_routes.router)

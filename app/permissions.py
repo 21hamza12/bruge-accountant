@@ -49,6 +49,21 @@ def can_see_profit(user: User) -> bool:
     return user.role in _MANAGER_ONLY
 
 
+def can_view_agency_details(user: User) -> bool:
+    """Read « Coordonnées de l'agence », printed on the partner statements (phase F3)."""
+    return user.role in _MANAGER_OR_ACCOUNTANT
+
+
+def can_edit_agency_details(user: User) -> bool:
+    """Change the agency's details: the manager only (the accountant reads them)."""
+    return user.role in _MANAGER_ONLY
+
+
+def can_export_partner_statement(user: User) -> bool:
+    """Download a partner statement (Excel, phase F3): manager and accountant."""
+    return user.role in _MANAGER_OR_ACCOUNTANT
+
+
 def can_close_day(user: User) -> bool:
     return user.role in _MANAGER_OR_ACCOUNTANT
 

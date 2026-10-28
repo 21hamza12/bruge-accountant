@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session
 from app.db import make_engine, make_session_factory
 from app.models import (
     AgencyAiSettings,
+    AgencyDetails,
     AiUsage,
     AuditEvent,
     ChatMessage,
@@ -78,7 +79,8 @@ def seed_tenant(
     """One agency with a row in every agency-scoped table, written through its own tenant
     (``ai=False`` leaves out the phase D tables, for a database older than migration 0014;
     ``chat=False`` leaves out the chat, older than 0015; it follows ``ai`` by default;
-    ``ledger=True`` adds the partner account tables of 0017, off by default so the tests of the
+    ``ledger=True`` adds the partner account tables of 0017 and the agency details of 0018, off
+    by default so the tests of the
     older migrations can keep seeding at their own revision)."""
     chat = ai if chat is None else chat
     engine = make_engine(owner_url)
@@ -328,6 +330,15 @@ def _seed_ledger(s: Session, agency_id: int, user_id: int, partner_id: int) -> t
             method="cash",
             received_by_user_id=user_id,
             recorded_by_user_id=user_id,
+        )
+    )
+    # Phase F3 (migration 0018): the agency's details printed on the statements.
+    s.add(
+        AgencyDetails(
+            agency_id=agency_id,
+            name_fr="Agence Test",
+            nif="00000000",
+            updated_by_user_id=user_id,
         )
     )
     s.commit()

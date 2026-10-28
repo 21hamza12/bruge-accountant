@@ -40,7 +40,7 @@
   <dl class="kv">
     <dt>{{ _("Coût total") }}</dt><dd class="num">{{ v.cost_total | money_fr }} {{ agency.currency }}</dd>
     <dt>{{ _("P.B") }}</dt><dd class="num">{{ v.pb | money_fr }} {{ agency.currency }}</dd>
-    <dt>{{ _("Profit") }}</dt><dd class="num">{{ profit | money_fr }} {{ agency.currency }}</dd>
+    {% if profit is not none %}<dt>{{ _("Profit") }}</dt><dd class="num">{{ profit | money_fr }} {{ agency.currency }}</dd>{% endif %}
     <dt>{{ _("AG") }}</dt><dd>{{ v.ag_label }}</dd>
     {% if v.fee_applied is not none %}
     <dt>{{ _("Frais du partenaire (par billet)") }}</dt><dd class="num">{{ v.fee_applied | money_fr }} {{ agency.currency }}{% if v.fee_override_reason %} · {{ _("tarif particulier") }} : {{ v.fee_override_reason }}{% endif %}</dd>

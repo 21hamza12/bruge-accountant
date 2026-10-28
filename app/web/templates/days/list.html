@@ -15,7 +15,7 @@
           <th scope="col" class="col-end">{{ _("Billets") }}</th>
           <th scope="col" class="col-end">{{ _("Coût") }}</th>
           <th scope="col" class="col-end">{{ _("P.B") }}</th>
-          <th scope="col" class="col-end">{{ _("Profit") }}</th>
+          {% if show_profit %}<th scope="col" class="col-end">{{ _("Profit") }}</th>{% endif %}
           <th scope="col">{{ _("Rapport Amadeus") }}</th>
         </tr>
       </thead>
@@ -28,7 +28,7 @@
           <td class="num col-end">{{ row.r.tickets }}</td>
           <td class="num col-end">{{ row.r.cost | money_fr }}</td>
           <td class="num col-end">{{ row.r.revenue | money_fr }}</td>
-          <td class="num col-end">{{ row.r.profit | money_fr }}</td>
+          {% if show_profit %}<td class="num col-end">{{ row.r.profit | money_fr }}</td>{% endif %}
           <td>{% if row.r.report_received %}{{ _("Reçu") }}{% else %}<span class="muted">{{ _("Non reçu") }}</span>{% endif %}</td>
         </tr>
       {% endfor %}

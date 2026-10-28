@@ -4,8 +4,9 @@ Read-only. Staff only ever get the figures and lines of their own linked signs
 (``sales.visible_signs``) and, about the Amadeus report, only whether one was received: the file
 name, time, uploader and line counts are agency-wide and go to manager and accountant only
 (``permissions.sees_all_signs``), as do the day's events. The gate is here in Python: the data is
-not even read for staff. Everything is computed with ``Decimal``. The comparison with the Amadeus
-report is not here (B8).
+not even read for staff. The profit is the manager's alone (``permissions.can_see_profit``): for
+anybody else it is not computed (None). Everything is computed with ``Decimal``. The comparison
+with the Amadeus report is not here (B8).
 """
 
 from __future__ import annotations
@@ -49,7 +50,7 @@ class DayRow:
     tickets: int
     cost: Decimal
     revenue: Decimal
-    profit: Decimal
+    profit: Decimal | None  # None for whoever may not see it (``permissions.can_see_profit``)
     report_received: bool
 
 
@@ -60,7 +61,7 @@ class SignTotals:
     tickets: int
     cost: Decimal
     revenue: Decimal
-    profit: Decimal
+    profit: Decimal | None  # None for whoever may not see it (``permissions.can_see_profit``)
 
 
 @dataclass(frozen=True)
@@ -119,8 +120,9 @@ def recent_days(db: Session, actor: User, *, limit: int = LIST_DAYS) -> list[Day
         by_day[view.day].append(view)
     rows: list[DayRow] = []
     own_only = not permissions.sees_all_signs(actor)
+    with_profit = permissions.can_see_profit(actor)
     for day in window:
-        totals = sales.day_totals(by_day.get(day, ()))
+        totals = sales.day_totals(by_day.get(day, ()), with_profit=with_profit)
         if own_only and totals.sales == 0:
             continue
         rows.append(
@@ -138,14 +140,14 @@ def recent_days(db: Session, actor: User, *, limit: int = LIST_DAYS) -> list[Day
     return rows
 
 
-def sign_totals(views: Sequence[SaleView]) -> list[SignTotals]:
-    """Totals per staff sign, signs in alphabetical order."""
+def sign_totals(views: Sequence[SaleView], *, with_profit: bool) -> list[SignTotals]:
+    """Totals per staff sign, signs in alphabetical order (the profit only ``with_profit``)."""
     grouped: dict[str, list[SaleView]] = defaultdict(list)
     for view in views:
         grouped[view.staff_sign].append(view)
     out: list[SignTotals] = []
     for sign in sorted(grouped):
-        t = sales.day_totals(grouped[sign])
+        t = sales.day_totals(grouped[sign], with_profit=with_profit)
         out.append(SignTotals(sign, t.sales, t.tickets, t.cost, t.revenue, t.profit))
     return out
 

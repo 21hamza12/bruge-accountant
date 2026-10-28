@@ -244,7 +244,7 @@ class DayTotals:
     tickets: int
     revenue: Decimal  # sum of P.B
     cost: Decimal  # sum of TOTAL DOC
-    profit: Decimal  # revenue - cost
+    profit: Decimal | None  # revenue - cost; None when the reader may not see it (the manager may)
 
 
 @dataclass(frozen=True)
@@ -569,8 +569,9 @@ def pb_per_line(sale: _HasTicketLines) -> list[tuple[str, Decimal]]:
     return [(t.doc_number, sale.pb if n == 0 else ZERO) for n, t in enumerate(ordered)]
 
 
-def day_totals(views: Iterable[SaleView]) -> DayTotals:
-    """Totals of the active sales among ``views``; voided sales never count."""
+def day_totals(views: Iterable[SaleView], *, with_profit: bool = True) -> DayTotals:
+    """Totals of the active sales among ``views``; voided sales never count. ``with_profit=False``
+    (a reader who may not see it, ``permissions.can_see_profit``) leaves the profit out: None."""
     count = tickets = 0
     revenue = cost = ZERO
     for view in views:
@@ -580,7 +581,7 @@ def day_totals(views: Iterable[SaleView]) -> DayTotals:
         tickets += len(view.tickets)
         revenue += view.pb
         cost += sale_cost(view)
-    return DayTotals(count, tickets, revenue, cost, revenue - cost)
+    return DayTotals(count, tickets, revenue, cost, revenue - cost if with_profit else None)
 
 
 def ticket_rows(views: Iterable[SaleView]) -> list[TicketRow]:

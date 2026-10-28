@@ -24,6 +24,10 @@ set, CANX lines removed, in SEQ order; a totals row under the table (after one b
   of whose tickets is exported puts nothing (the comparison flags it). Each sale ticket is consumed
   once: a second report line with the same number is a "doublon" (marked, empty P.B / AG
   / CLT / AP).
+* The margin (P.B − TOTAL DOC, in the totals row) is the manager's alone (owner, 28 Oct 2026,
+  ``permissions.can_see_profit``). The stored file always holds it and is never rewritten; the
+  accountant's download of a stored version goes through ``without_margin`` and her draft is built
+  ``with_margin=False``.
 * Bounds: at most ``MAX_LINES`` lines, ``MAX_VERSIONS`` stored versions per day and
   ``MAX_BYTES`` per workbook (also a CHECK in migration 0012); beyond them closing is refused with
   a French message.
@@ -39,6 +43,7 @@ from __future__ import annotations
 
 import io
 import re
+import zipfile
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date, datetime
@@ -51,6 +56,7 @@ from openpyxl.cell.cell import ILLEGAL_CHARACTERS_RE, Cell
 from openpyxl.comments import Comment
 from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.worksheet.worksheet import Worksheet
+from openpyxl.writer.excel import ExcelWriter
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
@@ -90,6 +96,11 @@ DUPLICATE_NOTE: Final = "Doublon : ce numéro figure déjà plus haut dans le ra
 MONTHS: Final = ("JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC")
 UNMATCHED_NOTE: Final = "Aucune vente dans l'application pour ce billet."
 NO_REPORT: Final = "Aucun rapport Amadeus pour cette journée."
+TOTALS_LABEL: Final = "TOTAUX"
+MARGIN_LABEL: Final = "P.B − TOTAL DOC"
+# The date of every part of a workbook rewritten by ``without_margin``: a fixed one, so the same
+# stored version always downloads as the same bytes.
+_ZIP_DATE: Final = (1980, 1, 1, 0, 0, 0)
 
 Corrections = Mapping[tuple[str, str], tuple[str, str, str]]
 NO_CORRECTIONS: Final[Corrections] = {}
@@ -371,8 +382,13 @@ def _corrected(ws: Worksheet, row: int, col: int, change: tuple[str, str, str]) 
     _note(ws, row, col, f"Valeur Amadeus d'origine : {original}\nApprouvé par : {who}")
 
 
-def build_apres_xlsx(report: ApresReport, *, corrections: Corrections = NO_CORRECTIONS) -> bytes:
-    """The workbook of ``report`` as bytes. ``corrections`` is the B9 hook (see the module text)."""
+def build_apres_xlsx(
+    report: ApresReport, *, corrections: Corrections = NO_CORRECTIONS, with_margin: bool = True
+) -> bytes:
+    """The workbook of ``report`` as bytes. ``corrections`` is the B9 hook (see the module text).
+    ``with_margin=False`` leaves the margin (P.B − TOTAL DOC) out of the totals row: a draft for a
+    reader who may not see the profit (``permissions.can_see_profit``). What is stored at close
+    always has it; see ``without_margin`` for its download."""
     wb = openpyxl.Workbook()
     ws = wb.active
     assert ws is not None  # noqa: S101 - a new workbook always has an active sheet
@@ -416,12 +432,13 @@ def build_apres_xlsx(report: ApresReport, *, corrections: Corrections = NO_CORRE
             if change is not None:
                 _corrected(ws, row, col, change)
     total_row = FIRST_ROW + len(report.lines) + 1
-    ws.cell(row=total_row, column=1, value="TOTAUX").font = Font(bold=True)
+    ws.cell(row=total_row, column=1, value=TOTALS_LABEL).font = Font(bold=True)
     ws.cell(row=total_row, column=_COL_DOC, value=report.ticket_count)
     _money(ws, total_row, _COL_TOTAL, report.total_doc)
     _money(ws, total_row, _COL_PB, report.total_pb)
-    ws.cell(row=total_row, column=_COL_AG, value="P.B − TOTAL DOC")
-    _money(ws, total_row, _COL_CLT, report.total_margin)
+    if with_margin:
+        ws.cell(row=total_row, column=_COL_AG, value=MARGIN_LABEL)
+        _money(ws, total_row, _COL_CLT, report.total_margin)
     for col in range(1, len(HEADERS) + 1):
         ws.cell(row=total_row, column=col).font = Font(bold=True)
     ws.freeze_panes = f"A{FIRST_ROW}"
@@ -432,6 +449,42 @@ def build_apres_xlsx(report: ApresReport, *, corrections: Corrections = NO_CORRE
     buf = io.BytesIO()
     wb.save(buf)
     return buf.getvalue()
+
+
+def without_margin(content: bytes) -> bytes:
+    """A stored workbook (``build_apres_xlsx`` output, the app's own file) without the margin of its
+    totals row: label and amount emptied, every other cell, note, fill and width as stored, so the
+    12 compared columns read back the same. The stored row is not touched. Same bytes in, same
+    bytes out: the document properties are kept and every zip part gets one fixed date."""
+    wb = openpyxl.load_workbook(io.BytesIO(content))
+    ws = wb.active
+    assert ws is not None  # noqa: S101 - the app's own workbook always has its sheet
+    for row in range(ws.max_row, HEADER_ROW, -1):  # the totals row is the last one written
+        if ws.cell(row=row, column=1).value == TOTALS_LABEL:
+            ws.cell(row=row, column=_COL_AG).value = None
+            ws.cell(row=row, column=_COL_CLT).value = None
+            break
+    else:  # fail closed: never send a margin that could not be found and removed
+        raise ValueError("TJQ APRES: no totals row to strip the margin from")
+    written = io.BytesIO()
+    # ``ExcelWriter`` rather than ``wb.save``: saving stamps the "modified" date with the time now
+    ExcelWriter(wb, zipfile.ZipFile(written, "w", zipfile.ZIP_DEFLATED, allowZip64=True)).save()
+    out = io.BytesIO()
+    with (
+        zipfile.ZipFile(io.BytesIO(written.getvalue())) as src,
+        zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED, allowZip64=True) as dst,
+    ):
+        for item in src.infolist():
+            part = zipfile.ZipInfo(item.filename, date_time=_ZIP_DATE)
+            part.compress_type = zipfile.ZIP_DEFLATED
+            dst.writestr(part, src.read(item.filename))
+    return out.getvalue()
+
+
+def workbook_for(actor: User, content: bytes) -> bytes:
+    """A stored TJQ APRES as ``actor`` downloads it: as stored for whoever may see the profit (the
+    manager), without the margin row for anybody else (``permissions.can_see_profit``)."""
+    return content if permissions.can_see_profit(actor) else without_margin(content)
 
 
 # --- storage ------------------------------------------------------------------------------------
@@ -563,6 +616,8 @@ __all__ = [
     "amadeus_date",
     "apres_rows",
     "build_apres_xlsx",
+    "without_margin",
+    "workbook_for",
     "close_day_with_export",
     "corrections_for",
     "export_history",

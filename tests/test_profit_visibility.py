@@ -363,3 +363,15 @@ def test_removing_the_margin_from_a_stored_file_is_stable() -> None:
     assert Decimal(str(_sheet(once).cell(row=_totals_row(_sheet(once)), column=9).value)) == (
         Decimal(str(_sheet(full).cell(row=_totals_row(_sheet(full)), column=9).value))
     )
+
+
+def test_stripping_the_margin_fails_closed_without_a_totals_row() -> None:
+    # A workbook with no « TOTAUX » row: refuse rather than send a margin left in place.
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    assert ws is not None
+    ws.cell(row=1, column=1, value="TJQ APRES")
+    buf = io.BytesIO()
+    wb.save(buf)
+    with pytest.raises(ValueError, match="totals row"):
+        export_apres.without_margin(buf.getvalue())

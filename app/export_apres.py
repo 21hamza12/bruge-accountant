@@ -464,6 +464,8 @@ def without_margin(content: bytes) -> bytes:
             ws.cell(row=row, column=_COL_AG).value = None
             ws.cell(row=row, column=_COL_CLT).value = None
             break
+    else:  # fail closed: never send a margin that could not be found and removed
+        raise ValueError("TJQ APRES: no totals row to strip the margin from")
     written = io.BytesIO()
     # ``ExcelWriter`` rather than ``wb.save``: saving stamps the "modified" date with the time now
     ExcelWriter(wb, zipfile.ZipFile(written, "w", zipfile.ZIP_DEFLATED, allowZip64=True)).save()

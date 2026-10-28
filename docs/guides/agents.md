@@ -64,6 +64,9 @@ propose un partenaire : « C'est bien ce partenaire ? ». Vous devez toujours r�
 paiement), puis « **Confirmer la vente** ». **Rien n'est enregistré avant « Confirmer la vente ».**
 Une erreur ? « Modifier ».
 
+Le bénéfice (« Profit ») d'une vente ou d'une journée n'apparaît pas pour vous : seul le gérant le
+voit. Vous voyez toujours le coût, le P.B et les frais du partenaire.
+
 Corriger plus tard : « Mes ventes », ouvrez la vente, « Modifier la vente » ou « Annuler la vente »
 (avec un motif). Vous ne pouvez saisir ou modifier que les ventes **d'aujourd'hui** ; après, et
 pour une journée clôturée, demandez au gérant ou à la comptable.

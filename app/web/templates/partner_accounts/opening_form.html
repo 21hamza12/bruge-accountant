@@ -1,0 +1,78 @@
+{% extends "base.html" %}
+{% block title %}{{ _("Solde d'ouverture") }}{% endblock %}
+{% block content %}
+<p><a class="card-link card-link-back" href="/partner-accounts/{{ partner.id }}">{{ _("Retour au compte") }}</a></p>
+{% if error %}<p class="error-box" id="form-error" role="alert" tabindex="-1" autofocus>{{ error }}</p>{% endif %}
+{% if blocked %}
+<section class="card" aria-labelledby="opening-title">
+  <h2 class="card-title" id="opening-title">{{ _("Solde d'ouverture de %(name)s", name=partner.name) }}</h2>
+  {% if blocked != error %}<p class="notice" id="blocked-notice" role="status">{{ blocked }}</p>{% endif %}
+  <p class="help">{{ _("Aucun solde d'ouverture ne peut être saisi pour ce partenaire. Une erreur se corrige par un ajustement.") }}</p>
+</section>
+{% else %}
+{% if preview %}
+<section class="card" aria-labelledby="preview-title">
+  <h2 class="card-title" id="preview-title">{{ _("Ce qui ne sera plus compté") }}</h2>
+  <p id="preview-summary"><strong>{{ preview.summary(agency.currency) }}</strong>.</p>
+  {% if preview.lines %}
+  <h3>{{ _("Lignes") }}</h3>
+  <div class="table-wrap" tabindex="0" role="region" aria-label="{{ _('Lignes qui ne seront plus comptées') }}">
+    <table class="table">
+      <thead><tr><th scope="col">{{ _("Date") }}</th><th scope="col">{{ _("Type") }}</th><th scope="col">{{ _("Montant") }}</th><th scope="col">{{ _("État") }}</th></tr></thead>
+      <tbody>
+      {% for v in preview.lines %}
+        <tr><td>{{ v.entry.entry_date | date_fr }}</td><td>{{ kinds.get(v.entry.kind, v.entry.kind) }}</td><td class="num">{{ v.entry.amount | money_fr }}</td><td>{% if v.pending %}{{ _("en attente (non comptée)") }}{% elif v.counted %}{{ _("comptée") }}{% else %}{{ _("rejetée (non comptée)") }}{% endif %}</td></tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% endif %}
+  {% if preview.payments %}
+  <h3>{{ _("Paiements") }}</h3>
+  <div class="table-wrap" tabindex="0" role="region" aria-label="{{ _('Paiements qui ne seront plus comptés') }}">
+    <table class="table">
+      <thead><tr><th scope="col">{{ _("Date") }}</th><th scope="col">{{ _("Mode") }}</th><th scope="col">{{ _("Montant") }}</th></tr></thead>
+      <tbody>
+      {% for pay in preview.payments %}
+        <tr><td>{{ pay.paid_on | date_fr }}</td><td>{{ methods.get(pay.method, pay.method) }}</td><td class="num">{{ pay.amount | money_fr }}</td></tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% endif %}
+  {% if preview.sales %}
+  <h3>{{ _("Ventes") }}</h3>
+  <div class="table-wrap" tabindex="0" role="region" aria-label="{{ _('Ventes qui ne seront plus comptées') }}">
+    <table class="table">
+      <thead><tr><th scope="col">{{ _("Date") }}</th><th scope="col">{{ _("Vente") }}</th><th scope="col">{{ _("P.T") }}</th></tr></thead>
+      <tbody>
+      {% for line in preview.sales %}
+        <tr><td>{{ line.day | date_fr }}</td><td><a href="/sales/{{ line.sale_id }}">#{{ line.sale_id }}</a></td><td class="num">{{ line.pb | money_fr }}</td></tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% endif %}
+</section>
+{% endif %}
+<section class="card" aria-labelledby="opening-title">
+  <h2 class="card-title" id="opening-title">{{ _("Saisir le solde d'ouverture de %(name)s", name=partner.name) }}</h2>
+  <p class="help">{{ _("Saisi une seule fois par le gérant, il ne se modifie jamais : une erreur se corrige par un ajustement.") }}</p>
+  <form class="form" method="post" action="/partner-openings/{{ partner.id }}">
+    {% set pfx = "" %}
+    {% include "partner_accounts/_opening_fields.html" %}
+    <input type="hidden" name="back" value="{{ 'liste' if form.back == 'liste' else 'compte' }}">
+    {% if preview %}
+    <input type="hidden" name="acknowledged" value="{{ form.acknowledged }}">
+    <div class="field field-check">
+      <input id="verifie" name="verifie" type="checkbox" value="1" required aria-describedby="preview-summary">
+      <label for="verifie">{{ _("J'ai vérifié que ces éléments sont dans le solde du fichier Excel") }}</label>
+    </div>
+    <button class="btn btn-primary" type="submit">{{ _("Confirmer le solde d'ouverture") }}</button>
+    {% else %}
+    <button class="btn btn-primary" type="submit">{{ _("Enregistrer le solde d'ouverture") }}</button>
+    {% endif %}
+  </form>
+</section>
+{% endif %}
+{% endblock %}

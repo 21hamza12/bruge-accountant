@@ -316,6 +316,8 @@ def test_the_migrated_tables_match_the_models(db_url: str, tmp_path: Path, table
     model_engine.dispose()
     migrated, model = _shape(db_url, table), _shape(model_url, table)
     assert migrated["checks"] and migrated["foreign_keys"]
+    # The date floors came with 0019 (a trigger on SQLite): see tests/test_migration_0019.py.
+    model["checks"] = [c for c in model["checks"] if not str(c[0]).endswith("_floor")]
     for part in model:
         assert migrated[part] == model[part], part
 

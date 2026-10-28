@@ -90,6 +90,9 @@ PARTNER_PERIOD_CLOSE_USER = Limit("partner_period_close_user", 30, 3600)
 # Downloads of a partner statement (Excel, F3): each one reads a period and builds a workbook;
 # a few dozen a day is normal, 60 an hour for each user stops a script.
 PARTNER_STATEMENT_USER = Limit("partner_statement_user", 60, 3600)
+# Entering opening balances at the switch-over (F5): once per partner, a few dozen in one
+# sitting from the bulk page; 60 an hour for each user.
+PARTNER_OPENING_WRITE_USER = Limit("partner_opening_write_user", 60, 3600)
 # Saving the agency's details (F3): a handful of times a year; 20 an hour for each user.
 AGENCY_DETAILS_WRITE_USER = Limit("agency_details_write_user", 20, 3600)
 # Reading the agency's details: a person opens the page now and then; 300 an hour per user.

@@ -4,6 +4,12 @@
 <section class="card" aria-labelledby="accounts-title">
   <h2 class="card-title" id="accounts-title">{{ _("Comptes partenaires") }}</h2>
   <p class="help">{{ _("Un solde positif est ce que le partenaire doit à l'agence. Le solde d'une période clôturée est dû 15 jours après la fin de la période ; les comptes en retard sont en tête.") }}</p>
+  {% if can_check %}
+  <div class="actions">
+    {% if can_open %}<a class="btn" href="/partner-openings">{{ _("Soldes d'ouverture à saisir") }}</a>{% endif %}
+    <a class="btn" href="/partner-openings/check">{{ _("Vérification du passage") }}</a>
+  </div>
+  {% endif %}
   {% if rows %}
   <div class="table-wrap" tabindex="0" role="region" aria-label="{{ _('Comptes partenaires (défilement horizontal)') }}">
     <table class="table" aria-labelledby="accounts-title">

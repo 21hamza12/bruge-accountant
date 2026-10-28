@@ -24,6 +24,25 @@
   {% endif %}
 </section>
 
+{% if acc.opening_entry %}
+<section class="card" aria-labelledby="opening-title">
+  <h2 class="card-title" id="opening-title">{{ _("Solde d'ouverture") }}</h2>
+  <p>{{ _("Au %(date)s", date=acc.opening_entry.entry_date | date_fr) }} : <strong class="num" id="opening-amount">{{ acc.opening_entry.amount | money_fr }}</strong> {{ agency.currency }}
+    <span class="muted">({{ acc.opening_entry.reason }})</span></p>
+  <p class="help">{{ _("Saisi une seule fois, il ne se modifie pas : une erreur se corrige par un ajustement.") }}</p>
+</section>
+{% elif opening_form %}
+<section class="card" aria-labelledby="opening-title">
+  <h2 class="card-title" id="opening-title">{{ _("Saisir le solde d'ouverture") }}</h2>
+  <p class="help">{{ _("Le solde du fichier Excel du partenaire à la fin de la veille du passage. Saisi une seule fois, il ne se modifie jamais : une erreur se corrige par un ajustement.") }}</p>
+  <form class="form" method="post" action="/partner-openings/{{ acc.partner.id }}">
+    {% with pfx="opening-", form=opening_form, error=None %}{% include "partner_accounts/_opening_fields.html" %}{% endwith %}
+    <input type="hidden" name="back" value="compte">
+    <button class="btn btn-primary" type="submit">{{ _("Enregistrer le solde d'ouverture") }}</button>
+  </form>
+</section>
+{% endif %}
+
 {% for p in acc.newest_first if not p.closed %}
 <section class="card" aria-labelledby="open-{{ p.start.isoformat() }}">
   <h2 class="card-title" id="open-{{ p.start.isoformat() }}">{{ _("Période ouverte du %(label)s", label=p.label) }}</h2>

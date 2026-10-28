@@ -785,6 +785,19 @@ def account(
     return _assemble(partner, _load(db, agency_id, [partner.id], today, snapshots=snapshots), today)
 
 
+def accounts_of(
+    db: Session, agency_id: int, partners: Sequence[Partner], today: date
+) -> list[Account]:
+    """The accounts of several partners of ``agency_id``, in their order: a constant number of
+    queries (``_load``), never one per partner. A partner of another agency is a bug of the
+    caller: ValueError, never a mixed result."""
+    foreign = [p.id for p in partners if p.agency_id != agency_id]
+    if foreign:
+        raise ValueError(f"partners {foreign} are not of agency {agency_id}")
+    loaded = _load(db, agency_id, [p.id for p in partners], today)
+    return [_assemble(p, loaded, today) for p in partners]
+
+
 def get_account(
     db: Session, actor: User, partner_id: int, today: date, *, snapshots: bool = False
 ) -> Account:

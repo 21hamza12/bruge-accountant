@@ -75,11 +75,11 @@ def _triggers(url: str) -> set[str]:
         engine.dispose()
 
 
-def test_0018_follows_0017_and_is_the_head() -> None:
+def test_0018_follows_0017() -> None:
     script = ScriptDirectory.from_config(alembic_config("sqlite://"))
     revision = script.get_revision("0018")
     assert revision is not None and revision.down_revision == "0017"
-    assert script.get_heads() == ["0018"]
+    assert len(script.get_heads()) == 1  # 0019 is the head now: see test_migration_0019
 
 
 def test_grants_follow_the_design() -> None:

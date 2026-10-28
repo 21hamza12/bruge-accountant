@@ -374,3 +374,95 @@ Postgres-only (left to CI): the proposal's shared advisory lock, now taken after
 commit; the real deadlock and serialization refusals (the tests raise a simulated 40P01 / 40001);
 the unique request key under two truly concurrent comparisons; and the closed-period trigger
 refusing a proposal.
+
+### F5 as built (28 Oct 2026)
+
+Service `app/partner_opening.py`, pages `app/web/routes/partner_openings.py` (`/partner-openings`),
+the opening form on the account page (`app/web/routes/partner_accounts.py`,
+`partner_accounts/account.html`), and `partner_book.accounts_of` (several accounts in a constant
+number of queries). Tests: `tests/test_partner_opening.py`, `tests/test_partner_opening_pages.py`.
+No migration: migration 0017 already holds one `OPENING` per partner, append-only. Choices made
+where the plan left room:
+
+- **Who:** the manager enters (`permissions.can_enter_partner_opening`), the manager and the
+  accountant check (`can_check_partner_switchover`), staff get a 403. An inactive manager is
+  refused. A refusal is a `permission_denied` event.
+- **The form** is on the partner's account page while the partner has no `OPENING` and no closed
+  period (and alone at `GET /partner-openings/{id}/new`, where a refused post comes back with its
+  values). Fields: the switch-over date (default today, never in the future), the spreadsheet's
+  balance at the end of the day before with « Le partenaire doit à l'agence » (positive) or
+  « L'agence doit au partenaire » (negative), zero allowed and needing no sign, and a source note
+  (`app.reasons`, e.g. « solde du fichier Excel au 31/10 »). Once written the account page shows
+  it with « Saisi une seule fois, il ne se modifie pas : une erreur se corrige par un
+  ajustement. ».
+- **No rewriting of history:** refused when the partner already has an opening (« déjà un solde
+  d'ouverture … une erreur se corrige par un ajustement ») and when **any** period of the
+  partner is closed, whatever the date (« Une période de ce partenaire est déjà clôturée … »).
+  That covers "a line, payment or sale dated on or after the chosen date already counted in a
+  closed period": with no closed period nothing has been counted in one. The check runs under
+  the EXCLUSIVE advisory lock the close takes (Postgres), so no period closes and no line lands
+  between the check and the insert; the unique index and the closed-period trigger refuse the
+  same on their own, and a lost race is reported with the French message, not « Enregistrement
+  refusé ».
+- **What it leaves out:** as F2 decided, nothing dated before the switch-over day is counted.
+  Lines or payments already typed with an earlier date are not refused: they are in the
+  spreadsheet's balance, so leaving them out is right (the form says so).
+- **Double clicks:** the `request_key` is stored on the line; the same form posted again returns
+  it (« Ce solde d'ouverture était déjà enregistré »); the same key with another amount, sign,
+  date or partner, or a key used by another line, is refused and the form comes back with a
+  fresh key.
+- **Audit** `partner_opening_entered`: `partner_id`, `entry_id`, `amount`; never a name, the
+  date or the note. **Rate limit** `PARTNER_OPENING_WRITE_USER` (60 an hour per user); the
+  check page and its comparisons count against `PARTNER_ACCOUNT_READ_USER`. CSRF on the router.
+- **« Vérification du passage »** (`/partner-openings/check`): for each partner with an opening,
+  the opening (date and amount), the app's balance at the end of the half-month holding the
+  switch-over day (« provisoire » until that period is closed), and a field for the
+  spreadsheet's balance at that date with the same sign choice. The answer is « Identique » or
+  « Écart de X MRU » with which side counts more. The typed value is neither stored nor audited.
+- **Bulk entry** (`/partner-openings`, manager): every active partner without an opening, one
+  form each, posted one at a time (back to the list with « Solde d'ouverture enregistré. »).
+  Links from « Comptes partenaires ».
+
+Postgres-only (left to CI): the EXCLUSIVE advisory lock against a close or a line in flight, and
+the row-level security of the `OPENING` insert under the app role (the existing
+`partner_entries` policies; no new table, grant or policy).
+
+Review fixes (28 Oct, after the review of 8addfad):
+
+- **H1, a floor on the date.** The switch-over day may not be more than 400 days back
+  (`partner_opening.MAX_DAYS_BACK`; « … ne peut pas remonter à plus de 400 jours : au plus tôt
+  le … Vérifiez l'année. »), and the date inputs carry `min=`. Defence in depth, migration 0019:
+  no line (`partner_entries.entry_date`) or payment (`partner_payments.paid_on`) before
+  1 January 2020 (`models.PARTNER_DATE_FLOOR`). Postgres gets real CHECKs
+  (`ck_partner_entries_entry_date_floor`, `ck_partner_payments_paid_on_floor`), which validate
+  the rows already stored. The models carry the same CHECKs, so `create_all` databases have them
+  too. SQLite cannot add a CHECK without rebuilding the table (and with it 0017's triggers and
+  partial indexes), so a migrated SQLite database gets a BEFORE INSERT trigger per table
+  instead; rows are never updated anyway. No test data was dated before 2020; the 0017 "tables
+  match the models" test leaves out the two floor CHECKs (0019 adds them) and
+  `tests/test_migration_0019.py` tests both kinds.
+- **H2, nothing stops counting silently.** Two steps when the switch-over day leaves something
+  out. The first post counts, under the lock, every sale, line (pending ones included) and
+  payment dated before that day, and shows them with « N lignes, M paiements et K ventes datés
+  avant le JJ/MM ne seront plus comptés (effet net : X MRU) » (X is the change to the balance).
+  Nothing is written. The second post must tick « J'ai vérifié que ces éléments sont dans le
+  solde du fichier Excel » and carry the fingerprint of the list it saw (counts, sum and a
+  digest of the ids). The list is counted again under the lock at insert time: if it changed,
+  the post is refused (409) with the new list. With nothing to leave out, one post is enough.
+  The audit event adds `dropped_lines`, `dropped_payments`, `dropped_sales` and `dropped_sum`
+  (what those items counted for, before they stopped counting), numbers only.
+- **M1, a twin post under the lock.** The request key is looked up again once the lock is held,
+  before the "already opened" check. A twin that committed meanwhile is returned (the
+  « déjà enregistré » redirect), or refused as a reused key when its values differ.
+- **M2:** the date is required; a blank one is refused (« Saisissez la date du passage. »),
+  never defaulted by the server. The form still pre-fills today.
+- **L1:** a zero opening needs the « Solde nul » tick; the tick with a non-zero amount is refused.
+- **L3:** `GET /partner-openings/{id}/new` shows the reason instead of the form for a partner
+  that already has an opening, has a closed period or is inactive, and counts against
+  `PARTNER_ACCOUNT_READ_USER`. A post for an inactive partner is refused (409), and the account
+  page does not offer the form for one.
+- **L4:** `partner_book.accounts_of` raises `ValueError` for a partner of another agency.
+
+Postgres-only (left to CI, in addition to the above): the two CHECKs of 0019, including that
+adding them validates existing rows (`tests/test_migration_0019.py` runs against the server
+there, and `test_postgres_has_the_checks` checks their names).

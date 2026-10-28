@@ -1,0 +1,50 @@
+{% extends "base.html" %}
+{% block title %}{{ _("Vérification du passage") }}{% endblock %}
+{% block content %}
+<p><a class="card-link card-link-back" href="/partner-accounts">{{ _("Retour aux comptes partenaires") }}</a></p>
+{% if error %}<p class="error-box" id="form-error" role="alert" tabindex="-1" autofocus>{{ error }}</p>{% endif %}
+<section class="card" aria-labelledby="check-title">
+  <h2 class="card-title" id="check-title">{{ _("Vérification du passage") }}</h2>
+  <p class="help">{{ _("Pour chaque partenaire, le solde de l'application à la fin de la première quinzaine après le passage. Tapez le solde du fichier Excel du partenaire à la même date : l'écart s'affiche, rien n'est enregistré.") }}</p>
+  {% if can_open %}<p><a href="/partner-openings">{{ _("Soldes d'ouverture à saisir") }}</a></p>{% endif %}
+  {% if rows %}
+  {% for row in rows %}
+  <form class="form" method="post" action="/partner-openings/check" aria-labelledby="c-{{ row.partner.id }}">
+    <h3 id="c-{{ row.partner.id }}"><a href="/partner-accounts/{{ row.partner.id }}">{{ row.partner.name }}</a></h3>
+    <div class="table-wrap" tabindex="0" role="region" aria-label="{{ _('Passage de %(name)s', name=row.partner.name) }}">
+      <table class="table">
+        <tbody>
+          <tr><th scope="row">{{ _("Solde d'ouverture au %(date)s", date=row.opening.entry_date | date_fr) }}</th><td class="num">{{ row.opening.amount | money_fr }} {{ agency.currency }}</td></tr>
+          <tr><th scope="row">{{ _("Solde de l'application au %(date)s", date=row.end | date_fr) }}</th><td class="num"><strong>{{ row.app_balance | money_fr }}</strong> {{ agency.currency }}
+            {% if row.provisional %}<span class="pill pill-amber">{{ _("provisoire : période non clôturée") }}</span>{% else %}<span class="pill pill-neutral">{{ _("période clôturée") }}</span>{% endif %}</td></tr>
+          {% if result and result.partner_id == row.partner.id %}
+          <tr><th scope="row">{{ _("Solde du fichier au %(date)s", date=row.end | date_fr) }}</th><td class="num">{{ result.comparison.excel | money_fr }} {{ agency.currency }}</td></tr>
+          <tr><th scope="row">{{ _("Résultat") }}</th><td><strong id="result-{{ row.partner.id }}" role="status">{% if result.comparison.same %}<span class="pill pill-green">{{ result.comparison.label }}</span>{% else %}<span class="pill pill-red">{{ result.comparison.label }}</span>{% endif %}</strong> <span class="help">{{ result.comparison.explanation }}</span></td></tr>
+          {% endif %}
+        </tbody>
+      </table>
+    </div>
+    {% include "_csrf.html" %}
+    <input type="hidden" name="partner_id" value="{{ row.partner.id }}">
+    {% set typed = form if form and form.partner_id == row.partner.id | string else {} %}
+    <div class="field">
+      <label for="c{{ row.partner.id }}-amount">{{ _("Solde du fichier Excel au %(date)s (%(currency)s)", date=row.end | date_fr, currency=agency.currency) }}</label>
+      <input id="c{{ row.partner.id }}-amount" name="amount" type="text" inputmode="decimal" required maxlength="64" value="{{ typed.amount or '' }}">
+    </div>
+    <fieldset class="field">
+      <legend>{{ _("Qui doit à qui ?") }}</legend>
+      {% for code, label in signs %}
+      <div class="field field-check">
+        <input id="c{{ row.partner.id }}-sign-{{ code }}" name="sign" type="radio" value="{{ code }}"{% if typed.sign == code %} checked{% endif %}>
+        <label for="c{{ row.partner.id }}-sign-{{ code }}">{{ label }}</label>
+      </div>
+      {% endfor %}
+    </fieldset>
+    <button class="btn" type="submit">{{ _("Comparer") }}<span class="visually-hidden"> {{ _("le solde de %(name)s", name=row.partner.name) }}</span></button>
+  </form>
+  {% endfor %}
+  {% else %}
+  <p class="muted">{{ _("Aucun partenaire n'a encore de solde d'ouverture.") }}</p>
+  {% endif %}
+</section>
+{% endblock %}

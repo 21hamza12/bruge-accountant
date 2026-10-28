@@ -39,6 +39,7 @@ from app.partner_book import (
     PartnerAccountError,
     StaleRequestKey,
 )
+from app.partner_opening import NeedsConfirmation
 from app.web.csrf import csrf_protect
 from app.web.deps import AuthContext, client_ip, require_permission
 from app.web.pages import page
@@ -52,7 +53,18 @@ NO_STORE = {"Cache-Control": "no-store"}
 MAX_FIELD = 600  # characters kept of any posted text (the service checks the real limits)
 BACK_TO_LIST = "liste"
 SAVED = "Solde d'ouverture enregistré."
-FIELDS = ("switch_date", "amount", "sign", "reason", "request_key", "back")
+FIELDS = (
+    "switch_date",
+    "amount",
+    "sign",
+    "solde_nul",
+    "reason",
+    "request_key",
+    "back",
+    "verifie",
+    "acknowledged",
+)
+TICKED = "1"  # the value of a ticked checkbox (« Solde nul », « J'ai vérifié ... »)
 
 require_opener = require_permission(permissions.can_enter_partner_opening)
 require_checker = require_permission(permissions.can_check_partner_switchover)
@@ -84,6 +96,7 @@ def _common(db: Session, auth: AuthContext, clock: Clock) -> dict[str, Any]:
         **shell_context(db, auth, ACTIVE_PARTNER_ACCOUNTS),
         "signs": _signs(),
         "today": clock().date(),
+        "earliest": partner_opening.earliest_switch_day(clock().date()),
     }
 
 
@@ -185,8 +198,11 @@ def _form_page(
     *,
     form: dict[str, str] | None = None,
     error: str | None = None,
+    preview: partner_opening.Dropped | None = None,
     status_code: int = 200,
 ) -> Response:
+    """The form alone; with ``preview`` the list of what stops counting and the tick. For a
+    partner that cannot take an opening (inactive, opened, a period closed) the reason only."""
     partner = partner_book.get_partner(db, auth.user.agency_id, partner_id)
     if partner is None:
         raise HTTPException(status_code=404)
@@ -196,13 +212,20 @@ def _form_page(
         headers=NO_STORE,
         **_common(db, auth, clock),
         partner=partner,
+        blocked=partner_opening.refusal_for(db, partner),
         form=form or {"request_key": partner_book.new_request_key()},
         error=error,
+        preview=preview,
+        kinds=partner_book.KIND_LABELS,
+        methods=partner_book.METHOD_LABELS,
     )
 
 
 @router.get("/{partner_id}/new")
-def opening_new(partner_id: PartnerId, db: Db, clock: Now, auth: Opener) -> Response:
+def opening_new(
+    partner_id: PartnerId, request: Request, db: Db, clock: Now, auth: Opener
+) -> Response:
+    _read(db, request, auth, clock)
     return _form_page(db, auth, clock, partner_id)
 
 
@@ -222,10 +245,29 @@ def opening_add(
             switch_date=form["switch_date"],
             reason=form["reason"],
             request_key=form["request_key"],
+            zero_balance=form["solde_nul"] == TICKED,
+            confirmed=form["verifie"] == TICKED,
+            acknowledged=form["acknowledged"],
             now=clock(),
             ip=client_ip(request),
         )
         db.commit()
+    except NeedsConfirmation as asked:
+        # Nothing written: show the list; the same form comes back with its fingerprint and
+        # the tick to give. A list that changed since the one confirmed is a 409.
+        db.rollback()
+        form["acknowledged"] = asked.dropped.fingerprint
+        form["verifie"] = ""
+        return _form_page(
+            db,
+            auth,
+            clock,
+            partner_id,
+            form=form,
+            error=str(asked),
+            preview=asked.dropped,
+            status_code=409 if asked.changed else 200,
+        )
     except PartnerAccountError as exc:
         db.rollback()
         status = _status(exc)

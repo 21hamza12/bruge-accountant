@@ -150,6 +150,7 @@ def _account_page(
         request_key=partner_book.new_request_key(),
         opening_form=_opening_form(acc, auth.user),
         signs=list(partner_opening.SIGN_LABELS.items()),
+        earliest=partner_opening.earliest_switch_day(clock().date()),
         error=error,
         notice=notice,
     )
@@ -157,8 +158,10 @@ def _account_page(
 
 def _opening_form(acc: Account, user: User) -> dict[str, str] | None:
     """The empty opening-balance form (F5): for the manager, while the partner has no opening
-    and no closed period (``app.partner_opening`` refuses it otherwise)."""
+    and no closed period, for an active partner (``app.partner_opening`` refuses it otherwise)."""
     if acc.opening_entry is not None or any(p.closed for p in acc.periods):
+        return None
+    if not acc.partner.is_active:
         return None
     if not permissions.can_enter_partner_opening(user):
         return None

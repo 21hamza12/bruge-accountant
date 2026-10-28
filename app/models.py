@@ -1260,6 +1260,9 @@ MAX_PAYMENT_REFERENCE = 64
 # F2's idempotency key of a form post (a double click writes one line, not two).
 MAX_REQUEST_KEY = 64
 REQUEST_KEY_CHECK = f"request_key IS NULL OR length(request_key) BETWEEN 1 AND {MAX_REQUEST_KEY}"
+# No partner line or payment is dated before this day (migration 0019): a typed year such as 0001
+# or 2002 would make every account walk thousands of half-months, and nothing is ever deleted.
+PARTNER_DATE_FLOOR = "2020-01-01"
 # The only decisions a line can take: approve / reject an AJUSTEMENT, confirm / reject an RFND
 # proposed from Amadeus (``partner_entry_decisions`` copies the entry's kind and source).
 DECISION_FITS_ENTRY_CHECK = (
@@ -1474,6 +1477,7 @@ class PartnerEntry(Base):
         CheckConstraint("doc_number IS NULL OR kind = 'RFND'", name="doc_number_only_on_refund"),
         CheckConstraint(f"doc_number IS NULL OR ({DOC_NUMBER_CHECK})", name="doc_number_format"),
         CheckConstraint(REQUEST_KEY_CHECK, name="request_key_length"),
+        CheckConstraint(f"entry_date >= '{PARTNER_DATE_FLOOR}'", name="entry_date_floor"),
         # The lines of one partner over a date range (the account, the statement).
         Index("ix_partner_entries_agency_partner_date", "agency_id", "partner_id", "entry_date"),
         # The foreign key's column: the corrections written for a sale.
@@ -1595,6 +1599,7 @@ class PartnerPayment(Base):
             name="reference_length",
         ),
         CheckConstraint(REQUEST_KEY_CHECK, name="request_key_length"),
+        CheckConstraint(f"paid_on >= '{PARTNER_DATE_FLOOR}'", name="paid_on_floor"),
         # The payments of one partner over a date range (the account, the statement).
         Index("ix_partner_payments_agency_partner_paid_on", "agency_id", "partner_id", "paid_on"),
     )

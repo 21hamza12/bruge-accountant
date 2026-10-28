@@ -3,12 +3,16 @@
 <input type="hidden" name="request_key" value="{{ form.request_key }}">
 <div class="field">
   <label for="{{ pfx }}switch_date">{{ _("Date du passage") }}</label>
-  <input id="{{ pfx }}switch_date" name="switch_date" type="date" required max="{{ today.isoformat() }}" value="{{ form.switch_date or today.isoformat() }}"{% if error %} aria-describedby="form-error"{% endif %}>
-  <p class="help">{{ _("Le premier jour suivi dans l'application. Les ventes, lignes et paiements datés avant ce jour sont compris dans le solde du fichier : ils ne sont plus comptés.") }}</p>
+  <input id="{{ pfx }}switch_date" name="switch_date" type="date" required min="{{ earliest.isoformat() }}" max="{{ today.isoformat() }}" value="{{ form.switch_date or today.isoformat() }}"{% if error %} aria-describedby="form-error"{% endif %}>
+  <p class="help">{{ _("Le premier jour suivi dans l'application, au plus tôt le %(date)s. Les ventes, lignes et paiements datés avant ce jour sont compris dans le solde du fichier : ils ne sont plus comptés (la liste est montrée avant de confirmer).", date=earliest | date_fr) }}</p>
 </div>
 <div class="field">
   <label for="{{ pfx }}amount">{{ _("Solde du fichier à la fin de la veille (%(currency)s)", currency=agency.currency) }}</label>
-  <input id="{{ pfx }}amount" name="amount" type="text" inputmode="decimal" required maxlength="64" value="{{ form.amount or '' }}"{% if error %} aria-describedby="form-error"{% endif %}>
+  <input id="{{ pfx }}amount" name="amount" type="text" inputmode="decimal" maxlength="64" value="{{ form.amount or '' }}"{% if error %} aria-describedby="form-error"{% endif %}>
+</div>
+<div class="field field-check">
+  <input id="{{ pfx }}solde_nul" name="solde_nul" type="checkbox" value="1"{% if form.solde_nul == "1" %} checked{% endif %}>
+  <label for="{{ pfx }}solde_nul">{{ _("Solde nul : ni le partenaire ni l'agence ne doivent rien") }}</label>
 </div>
 <fieldset class="field">
   <legend>{{ _("Qui doit à qui ?") }}</legend>

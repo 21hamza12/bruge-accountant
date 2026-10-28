@@ -26,7 +26,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 from starlette.responses import RedirectResponse, Response
 
-from app import partner_book, permissions
+from app import partner_book, partner_opening, permissions
 from app.auth import ratelimit
 from app.clock import Clock
 from app.models import PARTNER_PAYMENT_METHODS, User
@@ -148,9 +148,21 @@ def _account_page(
         can_write=permissions.can_validate_money(auth.user),
         today=clock().date(),
         request_key=partner_book.new_request_key(),
+        opening_form=_opening_form(acc, auth.user),
+        signs=list(partner_opening.SIGN_LABELS.items()),
         error=error,
         notice=notice,
     )
+
+
+def _opening_form(acc: Account, user: User) -> dict[str, str] | None:
+    """The empty opening-balance form (F5): for the manager, while the partner has no opening
+    and no closed period (``app.partner_opening`` refuses it otherwise)."""
+    if acc.opening_entry is not None or any(p.closed for p in acc.periods):
+        return None
+    if not permissions.can_enter_partner_opening(user):
+        return None
+    return {"request_key": partner_book.new_request_key()}
 
 
 # What the page says when the same form was posted again (``?deja=...``): nothing new written.
@@ -158,6 +170,7 @@ ALREADY = {
     "ligne": "Cette ligne était déjà enregistrée : rien n'a été ajouté.",
     "paiement": "Ce paiement était déjà enregistré : rien n'a été ajouté.",
     "cloture": "Cette période était déjà clôturée par ce formulaire.",
+    "ouverture": "Ce solde d'ouverture était déjà enregistré : rien n'a été ajouté.",
 }
 
 
@@ -173,6 +186,8 @@ def account_list(request: Request, db: Db, clock: Now, auth: Reader) -> Response
         headers=NO_STORE,
         **shell_context(db, auth, ACTIVE_PARTNER_ACCOUNTS),
         rows=partner_book.account_rows(db, auth.user, clock().date()),
+        can_open=permissions.can_enter_partner_opening(auth.user),
+        can_check=permissions.can_check_partner_switchover(auth.user),
     )
 
 

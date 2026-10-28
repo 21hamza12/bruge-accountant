@@ -42,6 +42,8 @@ MATRIX: dict[str, frozenset[str]] = {
     "can_view_agency_details": frozenset({ROLE_MANAGER, ROLE_ACCOUNTANT}),
     "can_edit_agency_details": frozenset({ROLE_MANAGER}),
     "can_export_partner_statement": frozenset({ROLE_MANAGER, ROLE_ACCOUNTANT}),
+    "can_enter_partner_opening": frozenset({ROLE_MANAGER}),
+    "can_check_partner_switchover": frozenset({ROLE_MANAGER, ROLE_ACCOUNTANT}),
     "can_close_day": frozenset({ROLE_MANAGER, ROLE_ACCOUNTANT}),
     "can_reopen_day": frozenset({ROLE_MANAGER}),
     "can_edit_any_entry": frozenset({ROLE_MANAGER, ROLE_ACCOUNTANT}),

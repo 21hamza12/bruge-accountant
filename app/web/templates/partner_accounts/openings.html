@@ -1,0 +1,26 @@
+{% extends "base.html" %}
+{% block title %}{{ _("Soldes d'ouverture") }}{% endblock %}
+{% block content %}
+<p><a class="card-link card-link-back" href="/partner-accounts">{{ _("Retour aux comptes partenaires") }}</a></p>
+{% if notice %}<p class="notice" id="saved-notice" role="status">{{ notice }}</p>{% endif %}
+<section class="card" aria-labelledby="openings-title">
+  <h2 class="card-title" id="openings-title">{{ _("Soldes d'ouverture à saisir") }}</h2>
+  <p class="help">{{ _("Un formulaire par partenaire, enregistré un à la fois. Le solde est celui du fichier Excel du partenaire à la fin de la veille du passage ; saisi une seule fois, il ne se modifie jamais : une erreur se corrige par un ajustement.") }}</p>
+  <p><a href="/partner-openings/check">{{ _("Vérification du passage") }}</a></p>
+  {% if partners %}
+  {% for partner in partners %}
+  <form class="form" method="post" action="/partner-openings/{{ partner.id }}" aria-labelledby="p-{{ partner.id }}">
+    <h3 id="p-{{ partner.id }}"><a href="/partner-accounts/{{ partner.id }}">{{ partner.name }}</a></h3>
+    {% set pfx = "p" ~ partner.id ~ "-" %}
+    {% set form = forms[partner.id] %}
+    {% set error = None %}
+    {% include "partner_accounts/_opening_fields.html" %}
+    <input type="hidden" name="back" value="liste">
+    <button class="btn btn-primary" type="submit">{{ _("Enregistrer") }}<span class="visually-hidden"> {{ _("le solde d'ouverture de %(name)s", name=partner.name) }}</span></button>
+  </form>
+  {% endfor %}
+  {% else %}
+  <p class="muted">{{ _("Chaque partenaire actif a son solde d'ouverture.") }}</p>
+  {% endif %}
+</section>
+{% endblock %}

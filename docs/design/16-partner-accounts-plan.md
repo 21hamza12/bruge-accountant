@@ -289,3 +289,55 @@ Still open (not blocking F1–F2):
    that day. Needed by F5 only.
 7. **Fee exceptions** (0, 100, 200, 600 in BADI): proposed default, the existing one-off override
    with a reason (no change).
+
+### F5 as built (28 Oct 2026)
+
+Service `app/partner_opening.py`, pages `app/web/routes/partner_openings.py` (`/partner-openings`),
+the opening form on the account page (`app/web/routes/partner_accounts.py`,
+`partner_accounts/account.html`), and `partner_book.accounts_of` (several accounts in a constant
+number of queries). Tests: `tests/test_partner_opening.py`, `tests/test_partner_opening_pages.py`.
+No migration: migration 0017 already holds one `OPENING` per partner, append-only. Choices made
+where the plan left room:
+
+- **Who:** the manager enters (`permissions.can_enter_partner_opening`), the manager and the
+  accountant check (`can_check_partner_switchover`), staff get a 403. An inactive manager is
+  refused. A refusal is a `permission_denied` event.
+- **The form** is on the partner's account page while the partner has no `OPENING` and no closed
+  period (and alone at `GET /partner-openings/{id}/new`, where a refused post comes back with its
+  values). Fields: the switch-over date (default today, never in the future), the spreadsheet's
+  balance at the end of the day before with « Le partenaire doit à l'agence » (positive) or
+  « L'agence doit au partenaire » (negative), zero allowed and needing no sign, and a source note
+  (`app.reasons`, e.g. « solde du fichier Excel au 31/10 »). Once written the account page shows
+  it with « Saisi une seule fois, il ne se modifie pas : une erreur se corrige par un
+  ajustement. ».
+- **No rewriting of history:** refused when the partner already has an opening (« déjà un solde
+  d'ouverture … une erreur se corrige par un ajustement ») and when **any** period of the
+  partner is closed, whatever the date (« Une période de ce partenaire est déjà clôturée … »).
+  That covers "a line, payment or sale dated on or after the chosen date already counted in a
+  closed period": with no closed period nothing has been counted in one. The check runs under
+  the EXCLUSIVE advisory lock the close takes (Postgres), so no period closes and no line lands
+  between the check and the insert; the unique index and the closed-period trigger refuse the
+  same on their own, and a lost race is reported with the French message, not « Enregistrement
+  refusé ».
+- **What it leaves out:** as F2 decided, nothing dated before the switch-over day is counted.
+  Lines or payments already typed with an earlier date are not refused: they are in the
+  spreadsheet's balance, so leaving them out is right (the form says so).
+- **Double clicks:** the `request_key` is stored on the line; the same form posted again returns
+  it (« Ce solde d'ouverture était déjà enregistré »); the same key with another amount, sign,
+  date or partner, or a key used by another line, is refused and the form comes back with a
+  fresh key.
+- **Audit** `partner_opening_entered`: `partner_id`, `entry_id`, `amount`; never a name, the
+  date or the note. **Rate limit** `PARTNER_OPENING_WRITE_USER` (60 an hour per user); the
+  check page and its comparisons count against `PARTNER_ACCOUNT_READ_USER`. CSRF on the router.
+- **« Vérification du passage »** (`/partner-openings/check`): for each partner with an opening,
+  the opening (date and amount), the app's balance at the end of the half-month holding the
+  switch-over day (« provisoire » until that period is closed), and a field for the
+  spreadsheet's balance at that date with the same sign choice. The answer is « Identique » or
+  « Écart de X MRU » with which side counts more. The typed value is neither stored nor audited.
+- **Bulk entry** (`/partner-openings`, manager): every active partner without an opening, one
+  form each, posted one at a time (back to the list with « Solde d'ouverture enregistré. »).
+  Links from « Comptes partenaires ».
+
+Postgres-only (left to CI): the EXCLUSIVE advisory lock against a close or a line in flight, and
+the row-level security of the `OPENING` insert under the app role (the existing
+`partner_entries` policies; no new table, grant or policy).

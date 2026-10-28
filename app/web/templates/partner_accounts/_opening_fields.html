@@ -1,0 +1,26 @@
+{# The fields of an opening balance (F5): ``pfx`` keeps the ids unique when several forms share a page. #}
+{% include "_csrf.html" %}
+<input type="hidden" name="request_key" value="{{ form.request_key }}">
+<div class="field">
+  <label for="{{ pfx }}switch_date">{{ _("Date du passage") }}</label>
+  <input id="{{ pfx }}switch_date" name="switch_date" type="date" required max="{{ today.isoformat() }}" value="{{ form.switch_date or today.isoformat() }}"{% if error %} aria-describedby="form-error"{% endif %}>
+  <p class="help">{{ _("Le premier jour suivi dans l'application. Les ventes, lignes et paiements datés avant ce jour sont compris dans le solde du fichier : ils ne sont plus comptés.") }}</p>
+</div>
+<div class="field">
+  <label for="{{ pfx }}amount">{{ _("Solde du fichier à la fin de la veille (%(currency)s)", currency=agency.currency) }}</label>
+  <input id="{{ pfx }}amount" name="amount" type="text" inputmode="decimal" required maxlength="64" value="{{ form.amount or '' }}"{% if error %} aria-describedby="form-error"{% endif %}>
+</div>
+<fieldset class="field">
+  <legend>{{ _("Qui doit à qui ?") }}</legend>
+  {% for code, label in signs %}
+  <div class="field field-check">
+    <input id="{{ pfx }}sign-{{ code }}" name="sign" type="radio" value="{{ code }}"{% if form.sign == code %} checked{% endif %}>
+    <label for="{{ pfx }}sign-{{ code }}">{{ label }}</label>
+  </div>
+  {% endfor %}
+  <p class="help">{{ _("Inutile pour un solde nul.") }}</p>
+</fieldset>
+<div class="field">
+  <label for="{{ pfx }}reason">{{ _("Source ou motif") }}</label>
+  <input id="{{ pfx }}reason" name="reason" type="text" required minlength="5" maxlength="500" placeholder="{{ _('solde du fichier Excel au 31/10') }}" value="{{ form.reason or '' }}"{% if error %} aria-describedby="form-error"{% endif %}>
+</div>

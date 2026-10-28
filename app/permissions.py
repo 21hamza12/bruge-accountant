@@ -56,6 +56,18 @@ def can_export_partner_statement(user: User) -> bool:
     return user.role in _MANAGER_OR_ACCOUNTANT
 
 
+def can_enter_partner_opening(user: User) -> bool:
+    """Enter a partner's opening balance at the switch-over (phase F5): the manager only, once
+    per partner (``app/partner_opening.py``)."""
+    return user.role in _MANAGER_ONLY
+
+
+def can_check_partner_switchover(user: User) -> bool:
+    """Read « Vérification du passage » and compare with the spreadsheet: manager and
+    accountant."""
+    return user.role in _MANAGER_OR_ACCOUNTANT
+
+
 def can_close_day(user: User) -> bool:
     return user.role in _MANAGER_OR_ACCOUNTANT
 

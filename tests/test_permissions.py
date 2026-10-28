@@ -43,6 +43,8 @@ MATRIX: dict[str, frozenset[str]] = {
     "can_reopen_day": frozenset({ROLE_MANAGER}),
     "can_edit_any_entry": frozenset({ROLE_MANAGER, ROLE_ACCOUNTANT}),
     "can_enter_own_sales": frozenset({ROLE_STAFF}),
+    # Owner's decision, 28 Oct 2026: the profit and the margin are the manager's alone.
+    "can_see_profit": frozenset({ROLE_MANAGER}),
 }
 # Granted to staff alone: the others write sales through can_edit_any_entry.
 STAFF_ONLY = frozenset({"can_enter_own_sales"})

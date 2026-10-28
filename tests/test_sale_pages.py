@@ -388,7 +388,8 @@ def test_the_read_back_writes_nothing_at_all(env: Env) -> None:
     assert counts(env) == before == (0, 0, 0, 0, 0)
     text = text_of(r.text)
     assert "Confirmer" in text and D1 in text
-    assert f"{fr(21368)}" in text and f"{fr(24000)}" in text and fr(2632) in text
+    assert f"{fr(21368)}" in text and f"{fr(24000)}" in text
+    assert fr(2632) not in text  # the profit is the manager's alone (doc 02, decision 24)
     assert "Client Synth" in text and "Espèces" in text and SIGN in text
     assert 'action="/sales"' in r.text
 
@@ -412,7 +413,7 @@ def test_a_two_ticket_layover_sale_shows_both_tickets_and_one_price(env: Env) ->
     assert D1 in text and D2 in text and "TU" in text and "SV" in text
     assert text.count(fr(35000)) == 1  # one P.B, once
     assert fr(31368) in text  # sigma cost
-    assert fr(3632) in text  # profit = P.B - sigma cost
+    assert fr(3632) not in text  # the profit (P.B - sigma cost) is the manager's alone
     sale_id = sale_id_of(confirm_with(c, r.text, "/sales"))
     assert len([t for t in table(env, SaleTicket) if t.sale_id == sale_id]) == 2
     stored = latest(env, sale_id)
@@ -428,7 +429,7 @@ def test_a_partner_sale_shows_the_computed_price_cost_plus_fee_per_ticket(env: E
     assert r.status_code == 200, r.text[:3000]
     text = text_of(r.text)
     assert fr(4000) in text  # 3000 + 2 x 500
-    assert "BADI" in text and fr(1000) in text  # profit = fee x tickets
+    assert "BADI" in text and fr(500) in text  # the fee per ticket (the profit is the manager's)
 
 
 def test_a_price_below_the_cost_shows_the_warning_and_can_still_be_confirmed(env: Env) -> None:
@@ -736,8 +737,8 @@ def test_my_sales_lists_the_day_with_exact_totals(env: Env) -> None:
     text = text_of(r.text)
     assert "Mes ventes" in text and "Alpha Client" in text and "Beta Client" in text
     assert "Bankily" in text and "Espèces" in text
-    # totals: 2 sales, 3 tickets, cost 350.35, P.B 550.25, profit 199.90
-    assert "350,35" in text and "550,25" in text and "199,90" in text
+    # totals: 2 sales, 3 tickets, cost 350.35, P.B 550.25 (the profit, 199.90, is the manager's)
+    assert "350,35" in text and "550,25" in text and "199,90" not in text
     assert "3 billets" in text
     assert re.search(r'href="/sales/\d+"', r.text)
 

@@ -41,6 +41,14 @@ def can_approve_partner_adjustment(user: User) -> bool:
     return user.role in _MANAGER_ONLY
 
 
+def can_see_profit(user: User) -> bool:
+    """The profit (P.B minus the cost) and the margin, anywhere in the app: the manager only
+    (owner's decision, 28 Oct 2026). Pages, fragments, chat answers and the TJQ APRES margin row
+    leave it out for everybody else; the value is not even computed for them. P.B, the cost and
+    the partner fee are not the profit and keep their own rules."""
+    return user.role in _MANAGER_ONLY
+
+
 def can_close_day(user: User) -> bool:
     return user.role in _MANAGER_OR_ACCOUNTANT
 

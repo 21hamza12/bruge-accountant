@@ -29,7 +29,7 @@
     {% endif %}
     <dt>{{ _("Coût total") }}</dt><dd class="num">{{ s.cost_total | money_fr }} {{ agency.currency }}</dd>
     <dt>{{ _("P.B") }}</dt><dd class="num">{{ s.pb | money_fr }} {{ agency.currency }}</dd>
-    <dt>{{ _("Profit") }}</dt><dd class="num">{{ profit | money_fr }} {{ agency.currency }}</dd>
+    {% if profit is not none %}<dt>{{ _("Profit") }}</dt><dd class="num">{{ profit | money_fr }} {{ agency.currency }}</dd>{% endif %}
     <dt>{{ _("Client") }}</dt><dd>{{ s.clt or "-" }}</dd>
     <dt>{{ _("Téléphone") }}</dt><dd>{% if s.ap %}{{ s.ap }}{% elif s.client_refused_phone %}{{ _("Le client a refusé de donner son numéro") }}{% else %}-{% endif %}</dd>
     <dt>{{ _("Paiement") }}</dt><dd>{{ payment }}</dd>

@@ -105,6 +105,7 @@ def day_view(
     not read at all. A closed day shows its date to staff, nothing more."""
     user = auth.user
     sees_all = permissions.sees_all_signs(user)
+    show_profit = permissions.can_see_profit(user)  # the manager only: not computed for others
     report_day = days.get_day(db, user.agency_id, day)
     views = sales.sales_for_day_for(db, user, day)
     events = []
@@ -152,8 +153,9 @@ def day_view(
         if closed and report_day and report_day.closed_at
         else None,
         groups=day_page.groups_of(views),
-        totals=sales.day_totals(views),
-        signs=day_page.sign_totals(views),
+        totals=sales.day_totals(views, with_profit=show_profit),
+        signs=day_page.sign_totals(views, with_profit=show_profit),
+        show_profit=show_profit,
         received=received,
         comparison=counts,
         can_run_comparison=received and not closed and permissions.can_run_comparison(user),
@@ -183,6 +185,7 @@ def day_list(db: Db, auth: Viewer) -> Response:
             {"r": row, "label": day_page.status_label(row.status)}
             for row in day_page.recent_days(db, auth.user)
         ],
+        show_profit=permissions.can_see_profit(auth.user),
     )
 
 
@@ -208,7 +211,7 @@ def day_confirm_close(day: str, db: Db, clock: Now, auth: Closer) -> Response:
         headers=NO_STORE,
         **shell_context(db, auth, ACTIVE_DAYS),
         day=chosen,
-        totals=sales.day_totals(views),
+        totals=sales.day_totals(views, with_profit=permissions.can_see_profit(auth.user)),
         gate=approvals.gate_status(db, auth.user, report_day, check_stale=True),
     )
 
@@ -331,7 +334,8 @@ def day_apres(
         clock,
         {"report_day_id": report_day.id, "version": stored.version, "draft": False},
     )
-    return _download(stored.content, chosen, draft=False)
+    # The stored bytes stay as they are; the margin row goes to the manager only (doc 02).
+    return _download(export_apres.workbook_for(auth.user, stored.content), chosen, draft=False)
 
 
 @router.get("/{day}/apres-preview.xlsx")
@@ -350,7 +354,9 @@ def day_apres_preview(day: str, request: Request, db: Db, clock: Now, auth: Expo
         return _error_page(db, auth, str(exc), 409)
     if report is None:
         return _error_page(db, auth, export_apres.NO_REPORT, 404)
-    content = export_apres.build_apres_xlsx(report)
+    content = export_apres.build_apres_xlsx(
+        report, with_margin=permissions.can_see_profit(auth.user)
+    )
     _audit_download(
         db,
         request,

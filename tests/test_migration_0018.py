@@ -12,7 +12,7 @@ from alembic import command
 from alembic.script import ScriptDirectory
 from sqlalchemy import create_engine, delete, inspect, select, text, update
 from sqlalchemy.engine import make_url
-from sqlalchemy.exc import DBAPIError, IntegrityError
+from sqlalchemy.exc import DataError, DBAPIError, IntegrityError
 
 from app.db import Base, make_engine, make_session_factory
 from app.db_roles import GRANTS
@@ -174,7 +174,8 @@ def test_each_detail_has_its_length_check(db_url: str, column: str) -> None:
     limit = AGENCY_DETAIL_LIMITS[column]
     with pytest.raises(IntegrityError):
         _add(db_url, a, AgencyDetails(agency_id=a, updated_by_user_id=user_a, **{column: ""}))
-    with pytest.raises(IntegrityError):
+    # SQLite enforces the length CHECK; Postgres refuses the value at the VARCHAR length first.
+    with pytest.raises((IntegrityError, DataError)):
         _add(
             db_url,
             a,

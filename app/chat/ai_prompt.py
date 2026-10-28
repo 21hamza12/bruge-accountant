@@ -194,6 +194,9 @@ _ISO_DATE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")
 _DOC = re.compile(r"[0-9]{10}")
 # what ``tools._missing`` says is still to do: fixed phrases (the count of open flags varies)
 _MISSING = re.compile(r"numéro du client|[0-9]{1,4} écart\(s\) à traiter")
+# an amount of a partner account (F4): a plain two-decimal string, as ``tools._amount`` writes it
+_AMOUNT = re.compile(r"-?[0-9]{1,12}\.[0-9]{2}")
+_ALERT_LEVELS = frozenset({"overdue", "due_soon", "none"})  # partner_ledger.ALERT_*
 
 
 def _is_int(value: Any) -> bool:
@@ -227,6 +230,14 @@ def _is_missing(value: Any) -> bool:
     return isinstance(value, str) and _MISSING.fullmatch(value) is not None
 
 
+def _is_amount(value: Any) -> bool:
+    return isinstance(value, str) and _AMOUNT.fullmatch(value) is not None
+
+
+def _is_level(value: Any) -> bool:
+    return isinstance(value, str) and value in _ALERT_LEVELS
+
+
 _MISSING_LIST = _List(_is_missing)
 _DOCS = _List(_is_doc)
 _SPEC_ID, _SPEC_BOOL, _SPEC_DAY, _SPEC_DOC = _is_int, _is_bool, _is_iso_date, _is_doc
@@ -257,6 +268,61 @@ _TOOL_FIELDS: dict[str, _Obj] = {
     "day_sheet": _Obj({"day": _SPEC_DAY, "available": _SPEC_BOOL, "draft": _SPEC_BOOL}),
     "void_link": _Obj(
         {"doc": _SPEC_DOC, "found": _SPEC_BOOL, "sale_id": _SPEC_ID, "can_void": _SPEC_BOOL}
+    ),
+    # Partner accounts (F4): ids, counts, dates, fixed levels and amounts; never a name.
+    "partner_balance": _Obj(
+        {
+            "found": _SPEC_BOOL,
+            "matches": _SPEC_ID,
+            "partner_id": _SPEC_ID,
+            "balance": _is_amount,
+            "oldest": _Obj(
+                {
+                    "amount": _is_amount,
+                    "start": _SPEC_DAY,
+                    "end": _SPEC_DAY,
+                    "due": _SPEC_DAY,
+                    "level": _is_level,
+                    "days_late": _SPEC_ID,
+                }
+            ),
+        }
+    ),
+    "partners_owing": _Obj(
+        {
+            "count": _SPEC_ID,
+            "overdue": _SPEC_ID,
+            "due_soon": _SPEC_ID,
+            "refunds": _SPEC_ID,
+            "partners": _List(
+                _Obj(
+                    {
+                        "partner_id": _SPEC_ID,
+                        "amount": _is_amount,
+                        "level": _is_level,
+                        "due": _SPEC_DAY,
+                        "days_late": _SPEC_ID,
+                    }
+                )
+            ),
+        }
+    ),
+    "partner_statement": _Obj(
+        {
+            "found": _SPEC_BOOL,
+            "matches": _SPEC_ID,
+            "partner_id": _SPEC_ID,
+            "available": _SPEC_BOOL,
+            "start": _SPEC_DAY,
+            "end": _SPEC_DAY,
+            "closed": _SPEC_BOOL,
+            "opening": _is_amount,
+            "sales_total": _is_amount,
+            "entries_total": _is_amount,
+            "payments_total": _is_amount,
+            "closing": _is_amount,
+            "pending": _SPEC_ID,
+        }
     ),
 }
 

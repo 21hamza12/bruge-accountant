@@ -1,5 +1,8 @@
 """The comparison flags (B8): ``GET /flags?date=`` lists them, ``POST /flags/run?date=`` runs the
-comparison of a day again (manager and accountant).
+comparison of a day again (manager and accountant). Once the run is committed, the refunds
+of partner tickets in the report are proposed in a transaction of their own
+(``partner_refunds.propose_after_comparison``); a deadlock or a serialization failure of
+the run is a French « réessayez », never a 500.
 
 Any signed-in user may read the list: a staff member sees only the flags of their own signs
 (``app/flags.py`` filters, nothing is filtered in the template), a manager or accountant sees
@@ -17,13 +20,14 @@ from decimal import Decimal, InvalidOperation
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Request
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.orm import Session
 from starlette.responses import RedirectResponse, Response
 
-from app import approvals, days, flags, permissions
+from app import approvals, days, flags, partner_refunds, permissions
 from app.auth import ratelimit
 from app.clock import Clock
-from app.errors import UserError
+from app.errors import RETRY_LATER, UserError, is_lock_conflict
 from app.formatting import date_fr, money_fr
 from app.models import DAY_CLOSED, FLAG_OPEN, ComparisonFlag, FlagDecision
 from app.repository import latest_report_date
@@ -267,6 +271,12 @@ def flag_run(request: Request, db: Db, clock: Now, auth: Runner, day: DayParam =
         db.rollback()
         status = 409 if isinstance(exc, days.DayClosed) else 400
         return list_page(db, auth, clock, chosen, error=str(exc), status_code=status)
+    except DBAPIError as exc:
+        if not is_lock_conflict(exc):
+            raise
+        db.rollback()
+        return list_page(db, auth, clock, chosen, error=RETRY_LATER, status_code=409)
+    partner_refunds.propose_after_comparison(db, auth.user, chosen, now=now, ip=client_ip(request))
     return RedirectResponse(f"/flags?date={chosen.isoformat()}", status_code=303)
 
 

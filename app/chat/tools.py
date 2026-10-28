@@ -15,6 +15,15 @@ Each ``Tool`` has a ``name``, a French ``description``, ``examples``, a permissi
 
 ``Tool.input_schema`` and ``Tool.check_args`` are what part 2 gives to Claude: the model names a
 tool and arguments, and they go through the same checks as a message the router parsed.
+
+Partner accounts (phase F4: ``partner_balance``, ``partners_owing``, ``partner_statement``) are for
+the manager and the accountant (``permissions.can_manage_partners``); staff get the same "not
+available" reply as for any other money lookup. A partner is named by text (``partner``, at most
+``MAX_PARTNER_ARG`` characters), matched in Python against the agency's active partners and their
+approved aliases (``pnr_sales.find_partners``, the paste screen's rule): the text never reaches a
+query. No match, or several, is answered so (the candidates' names are listed in the lines for
+the person to choose); a partner of another agency is never a candidate. Amounts go to ``data``
+as plain two-decimal strings; names only to the lines.
 """
 
 from __future__ import annotations
@@ -24,24 +33,40 @@ from collections import Counter
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import date, datetime
+from decimal import Decimal
 from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app import accounts, days, export_apres, flags, permissions, sales
+from app import (
+    accounts,
+    days,
+    export_apres,
+    flags,
+    partner_alerts,
+    partner_aliases,
+    partner_book,
+    partners,
+    permissions,
+    sales,
+)
 from app.chat import reply as r
 from app.chat.reply import Line, Reply
 from app.chat.text import find_doc
-from app.formatting import date_fr
+from app.formatting import date_fr, money_fr
 from app.models import (
     AG_DIRECT,
     DAY_CLOSED,
     FLAG_NOT_SENT,
     FLAG_OPEN,
+    Agency,
+    Partner,
     ReportDay,
     User,
 )
+from app.parsing.pnr_sales import find_partners
+from app.partner_ledger import ALERT_DUE_SOON, ALERT_OVERDUE, CENT, half_month
 from app.sales_rules import SaleView
 from app.web import sale_paste
 
@@ -64,8 +89,14 @@ BAD_SIGN = "Je n'ai pas compris le signe."
 BAD_REQUEST = "Demande non comprise."
 MAX_DOC_ARG = 32  # characters of a ticket number argument (ten digits, an airline code, spaces)
 MAX_SIGN_ARG = 16  # characters of a staff sign argument (``0004SV``)
+MAX_PARTNER_ARG = 80  # characters of a partner name argument
+BAD_PARTNER = "Je n'ai pas compris le nom du partenaire."
 # What a model is told on top of ``Param.hint``: how to write the value.
-SCHEMA_HINTS = {"day": " (date ISO AAAA-MM-JJ, ex. 2026-10-19)", "sign": " (ex. 0004SV)"}
+SCHEMA_HINTS = {
+    "day": " (date ISO AAAA-MM-JJ, ex. 2026-10-19)",
+    "sign": " (ex. 0004SV)",
+    "partner": " (tel que la personne l'a écrit)",
+}
 NO_SUCH_TOOL = "Cette demande n'existe pas."
 DENIED = "Cette demande n'est pas disponible pour votre rôle."
 NO_TICKET = "Aucun billet {doc} trouvé parmi vos ventes."
@@ -93,7 +124,8 @@ class ChatContext:
 @dataclass(frozen=True)
 class Param:
     """``kind``: ``day`` (a date), ``doc`` (a ticket number, normalised to ten digits), ``sign``
-    (a staff sign), ``text`` or ``flag`` (a boolean). ``hint`` is the French noun phrase used
+    (a staff sign), ``partner`` (a partner's name, spaces collapsed), ``text`` or ``flag`` (a
+    boolean). ``hint`` is the French noun phrase used
     both to say what is missing and to describe the argument to a model."""
 
     name: str
@@ -179,6 +211,9 @@ def _coerce(p: Param, value: Any) -> Any:
             raise ToolArgError(BAD_SIGN) from None
     if p.kind == "flag":
         return value if isinstance(value, bool) else _bad(BAD_REQUEST)
+    if p.kind == "partner":
+        name = " ".join(value.split()) if isinstance(value, str) else ""
+        return name if name and len(name) <= MAX_PARTNER_ARG else _bad(BAD_PARTNER)
     return value if isinstance(value, str) else _bad(BAD_REQUEST)
 
 
@@ -543,6 +578,269 @@ def void_link(ctx: ChatContext, args: Mapping[str, Any]) -> Reply:
         doc=doc,
         sale_id=view.id,
         can_void=True,
+    )
+
+
+# --- partner accounts (F4) ---------------------------------------------------------------------
+
+NO_PARTNER = "Aucun partenaire actif ne correspond à ce nom."
+SEVERAL_PARTNERS = "Plusieurs partenaires correspondent à ce nom : lequel ?"
+OWES_US = "le partenaire doit cette somme à l'agence"
+WE_OWE = "l'agence doit cette somme au partenaire"
+SETTLED = "compte soldé"
+LEVEL_WORDS = {ALERT_OVERDUE: "en retard", ALERT_DUE_SOON: "bientôt dû"}
+
+
+def _amount(value: Decimal) -> str:
+    """An amount for ``data``: a plain two-decimal string (``"-2505.00"``)."""
+    return str(value.quantize(CENT))
+
+
+def _currency(ctx: ChatContext) -> str:
+    found = ctx.db.scalar(select(Agency.currency).where(Agency.id == ctx.user.agency_id))
+    return found or ""
+
+
+def _partner_named(ctx: ChatContext, name: str) -> list[Partner]:
+    """The active partners of the user's agency that ``name`` designates: their own names and
+    approved aliases, matched in Python (``find_partners``). Two queries; the text is never in
+    them."""
+    agency_id = ctx.user.agency_id
+    active = partners.list_active(ctx.db, agency_id)
+    known = [(p.id, p.name) for p in active] + partner_aliases.approved_pairs(ctx.db, agency_id)
+    by_id = {p.id: p for p in active}
+    return [by_id[i] for i in find_partners(name, known).ids if i in by_id]
+
+
+def _not_one(tool_name: str, found: list[Partner]) -> Reply:
+    """No partner, or several: say so; the candidates are listed for the person to choose."""
+    if not found:
+        return r.reply(
+            tool_name,
+            r.say(NO_PARTNER),
+            r.link("Voir les comptes partenaires", "/partner-accounts"),
+            found=False,
+            matches=0,
+        )
+    lines = [r.say(SEVERAL_PARTNERS)]
+    lines += [r.link(p.name, f"/partner-accounts/{p.id}") for p in found[:MAX_ITEMS]]
+    return r.reply(tool_name, *lines, found=False, matches=len(found))
+
+
+def _days(n: int) -> str:
+    return f"{n} jour" if n == 1 else f"{n} jours"
+
+
+def _who_owes(balance: Decimal) -> str:
+    if balance > 0:
+        return OWES_US
+    return WE_OWE if balance < 0 else SETTLED
+
+
+@tool(
+    "partner_balance",
+    "Le solde d'un partenaire et son plus ancien impayé (gérant et comptable).",
+    permissions.can_manage_partners,
+    examples=("solde de Partenaire Test",),
+    params=(Param("partner", "partner", "le nom du partenaire", required=True),),
+)
+def partner_balance(ctx: ChatContext, args: Mapping[str, Any]) -> Reply:
+    found = _partner_named(ctx, args["partner"])
+    if len(found) != 1:
+        return _not_one("partner_balance", found)
+    partner = found[0]
+    acc = partner_book.account(ctx.db, ctx.user.agency_id, partner, ctx.today)
+    oldest = partner_book.oldest_unpaid(acc, ctx.today)
+    cur = _currency(ctx)
+    balance = acc.balance
+    lines = [r.say(f"Solde de {partner.name} : {money_fr(balance)} {cur} ({_who_owes(balance)}).")]
+    data: dict[str, Any] = {"found": True, "partner_id": partner.id, "balance": _amount(balance)}
+    if oldest is None:
+        lines.append(r.say("Aucun impayé sur une période clôturée."))
+    else:
+        late = max(0, (ctx.today - oldest.due).days)
+        state = (
+            "en retard de " + _days(late)
+            if oldest.level == ALERT_OVERDUE
+            else LEVEL_WORDS.get(oldest.level, "pas encore échu")
+        )
+        lines.append(
+            r.say(
+                f"Plus ancien impayé : {money_fr(oldest.amount)} {cur}, période du "
+                f"{partner_book.period_label(oldest.start, oldest.end)}, échéance le "
+                f"{date_fr(oldest.due)} ({state})."
+            )
+        )
+        data["oldest"] = {
+            "amount": _amount(oldest.amount),
+            "start": oldest.start.isoformat(),
+            "end": oldest.end.isoformat(),
+            "due": oldest.due.isoformat(),
+            "level": oldest.level,
+            "days_late": late,
+        }
+    lines.append(r.link("Ouvrir le compte", f"/partner-accounts/{partner.id}"))
+    return r.reply("partner_balance", *lines, **data)
+
+
+@tool(
+    "partners_owing",
+    "Les partenaires en retard de paiement ou bientôt dus, les plus en retard d'abord (gérant et "
+    "comptable).",
+    permissions.can_manage_partners,
+    examples=("qui doit de l'argent ?", "impayés"),
+)
+def partners_owing(ctx: ChatContext, args: Mapping[str, Any]) -> Reply:
+    alerts = partner_alerts.partner_alerts(ctx.db, ctx.user, ctx.today)
+    if alerts is None:  # pragma: no cover - the permission refused it already
+        return _denied("partners_owing")
+    owing = alerts.owing
+    refunds = len(alerts.refunds)
+    data: dict[str, Any] = {
+        "count": len(owing),
+        "overdue": len(alerts.overdue),
+        "due_soon": len(alerts.due_soon),
+        "refunds": refunds,
+    }
+    lines: list[Line] = []
+    if not owing:
+        lines.append(r.say("Aucun partenaire en retard ni bientôt dû."))
+    else:
+        lines.append(
+            r.say(
+                f"{len(alerts.overdue)} partenaire(s) en retard, "
+                f"{len(alerts.due_soon)} bientôt dû(s)."
+            )
+        )
+        cur = _currency(ctx)
+        for a in owing[:MAX_ITEMS]:
+            when = (
+                "en retard de " + _days(a.days_late)
+                if a.overdue
+                else f"bientôt dû, le {date_fr(a.due)}"
+            )
+            lines.append(
+                r.link(
+                    f"{a.name} · {money_fr(a.amount)} {cur} · {when}",
+                    f"/partner-accounts/{a.partner_id}",
+                )
+            )
+        if len(owing) > MAX_ITEMS:
+            lines.append(r.link(f"… et {len(owing) - MAX_ITEMS} autre(s)", "/partner-accounts"))
+        data["partners"] = [
+            {
+                "partner_id": a.partner_id,
+                "amount": _amount(a.amount),
+                "level": a.level,
+                "due": a.due.isoformat(),
+                "days_late": a.days_late,
+            }
+            for a in owing[:MAX_ITEMS]
+        ]
+    if refunds:
+        lines.append(r.link(f"{refunds} remboursement(s) Amadeus à confirmer.", "/"))
+    return r.reply("partners_owing", *lines, **data)
+
+
+def _period_totals(period: partner_book.PeriodView) -> tuple[Decimal, ...]:
+    """Opening, sales, lines, payments and closing of a period: a closed one from its row (what
+    was sent), an open one as computed now."""
+    row = period.row
+    if period.closed and row is not None:
+        values = (
+            row.opening_balance,
+            row.sales_total,
+            row.entries_total,
+            row.payments_total,
+            row.closing_balance,
+        )
+        return tuple(v if v is not None else Decimal(0) for v in values)
+    t = period.totals
+    if t is None:  # pragma: no cover - an open period is always computed
+        return (period.opening, Decimal(0), Decimal(0), Decimal(0), period.closing)
+    return (t.opening, t.sales_total, t.entries_total, t.payments_total, t.closing)
+
+
+@tool(
+    "partner_statement",
+    "Le relevé d'un partenaire pour une quinzaine : le résumé, le lien vers la période et son "
+    "fichier Excel (gérant et comptable).",
+    permissions.can_manage_partners,
+    examples=("relevé Partenaire Test 1-15 octobre",),
+    params=(
+        Param("partner", "partner", "le nom du partenaire", required=True),
+        Param("day", "day", "un jour de la quinzaine (par défaut la dernière période clôturée)"),
+    ),
+)
+def partner_statement(ctx: ChatContext, args: Mapping[str, Any]) -> Reply:
+    found = _partner_named(ctx, args["partner"])
+    if len(found) != 1:
+        return _not_one("partner_statement", found)
+    partner = found[0]
+    acc = partner_book.account(ctx.db, ctx.user.agency_id, partner, ctx.today)
+    day: date | None = args.get("day")
+    base: dict[str, Any] = {"found": True, "partner_id": partner.id}
+    account_link = r.link("Ouvrir le compte", f"/partner-accounts/{partner.id}")
+    if day is not None:
+        start, end = half_month(day)
+        period = next((p for p in acc.periods if p.start == start), None)
+        if period is None:
+            label = partner_book.period_label(start, end)
+            return r.reply(
+                "partner_statement",
+                r.say(f"{partner.name} n'a pas de période du {label}."),
+                account_link,
+                **base,
+                available=False,
+                start=start.isoformat(),
+                end=end.isoformat(),
+            )
+    else:
+        closed = [p for p in acc.periods if p.closed]
+        period = closed[-1] if closed else (acc.periods[-1] if acc.periods else None)
+        if period is None:
+            return r.reply(
+                "partner_statement",
+                r.say(f"{partner.name} n'a encore aucune période."),
+                account_link,
+                **base,
+                available=False,
+            )
+    opening, sold, entries, paid, closing = _period_totals(period)
+    cur = _currency(ctx)
+    state = "clôturée" if period.closed else "ouverte : relevé provisoire"
+    iso = period.start.isoformat()
+    lines = [
+        r.say(f"Relevé de {partner.name}, période du {period.label} ({state})."),
+        r.say(
+            f"Solde précédent {money_fr(opening)} · ventes {money_fr(sold)} · lignes "
+            f"{money_fr(entries)} · paiements {money_fr(paid)} · nouveau solde "
+            f"{money_fr(closing)} {cur}."
+        ),
+    ]
+    if period.pending:
+        lines.append(r.say(f"{len(period.pending)} ligne(s) en attente de décision."))
+    lines.append(r.link("Voir la période", f"/partner-accounts/{partner.id}/periods/{iso}"))
+    lines.append(
+        r.button(
+            "Télécharger le relevé (Excel)",
+            f"/partner-accounts/{partner.id}/periods/{iso}/statement.xlsx",
+        )
+    )
+    return r.reply(
+        "partner_statement",
+        *lines,
+        **base,
+        available=True,
+        start=iso,
+        end=period.end.isoformat(),
+        closed=period.closed,
+        opening=_amount(opening),
+        sales_total=_amount(sold),
+        entries_total=_amount(entries),
+        payments_total=_amount(paid),
+        closing=_amount(closing),
+        pending=len(period.pending),
     )
 
 

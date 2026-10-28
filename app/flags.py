@@ -19,14 +19,21 @@ kept only when the values AND the ticket facts are unchanged).
    else, such as a staff upload, only flags): a ticket of an EARLIER OPEN day that the report lists
    moves its whole sale to this day (``sales.move_sale_day(system=True)``, attributed to the actor)
    only when EVERY ticket of the sale is in this report and none is in the earlier day's own
-   latest report. Otherwise nothing moves and the reported tickets get an ELSEWHERE flag naming the
-   day they are on (a ticket of an earlier CLOSED day gets the same). After a move the day is
+   latest report, and only for an issue line: a refund or a cancellation line (TRNC ``RFND`` /
+   ``CANX``, ``comparison.NEVER_MOVES``) never moves a sale. Otherwise nothing moves and the
+   reported tickets get an ELSEWHERE flag naming the day they are on (a ticket of an earlier
+   CLOSED day gets the same). After a move the day is
    gathered and compared again once, and that result gives the counts, the flags and the status;
    each earlier day that lost a sale is compared again too (its own run), so no stale flag stays.
 4. stores the run (counts only), merges the flags, settles the day: ``approved`` only for a
    manager or accountant and only with no blocking flag open or answered, else ``compared``.
    A change of status is a ``day_events`` row; the audit trail has ``comparison_run``,
    ``comparison_flags_superseded`` (blocking flags replaced) and ``day_approved``.
+
+The RFND lines proposed on partner accounts from the report (phase F4) are NOT made here: the
+caller commits the run first, then calls ``partner_refunds.propose_after_comparison`` in a
+transaction of its own (the proposal takes a partner's advisory lock, which must never be taken
+while the day locks of a run are held: a period close takes them the other way round).
 
 A partner ticket missing from the report is not a flag (docs/design/10-ticket-screens.md section
 7); the lists of cancelled lines and of those partner tickets are not stored: they are worked out
@@ -48,6 +55,7 @@ from sqlalchemy.orm import Session
 from app import audit, days, permissions, repository, sales
 from app.comparison import (
     KIND_ELSEWHERE,
+    NEVER_MOVES,
     AmadeusTicket,
     AppTicket,
     ComparisonResult,
@@ -149,6 +157,16 @@ def _lines_of(db: Session, agency_id: int, upload_id: int) -> list[AmadeusLine]:
     )
 
 
+def report_lines_for_day(db: Session, agency_id: int, day: date) -> list[AmadeusLine]:
+    """The lines of the latest report of ``day`` (the set a comparison reads), in file order;
+    empty when the day has no report."""
+    upload = latest_upload_for_day(db, agency_id, day)
+    if upload is None:
+        return []
+    lines_id = repository.lines_upload_for(db, agency_id, upload.id)
+    return [] if lines_id is None else _lines_of(db, agency_id, lines_id)
+
+
 def _own_report_docs(db: Session, agency_id: int, day: date) -> set[str]:
     """The ticket numbers of the latest report of ``day`` itself (empty when it has none)."""
     upload = latest_upload_for_day(db, agency_id, day)
@@ -237,8 +255,14 @@ def _gather(db: Session, report_day: ReportDay, *, can_move: bool) -> _Inputs:
     ]
     mine = {ticket.doc_number for ticket in app}
     report_docs = {normalise_doc(line.doc_number, line.airline) for line in lines} - {""}
+    # A refund or a cancellation line never moves a sale (F4): only the other lines may.
+    issue_docs = {
+        normalise_doc(line.doc_number, line.airline)
+        for line in lines
+        if line.trnc.strip().upper() not in NEVER_MOVES
+    } - {""}
     other, pinned, move_ids = _other_days(
-        db, agency_id, report_day, report_docs - mine, report_docs, can_move=can_move
+        db, agency_id, report_day, report_docs - mine, issue_docs, can_move=can_move
     )
     return _Inputs(
         upload_id=lines_id,

@@ -16,7 +16,7 @@ from sqlalchemy.orm import Session
 from app import partner_aliases, partner_book
 from app.chat import ai_prompt, tools
 from app.chat import reply as r
-from app.chat.router import route_message
+from app.chat.router import parse_message, route_message
 from app.chat.tools import ChatContext, run_tool
 from app.models import PartnerEntry, User
 from app.partner_alerts import partner_alerts
@@ -333,3 +333,19 @@ def test_the_tools_are_offered_to_manager_and_accountant_only(w: World) -> None:
     for user, offered in ((w.manager, True), (w.accountant, True), (w.staff, False)):
         names = {d["name"] for d in ai_prompt.tool_definitions(user)}
         assert set(PARTNER_TOOLS) <= names if offered else not set(PARTNER_TOOLS) & names
+
+
+@pytest.mark.parametrize(
+    ("message", "tool"),
+    [
+        ("qui doit de l'argent ?", "partners_owing"),
+        ("qui nous doit encore ?", "partners_owing"),
+        ("impayés", "partners_owing"),
+        ("partenaires en retard", "partners_owing"),
+        ("qui doit valider la journée ?", None),
+        ("solde de Partenaire Test", "partner_balance"),
+        ("relevé Partenaire Test 1-15 oct", "partner_statement"),
+    ],
+)
+def test_the_router_reads_the_partner_requests(message: str, tool: str | None) -> None:
+    assert parse_message(message, DUE).tool == tool

@@ -234,7 +234,7 @@ def _owing(found: list[str], present: set[str]) -> bool:
     """« qui doit de l'argent ? », « qui nous doit », « impayés », « partenaires en retard »."""
     if present & UNPAID:
         return True
-    if present & OWE and present & {"qui", "argent"}:
+    if present & OWE and present & {"argent", "nous"}:  # not « qui doit valider ? »
         return True
     return "retard" in present and bool(present & {"partenaire", "partenaires"})
 

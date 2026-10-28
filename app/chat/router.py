@@ -3,7 +3,14 @@
 ``parse_message`` turns the text into an ``Intent``: a tool name and typed arguments, or no tool
 at all. It is plain code over ``app.chat.text`` (accents and case ignored, extra words tolerated).
 It never runs SQL and builds no SQL: the only things that leave it are a fixed tool name, a date,
-a ten-digit number and a staff sign.
+a ten-digit number, a staff sign and, for the partner accounts (phase F4), a partner's name made of
+the folded words of the message (letters and digits only), which the tool matches in Python
+against the agency's partners and aliases.
+
+Partner accounts: « solde de <partenaire> » (``partner_balance``), « qui doit de l'argent ? » or
+« impayés » (``partners_owing``) and « relevé <partenaire> [<période>] » (``partner_statement``,
+the period as « 1-15 octobre », « 16 au 31 oct 2026 », a date, or nothing for the latest closed
+one).
 
 ``route_message`` runs the intent through the registry (``tools.run_tool``: permission, arguments,
 handler), with the rights of the logged-in user.
@@ -26,7 +33,7 @@ from typing import Any
 
 from app.chat import reply as r
 from app.chat.reply import Reply
-from app.chat.text import DateNotUnderstood, find_day, find_doc, find_sign, fold, words
+from app.chat.text import MONTHS, DateNotUnderstood, find_day, find_doc, find_sign, fold, words
 from app.chat.tools import BAD_DAY_HINT, BAD_DOC, ChatContext, help_lines, run_tool
 
 UnknownHandler = Callable[[ChatContext, str], Reply]
@@ -64,11 +71,31 @@ AMOUNT_WORDS = frozenset(
 )
 _LONG_NUMBER = re.compile(r"(?<![0-9])[0-9]{6,}(?![0-9])", re.ASCII)
 
+# Partner accounts (F4).
+BALANCE = frozenset({"solde", "soldes"})
+STATEMENT = frozenset({"releve", "releves"})
+OWE = frozenset({"doit", "doivent"})
+UNPAID = frozenset({"impaye", "impayes", "impayee", "impayees"})
+# Words before a partner's name that are not part of it ("solde de", "relevé du").
+NAME_FILLER = frozenset(
+    {"de", "du", "d", "des", "pour", "chez", "le", "la", "l", "les", "au", "a", "mon", "notre"}
+)
+# Words that end a partner's name: the period that follows it.
+NAME_END = frozenset({"du", "au", "periode", "quinzaine", "hier", "aujourd", "aujourdhui"})
+_HALF_MONTH = re.compile(
+    r"(?<![0-9/])([0-9]{1,2})(?:er)?(?:\s*(?:-|au\b|a\b)?\s*[0-9]{1,2})?"
+    r"\s+([a-z]{3,})(?:\s+([0-9]{4}))?(?![0-9/])"
+)
+MIN_MONTH_LETTERS = 3
+
 HELP_TOOL = "help"
 SHEET_TOOL = "day_sheet"
 SALES_TOOL = "list_sales"
 STATUS_TOOL = "ticket_status"
 VOID_TOOL = "void_link"
+BALANCE_TOOL = "partner_balance"
+OWING_TOOL = "partners_owing"
+STATEMENT_TOOL = "partner_statement"
 UNKNOWN_TEXT = "Je n'ai pas compris votre demande."
 
 
@@ -142,6 +169,76 @@ def _is_amount_context(present: set[str]) -> bool:
     )
 
 
+def _month(word: str) -> int | None:
+    """The month a word names: a prefix of at least three letters of one month only."""
+    if len(word) < MIN_MONTH_LETTERS:
+        return None
+    hits = [i for i, name in enumerate(MONTHS, start=1) if name.startswith(word)]
+    return hits[0] if len(hits) == 1 else None
+
+
+def _ends_name(word: str) -> bool:
+    return word in NAME_END or any(c.isdigit() for c in word) or _month(word) is not None
+
+
+def _partner_after(found: list[str], keywords: frozenset[str], *, until_period: bool) -> str:
+    """The partner's name: the words after the first keyword, without the leading fillers ("de",
+    "du"...), up to the period when ``until_period`` (a number, a month, "du", "periode"...).
+    Folded words only."""
+    start = next((i for i, w in enumerate(found) if w in keywords), len(found)) + 1
+    name: list[str] = []
+    for word in found[start:]:
+        if not name and word in NAME_FILLER:
+            continue
+        if until_period and _ends_name(word):
+            break
+        name.append(word)
+    return " ".join(name)
+
+
+def _half_month_day(text: str, today: date) -> date | None:
+    """The first day named by a half-month such as « 1-15 octobre », « 16 au 31 oct 2026 » or
+    « 15 oct »: that day (the tool takes its half-month). Without a year, the latest such day
+    that is not after today. None when the text names none; ``DateNotUnderstood`` for a day
+    that does not exist."""
+    for found in _HALF_MONTH.finditer(fold(text)):
+        month = _month(found[2])
+        if month is None:
+            continue
+        day = int(found[1])
+        try:
+            if found[3]:
+                return date(int(found[3]), month, day)
+            chosen = date(today.year, month, day)
+            return chosen if chosen <= today else date(today.year - 1, month, day)
+        except ValueError:
+            raise DateNotUnderstood from None
+    return None
+
+
+def _statement(text: str, found: list[str], today: date) -> Intent:
+    args: dict[str, Any] = {}
+    name = _partner_after(found, STATEMENT, until_period=True)
+    if name:
+        args["partner"] = name
+    try:
+        day = _half_month_day(text, today) or find_day(text, today)
+    except DateNotUnderstood:
+        return Intent(STATEMENT_TOOL, args, BAD_DAY_HINT)
+    if day is not None:
+        args["day"] = day
+    return Intent(STATEMENT_TOOL, args)
+
+
+def _owing(found: list[str], present: set[str]) -> bool:
+    """« qui doit de l'argent ? », « qui nous doit », « impayés », « partenaires en retard »."""
+    if present & UNPAID:
+        return True
+    if present & OWE and present & {"argent", "nous"}:  # not « qui doit valider ? »
+        return True
+    return "retard" in present and bool(present & {"partenaire", "partenaires"})
+
+
 def parse_message(text: str, today: date) -> Intent:
     """What the message asks for. Order matters: the more specific wins. A pasted screen first;
     then a ticket number (it decides the request on its own: a status, or a void when an
@@ -160,6 +257,13 @@ def parse_message(text: str, today: date) -> Intent:
         return Intent(HELP_TOOL)
     if _cancels(text, present):
         return Intent(VOID_TOOL)
+    if present & STATEMENT:
+        return _statement(text, found, today)
+    if present & BALANCE:
+        name = _partner_after(found, BALANCE, until_period=False)
+        return Intent(BALANCE_TOOL, {"partner": name} if name else {})
+    if _owing(found, present):
+        return Intent(OWING_TOOL)
     if present & SHEET:
         day, error = _day_or_error(text, today)
         return Intent(SHEET_TOOL, {"day": day} if day else {}, error)

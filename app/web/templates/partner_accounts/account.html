@@ -90,8 +90,8 @@
       {% for e in p.entries %}
         <tr>
           <td>{{ e.entry.entry_date | date_fr }}</td>
-          <td>{{ kinds.get(e.entry.kind, e.entry.kind) }}</td>
-          <td class="num">{{ e.entry.amount | money_fr }}</td>
+          <td>{{ kinds.get(e.entry.kind, e.entry.kind) }}{% if e.entry.doc_number %}<span class="help amadeus-doc"> {{ _("billet %(doc)s", doc=e.entry.doc_number) }}</span>{% endif %}</td>
+          <td class="num">{{ e.entry.amount | money_fr }}{% if e.entry.source == "amadeus" and e.pending %}<span class="help amadeus-amount"> {{ _("montant Amadeus (à vérifier)") }}</span>{% endif %}</td>
           <td>{{ e.entry.reason }}</td>
           <td>{{ names.get(e.entry.created_by_user_id, "-") }}</td>
           <td>

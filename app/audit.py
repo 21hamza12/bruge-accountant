@@ -78,6 +78,7 @@ AI_BUDGET_SET = "ai_budget_set"  # the operator changed an agency's AI budget (t
 AGENCY_DETAILS_SAVED = "agency_details_saved"  # the names of the fields changed, never values
 PARTNER_STATEMENT_DOWNLOADED = "partner_statement_downloaded"  # ids and dates only
 PARTNER_OPENING_ENTERED = "partner_opening_entered"  # ids and the amount only
+PARTNER_REFUND_PROPOSED = "partner_refund_proposed"  # an Amadeus RFND line (F4): ids, amount
 
 _SECRET_KEY = re.compile(r"password|passwd|token|secret|hash|csrf|cookie|credential", re.IGNORECASE)
 

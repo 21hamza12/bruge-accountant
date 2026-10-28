@@ -77,6 +77,11 @@
           <span class="nav-label">{{ icon("cash") }}{{ _("Comptes partenaires") }}</span>
         </a>
         {% endif %}
+        {% if shell.can_view_agency_details %}
+        <a class="nav-link" href="/agency-details"{% if shell.active == "agency_details" %} aria-current="page"{% endif %}>
+          <span class="nav-label">{{ icon("list") }}{{ _("Coordonnées de l'agence") }}</span>
+        </a>
+        {% endif %}
         {% if shell.can_manage_staff %}
         <a class="nav-link" href="/staff"{% if shell.active == "staff" %} aria-current="page"{% endif %}>
           <span class="nav-label">{{ icon("team") }}{{ _("Équipe") }}</span>

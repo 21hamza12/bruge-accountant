@@ -360,6 +360,7 @@ def test_a_bad_date_does_not_run_the_tool(w: ChatWorld) -> None:
 def test_every_tool_the_router_can_name_is_registered() -> None:
     names = {"list_sales", "open_flags", "not_sent_tickets", "ticket_status", "day_sheet"}
     names |= {"paste_sale", "void_link", "help"}
+    names |= {"partner_balance", "partners_owing", "partner_statement"}
     assert names == set(TOOLS)
     for text in ("mes billets", "flags", "manquants", f"billet {DOC}", "feuille", "aide", "annule"):
         assert intent(text).tool in TOOLS

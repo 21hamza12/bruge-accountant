@@ -27,6 +27,9 @@ kept only when the values AND the ticket facts are unchanged).
    manager or accountant and only with no blocking flag open or answered, else ``compared``.
    A change of status is a ``day_events`` row; the audit trail has ``comparison_run``,
    ``comparison_flags_superseded`` (blocking flags replaced) and ``day_approved``.
+5. proposes an ``RFND`` line on the partner's account for each ``RFND`` line of the report whose
+   ticket belongs to an active partner sale (``app.partner_refunds``, phase F4): once per ticket,
+   dated in an open period, « à confirmer » until the accountant or the manager decides.
 
 A partner ticket missing from the report is not a flag (docs/design/10-ticket-screens.md section
 7); the lists of cancelled lines and of those partner tickets are not stored: they are worked out
@@ -45,7 +48,7 @@ from datetime import date, datetime
 from sqlalchemy import ScalarSelect, Select, and_, func, select
 from sqlalchemy.orm import Session
 
-from app import audit, days, permissions, repository, sales
+from app import audit, days, partner_refunds, permissions, repository, sales
 from app.comparison import (
     KIND_ELSEWHERE,
     AmadeusTicket,
@@ -438,6 +441,16 @@ def run_comparison(
     run = _store_run(db, actor, report_day, inputs, result, moved, now=now, ip=ip)
     for earlier in earlier_days:
         _recompare_earlier(db, actor, earlier, now=now, ip=ip)
+    # Refunds of partner tickets in the report: proposed once per ticket, « à confirmer » (F4).
+    partner_refunds.propose_refunds(
+        db,
+        actor,
+        report_day.day,
+        inputs.amadeus,
+        now=now,
+        report_day_id=report_day.id,
+        ip=ip,
+    )
     return run
 
 

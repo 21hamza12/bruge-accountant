@@ -1,0 +1,43 @@
+{# Partner accounts on the manager / accountant home page (phase F4): app/partner_alerts.py. #}
+{% if partner_alerts and partner_alerts.any %}
+<section class="card" aria-labelledby="partner-alerts-title" id="partner-alerts">
+  <div class="card-head">
+    <h2 class="card-title" id="partner-alerts-title">{{ _("Comptes partenaires") }}</h2>
+    <a class="card-link card-link-next" href="/partner-accounts">{{ _("Tous les comptes") }}</a>
+  </div>
+  <div class="mini-tiles" aria-label="{{ _('Chiffres des comptes partenaires') }}">
+    <div class="card mini-tile"><span class="mini-label">{{ _("En retard") }}</span><span class="mini-value" id="partner-overdue-count">{{ partner_alerts.overdue | length }}</span></div>
+    <div class="card mini-tile"><span class="mini-label">{{ _("Bientôt dus") }}</span><span class="mini-value" id="partner-due-soon-count">{{ partner_alerts.due_soon | length }}</span></div>
+    <div class="card mini-tile"><span class="mini-label">{{ _("Remboursements à confirmer") }}</span><span class="mini-value" id="partner-refund-count">{{ partner_alerts.refunds | length }}</span></div>
+  </div>
+  {% if partner_alerts.owing %}
+  <ul class="list-plain" aria-label="{{ _('Partenaires en retard ou bientôt dus') }}">
+    {% for a in partner_alerts.owing %}
+    <li class="partner-alert">
+      {% if a.overdue %}<span class="pill pill-red">{{ _("en retard") }}</span>{% else %}<span class="pill pill-amber">{{ _("bientôt dû") }}</span>{% endif %}
+      <a href="/partner-accounts/{{ a.partner_id }}">{{ a.name }}</a>
+      <span class="num">{{ a.amount | money_fr }} {{ agency.currency }}</span>
+      <span class="muted">{{ _("période du %(start)s au %(end)s", start=a.start.day, end=a.end | date_fr) }} · {{ _("échéance le %(date)s", date=a.due | date_fr) }}</span>
+      {% if a.overdue %}<span class="error">{{ ngettext("%(num)d jour de retard", "%(num)d jours de retard", a.days_late) }}</span>{% elif a.days_left %}<span class="muted">{{ ngettext("dans %(num)d jour", "dans %(num)d jours", a.days_left) }}</span>{% else %}<span class="muted">{{ _("aujourd'hui") }}</span>{% endif %}
+    </li>
+    {% endfor %}
+  </ul>
+  {% endif %}
+  {% if partner_alerts.refunds %}
+  <div class="subsection">
+    <span class="subsection-title">{{ _("Remboursements à confirmer") }}</span>
+    <p class="help">{{ _("Proposés depuis le rapport Amadeus : ils ne comptent qu'une fois confirmés par le comptable ou le gérant.") }}</p>
+    <ul class="list-plain" aria-label="{{ _('Remboursements à confirmer') }}">
+      {% for r in partner_alerts.refunds %}
+      <li class="partner-refund">
+        <span class="pill pill-amber">{{ _("à confirmer") }}</span>
+        <a href="/partner-accounts/{{ r.partner_id }}">{{ r.name }}</a>
+        <span class="num">{{ r.amount | money_fr }} {{ agency.currency }}</span>
+        <span class="muted">{% if r.doc_number %}{{ _("billet %(doc)s", doc=r.doc_number) }} · {% endif %}{{ r.entry_date | date_fr }}</span>
+      </li>
+      {% endfor %}
+    </ul>
+  </div>
+  {% endif %}
+</section>
+{% endif %}

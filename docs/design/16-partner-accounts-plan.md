@@ -190,3 +190,70 @@ Still open (not blocking F1–F2):
    that day. Needed by F5 only.
 7. **Fee exceptions** (0, 100, 200, 600 in BADI): proposed default, the existing one-off override
    with a reason (no change).
+
+## F4 as built (28 Oct 2026)
+
+Services `app/partner_alerts.py` (home page and chat), `app/partner_refunds.py` (RFND proposals),
+the three chat lookups in `app/chat/tools.py`, their reading in `app/chat/router.py` and their
+model allowlist in `app/chat/ai_prompt.py`; the block `app/web/templates/_partner_alerts.html` on
+the manager / accountant home page. Tests: `tests/test_partner_alerts.py`,
+`tests/test_partner_alert_pages.py`, `tests/test_partner_refunds.py`. Choices made where the plan
+left room:
+
+- **One alert per partner: its oldest unpaid closed period** (F2's first in, first out
+  `oldest_unpaid`), with what it still lacks, its due day and the days late. « Bientôt dû » from
+  3 days before the due day to the due day included, « en retard » from the day after
+  (`partner_ledger.alert_level`, pinned on the day boundaries). A partner whose oldest debt is not
+  due yet is not listed. Overdue first (longest late first), then due soon (nearest due first).
+- **The home page reads it through `account_rows`** (F2's batched reads): twelve statements for
+  the whole page whatever the number of partners (a test compares 2 and 12 partners). The block
+  is shown only when something is overdue, due soon or waiting, with three counts (« En retard »,
+  « Bientôt dus », « Remboursements à confirmer »): these are the dashboard numbers; no other
+  morning summary exists in the application. Staff never get it (the service returns nothing for
+  them, and their home page is another template). The home page now reads the application clock
+  for "today".
+- **Chat, read-only, manager and accountant only** (`can_manage_partners`): `partner_balance`
+  (« solde de … »: balance, who owes whom, the oldest unpaid with its due day and state),
+  `partners_owing` (« qui doit de l'argent ? », « impayés », « partenaires en retard »: overdue
+  then due soon, and the count of refunds to confirm) and `partner_statement` (« relevé … » with
+  « 1-15 octobre », « 16 au 31 oct 2026 », a date, or nothing for the latest closed period: the
+  totals, a link to the period page and a button to its Excel file,
+  `/partner-accounts/{id}/periods/{start}/statement.xlsx`, the F3 route; the file is never sent
+  through the chat). Staff get the chat's usual « Cette demande n'est pas disponible pour votre
+  rôle. », and the model is never offered these tools for them.
+- **Partner names** are a new argument kind `partner` (text, spaces collapsed, at most 80
+  characters), matched in Python by `pnr_sales.find_partners` against the agency's active
+  partners and approved aliases (the paste screen's rule): the text never reaches a query. No
+  match: « Aucun partenaire actif ne correspond à ce nom. » (nothing typed is echoed); several:
+  « Plusieurs partenaires correspondent à ce nom : lequel ? » with their names as links. Another
+  agency's partner is never a candidate. The router passes the folded words after « solde » /
+  « relevé » (fillers such as « de », « du » dropped; for a statement, up to the period).
+- **What the model sees** is unchanged in kind: `sanitize` gained the three tools' fields (ids,
+  counts, ISO dates, a level among `overdue` / `due_soon` / `none`, amounts as `-?digits.dd`
+  strings); names stay in the lines. `grounded` is unchanged, so a model sentence with « MRU » or
+  a reformatted amount is replaced by « Voici ce que j'ai trouvé : » and the lookup's own lines.
+- **RFND proposals are made by the comparison** (`flags.run_comparison`, after every upload and
+  every run again), in its transaction, from the lines it compared: one hook covers the import
+  (the upload runs the comparison) and re-comparisons alike. A report imported without a
+  comparison (the CLI) proposes at its first comparison. `created_by_user_id` is the person whose
+  upload or run proposed the line (possibly an agent: the decision is still the accountant's or
+  the manager's).
+- **Idempotency:** a ticket that already has an Amadeus `RFND` line in the agency (pending,
+  confirmed or rejected) is skipped, and the row carries the deterministic `request_key`
+  `amadeus-rfnd-<ticket>`, unique per agency in the database; a racing second insert is rolled
+  back to its savepoint and the comparison goes on.
+- **No backdating:** under the partner's shared advisory lock, the line is dated on the report day
+  when it is after the latest closed period's end and not after today, else today (a closed
+  period always ends before today). A report day before the switch-over day proposes nothing. A
+  database refusal is logged (ids only) and the comparison goes on.
+- **Amount:** the report line's TOTAL DOC, negative with two decimals at most; missing, zero,
+  positive or odd: nothing proposed, a warning with ids only (report day, sale, partner).
+
+Postgres-only (left to CI): the shared advisory lock taken by the proposal inside the comparison's
+transaction (after the day locks, as F2's sale corrections do), the unique request key under two
+truly concurrent comparisons, and the closed-period trigger refusing a proposal.
+
+Seen while building, not changed: an `RFND` line whose ticket is held by a sale of an earlier
+**open** day is, like any reported ticket, a candidate for the comparison's move of that sale to
+the report day (`flags` step 3). A refund normally arrives after the sale's day is closed (then it
+is an ELSEWHERE flag), but the comparison should probably leave `RFND` lines out of the moves.

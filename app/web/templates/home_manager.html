@@ -4,6 +4,7 @@
 {% block title %}{{ _("Tableau de bord") }}{% endblock %}
 {% block content %}
 {% if shell.can_chat %}<p class="chat-entry"><a class="card-link" href="/chat">{{ icon("chat", small=true) }}{{ _("Discussion") }}</a></p>{% endif %}
+{% include "_partner_alerts.html" %}
 {% if day is none %}
 <section class="card empty" aria-labelledby="empty-title">
   <h2 class="empty-title" id="empty-title">{{ _("Aucun rapport n'a encore été envoyé.") }}</h2>

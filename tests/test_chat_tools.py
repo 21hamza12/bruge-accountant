@@ -22,13 +22,17 @@ from tests.flag_support import D19, D20, NOW
 pytest_plugins = ["tests.chat_fixtures"]  # the fixtures ``w`` and ``chat_template``
 PNR_DIR = Path(__file__).parent / "fixtures" / "pnr"
 ALL_TOOLS = ["list_sales", "open_flags", "not_sent_tickets", "ticket_status", "day_sheet"]
-ALL_TOOLS += ["paste_sale", "void_link", "help"]
+ALL_TOOLS += ["paste_sale", "void_link", "partner_balance", "partners_owing", "partner_statement"]
+ALL_TOOLS += ["help"]
 ARGS: dict[str, dict[str, Any]] = {
     "ticket_status": {"doc": "3940299439"},
     "void_link": {"doc": "3940299439"},
     "paste_sale": {"text": "RP/X"},
+    "partner_balance": {"partner": "Partenaire Test"},
+    "partner_statement": {"partner": "Partenaire Test"},
 }
-MANAGER_OR_ACCOUNTANT_ONLY = {"day_sheet"}
+MANAGER_OR_ACCOUNTANT_ONLY = {"day_sheet", "partner_balance", "partners_owing"}
+MANAGER_OR_ACCOUNTANT_ONLY |= {"partner_statement"}
 
 
 def texts(answer: Reply) -> list[str]:
@@ -518,9 +522,13 @@ def test_help_lists_what_the_role_can_do(w: ChatWorld) -> None:
         "day_sheet",
         "paste_sale",
         "void_link",
+        "partner_balance",
+        "partners_owing",
+        "partner_statement",
         "help",
     ]
     assert "day_sheet" not in staff.data["tools"]
+    assert not {"partner_balance", "partners_owing", "partner_statement"} & set(staff.data["tools"])
     assert any("feuille" in t for t in texts(manager)) and not any(
         "feuille" in t for t in texts(staff)
     )

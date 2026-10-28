@@ -93,6 +93,7 @@ from app.models import (
     ENTRY_CORRECTION,
     ENTRY_OPENING,
     ENTRY_RFND,
+    ENTRY_SOURCE_AMADEUS,
     ENTRY_SOURCE_MANUAL,
     ENTRY_SOURCE_SYSTEM,
     MAX_PAYMENT_REFERENCE,
@@ -815,6 +816,8 @@ class AccountRow:
     balance: Decimal
     open_total: Decimal  # the movements of the current period: sales + lines - payments
     oldest: Overdue | None
+    # RFND lines proposed from the Amadeus report still waiting for a decision (F4).
+    pending_refunds: tuple[PartnerEntry, ...] = ()
 
     @property
     def rank(self) -> int:
@@ -867,7 +870,15 @@ def account_rows(db: Session, actor: User, today: date) -> list[AccountRow]:
         open_total = ZERO
         if current is not None and current.totals is not None:
             open_total = current.closing - current.opening
-        rows.append(AccountRow(partner, acc.balance, open_total, oldest_unpaid(acc, today)))
+        refunds = tuple(
+            e.entry
+            for period in acc.periods
+            for e in period.pending
+            if e.entry.source == ENTRY_SOURCE_AMADEUS
+        )
+        rows.append(
+            AccountRow(partner, acc.balance, open_total, oldest_unpaid(acc, today), refunds)
+        )
     return sorted(
         rows,
         key=lambda r: (r.rank, -(r.oldest.age_days if r.oldest else 0), r.partner.name_key),

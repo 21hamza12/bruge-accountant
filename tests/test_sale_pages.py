@@ -1105,6 +1105,7 @@ def test_manager_can_void_any_sale_with_a_reason(env: Env) -> None:
 
 ALL_POSTS = [
     "/sales/paste",
+    "/sales/paste/list",
     "/sales/screenshot",
     "/sales/preview",
     "/sales/new",

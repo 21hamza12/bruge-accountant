@@ -2,8 +2,18 @@
 {% from "sales/_parts.html" import hidden_fields %}
 {% block title %}{{ _("Ventes lues dans le texte") }}{% endblock %}
 {% block content %}
-<p><a class="card-link card-link-back" href="/sales/new">{{ _("Retour à la saisie") }}</a></p>
-<p class="muted">{{ _("Ce texte contient %(n)s ventes (une par passager). Ouvrez-les une par une : rien n'est enregistré avant la confirmation.", n=items|length) }}</p>
+{% if saved %}
+<p class="notice price-read" id="sale-saved" role="status"><strong>{{ _("Vente enregistrée.") }}</strong> <a href="/sales/{{ saved }}">{{ _("Voir la vente") }}</a></p>
+{% endif %}
+<div class="actions">
+  <a class="btn" href="/sales">{{ _("Terminé") }}</a>
+  <a class="btn" href="/sales/new">{{ _("Nouveau collage") }}</a>
+</div>
+{% if left %}
+<p class="muted">{{ _("Ce texte contient %(n)s ventes (une par passager). Ouvrez-les une par une : rien n'est enregistré avant la confirmation. Après chaque vente, vous revenez à cette liste.", n=items|length) }}</p>
+{% else %}
+<p class="notice" role="status"><strong>{{ _("Toutes les ventes de ce texte sont saisies.") }}</strong></p>
+{% endif %}
 
 {% if reader_warnings %}
 <div class="notice" role="status">
@@ -13,22 +23,24 @@
 {% endif %}
 
 {% for item in items %}
-{% set sale = item.sale %}
 <section class="card" aria-labelledby="proposal-{{ loop.index }}">
-  <h2 class="card-title" id="proposal-{{ loop.index }}">{{ _("Vente %(n)s", n=loop.index) }} : {{ sale.pax_name or _("passager non identifié") }}</h2>
+  <h2 class="card-title" id="proposal-{{ loop.index }}">{{ _("Vente %(n)s", n=loop.index) }} : {{ item.pax or _("passager non identifié") }}</h2>
   <dl class="kv">
     <dt>{{ _("Billets") }}</dt>
-    <dd>{% for t in sale.tickets %}<span class="mono">{{ t.doc_number }}</span> ({{ t.pax_type }}{% if t.total_doc is not none %}, {{ t.total_doc | money_fr }} {{ agency.currency }}{% else %}, {{ _("coût à saisir") }}{% endif %}){% if not loop.last %}, {% endif %}{% endfor %}</dd>
+    <dd>{% for t in item.tickets %}<span class="mono">{{ t.doc }}</span> ({{ t.pax_type }}{% if t.cost is not none %}, {{ t.cost | money_fr }} {{ agency.currency }}{% else %}, {{ _("coût à saisir") }}{% endif %}){% if not loop.last %}, {% endif %}{% endfor %}</dd>
     <dt>{{ _("Émis le") }}</dt>
     <dd>{% if item.day %}{{ _("Émis le %(date)s", date=item.day|date_fr) }} · <strong>{{ _("Vente du %(day)s", day=item.day|date_fr) }}</strong>{% else %}{{ _("date d'émission illisible : vente du jour") }}{% endif %}</dd>
     <dt>{{ _("Agence proposée") }}</dt>
-    <dd>{{ item.agency }}{% if sale.agency_text %} · {{ sale.agency_text }}{% endif %}</dd>
+    <dd>{{ item.agency }}{% if item.agency_text %} · {{ item.agency_text }}{% endif %}</dd>
     <dt>{{ _("P.B proposé") }}</dt>
-    <dd class="num">{% if sale.pb is not none %}{{ sale.pb | money_fr }} {{ agency.currency }}{% else %}-{% endif %}</dd>
+    <dd class="num">{% if item.pb is not none %}{{ item.pb | money_fr }} {{ agency.currency }}{% else %}-{% endif %}</dd>
   </dl>
-  {% if sale.warnings %}
+  {% if item.done %}
+  <p class="notice" role="status"><strong>{% if item.done_link %}{{ _("Vente déjà saisie") }}{% else %}{{ _("Vente déjà saisie par un autre agent") }}{% endif %}</strong>{% if item.done_link %} · <a href="/sales/{{ item.done_link }}">{{ _("Voir la vente") }}</a>{% endif %}</p>
+  {% else %}
+  {% if item.warnings %}
   <div class="notice" role="status">
-    <ul class="list-plain">{% for warning in sale.warnings %}<li>{{ warning }}</li>{% endfor %}</ul>
+    <ul class="list-plain">{% for warning in item.warnings %}<li>{{ warning }}</li>{% endfor %}</ul>
   </div>
   {% endif %}
   <form class="inline-form" method="post" action="/sales/new">
@@ -36,6 +48,7 @@
     {{ hidden_fields(item.pairs) }}
     <button class="btn btn-primary" type="submit">{{ _("Saisir cette vente") }}</button>
   </form>
+  {% endif %}
 </section>
 {% endfor %}
 {% endblock %}

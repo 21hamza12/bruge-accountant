@@ -25,6 +25,14 @@
 </p>
 {% endif %}
 
+{% if f.from_paste and f.batch and not sale %}
+<form class="inline-form" method="post" action="/sales/paste/list">
+  {% include "_csrf.html" %}
+  <input type="hidden" name="paste_batch" value="{{ f.batch }}">
+  <button class="btn" type="submit">{{ _("Retour à la liste des ventes du texte") }}</button>
+</form>
+{% endif %}
+
 <p><a class="card-link card-link-back" href="{{ back_url }}">{% if sale %}{{ _("Retour à la vente") }}{% else %}{% if shell.sees_all %}{{ _("Ventes du jour") }}{% else %}{{ _("Mes ventes") }}{% endif %}{% endif %}</a></p>
 
 {% if sign_mode == "none" %}
@@ -77,6 +85,7 @@
   <input type="hidden" name="ag_match" value="{{ f.ag_match }}">
   <input type="hidden" name="pb_read" value="{{ f.pb_read }}">
   {% for warning in f.notices %}<input type="hidden" name="pnr_warning" value="{{ warning }}">{% endfor %}
+  {% if f.batch %}<input type="hidden" name="paste_batch" value="{{ f.batch }}">{% endif %}
   {% endif %}
 
   <section class="card" aria-labelledby="tickets-title">

@@ -17,6 +17,12 @@
   old one is refused ("rechargez la page"; the service checks again under its lock).
 * **Double submit**: confirming twice (a double tap, a reload of the POST) finds its own sale again
   and redirects to it instead of reporting a duplicate (``_just_created``).
+* **Several passengers in one paste**: the list of proposals travels in a signed hidden field
+  (``app/web/paste_batch.py``) through the form, the read-back and the confirm. After a confirm
+  that carries a valid list, the response IS that list again (rendered in the POST response, not
+  a redirect: a redirect could only carry it in a URL or a server-side store, and the pasted
+  data goes in neither); the sales already saved are « déjà saisie », decided from the ticket
+  numbers stored. A reload of that response is the double submit above: the list again.
 * Sale writes share one rate limit per user (``ratelimit.SALE_WRITE_USER``), read-backs a looser
   one (``SALE_PREVIEW_USER``). A client's name or phone is never logged or audited.
 """
@@ -35,7 +41,7 @@ from starlette.datastructures import FormData, UploadFile
 from starlette.formparsers import MultiPartException, MultiPartParser
 from starlette.responses import Response
 
-from app import partner_aliases, partners, permissions, sales
+from app import partner_aliases, permissions, sales
 from app.ai.images import MAX_IMAGE_BYTES
 from app.ai.screenshots import (
     MAX_IMAGES,
@@ -50,10 +56,9 @@ from app.clock import Clock
 from app.errors import UserError
 from app.issue_sig import IssueSigner, signer_for
 from app.models import User
-from app.parsing.pnr_sales import ProposedSale
 from app.sales import DuplicateTicket, SaleView
 from app.settings import Settings
-from app.web import sale_forms, sale_paste
+from app.web import paste_batch, sale_forms, sale_paste
 from app.web.csrf import CSRF_FIELD, CSRF_HEADER, csrf_protect, verify_origin, verify_token
 from app.web.deps import AuthContext, client_ip, get_settings
 from app.web.middleware import SCREENSHOT_BODY_BYTES
@@ -94,6 +99,10 @@ UNREADABLE = (
 )
 
 DOUBLE_SUBMIT_WINDOW = timedelta(seconds=120)
+LIST_GONE = (
+    "La liste des ventes de ce texte n'est plus disponible : collez le texte à nouveau "
+    "(les ventes déjà saisies seront signalées)."
+)
 
 
 def _enforced(settings: Settings, user: User) -> IssueSigner | None:
@@ -164,13 +173,14 @@ def sale_paste_text(
         signer=signer_for(settings, auth.user),
         today=clock().date(),
     )
-    return _read_outcome(db, auth, clock, result, screenshot=False)
+    return _read_outcome(db, auth, clock, settings, result, screenshot=False)
 
 
 def _read_outcome(
     db: Session,
     auth: AuthContext,
     clock: Clock,
+    settings: Settings,
     result: sale_paste.PasteResult,
     *,
     screenshot: bool,
@@ -187,17 +197,58 @@ def _read_outcome(
         _prefill_sign(proposal, mode, signs)
     if len(result.proposals) == 1:
         return form_page(db, auth, clock, result.proposals[0].form)
-    names = {p.id: p.name for p in partners.list_active(db, auth.user.agency_id)}
-    items: list[dict[str, object]] = [
-        {
-            "sale": p.sale,
-            "pairs": p.form.hidden_pairs,
-            "agency": _agency_label(p.sale, names),
-            "day": p.sale.issue_day,
-        }
-        for p in result.proposals
-    ]
-    return choose_page(db, auth, items, result.reader_warnings)
+    forms = [p.form for p in result.proposals]
+    warnings = list(result.reader_warnings)
+    token = paste_batch.encode(
+        settings.issue_key(), auth.user.agency_id, auth.user.id, clock(), forms, warnings
+    )
+    for form in forms:
+        form.batch = token  # each proposal carries the whole list, to come back to it
+    return choose_page(db, auth, forms, warnings)
+
+
+def _batch_of(
+    settings: Settings, auth: AuthContext, clock: Clock, token: object
+) -> paste_batch.Batch | None:
+    user = auth.user
+    return paste_batch.decode(
+        settings.issue_key(), user.agency_id, user.id, clock(), token, _enforced(settings, user)
+    )
+
+
+@router.post("/paste/list")
+def sale_paste_list(
+    request: Request,
+    db: Db,
+    clock: Now,
+    auth: Auth,
+    posted: Posted,
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> Response:
+    """Back to the list of proposals of a paste, from its signed hidden field. Nothing is read
+    again (no text, no AI): a list that is not this server's, for this user, is refused."""
+    throttle(db, request, auth, clock, write=False)
+    batch = _batch_of(settings, auth, clock, posted.get(paste_batch.FIELD))
+    if batch is None:
+        return form_page(db, auth, clock, SaleForm(), paste_error=LIST_GONE, status_code=400)
+    return choose_page(db, auth, batch.forms, batch.reader_warnings)
+
+
+def _after_save(
+    db: Session,
+    auth: AuthContext,
+    clock: Clock,
+    settings: Settings,
+    form: SaleForm,
+    sale_id: int,
+) -> Response:
+    """Where a confirmed new sale leads: back to the list of its paste when the form carried a
+    valid one, else (one passenger, typed, list dropped) to the sale."""
+    if form.from_paste and form.batch:
+        batch = _batch_of(settings, auth, clock, form.batch)
+        if batch is not None:
+            return choose_page(db, auth, batch.forms, batch.reader_warnings, saved=sale_id)
+    return go_to(sale_id)
 
 
 # --- screenshot -------------------------------------------------------------------------------
@@ -342,18 +393,7 @@ def _screenshot_outcome(
         signer=signer_for(settings, auth.user),
         today=clock().date(),
     )
-    return _read_outcome(db, auth, clock, result, screenshot=True)
-
-
-def _agency_label(sale: ProposedSale, names: dict[int, str]) -> str:
-    """The agency a proposal suggests, in words (the agent confirms it on the form)."""
-    if sale.ag_kind == "direct":
-        return "BRUGE (vente directe)"
-    if sale.ag_kind == "partner" and sale.partner_id in names:
-        return names[sale.partner_id]
-    if sale.suggested_partner_id in names:
-        return f"suggestion : {names[sale.suggested_partner_id]}"
-    return "à choisir"
+    return _read_outcome(db, auth, clock, settings, result, screenshot=True)
 
 
 def _prefill_sign(proposal: sale_paste.Proposal, mode: str, signs: list[str]) -> None:
@@ -428,12 +468,12 @@ def sale_create(
         db.rollback()
         again = _just_created(db, user, exc, form, now)
         if again is not None:
-            return go_to(again.id)
+            return _after_save(db, auth, clock, settings, form, again.id)
         return form_page(db, auth, clock, form, failure=failure_for(exc, built.rows))
     except UserError as exc:
         db.rollback()
         return form_page(db, auth, clock, form, failure=failure_for(exc, built.rows))
-    return go_to(created.sale.id)
+    return _after_save(db, auth, clock, settings, form, created.sale.id)
 
 
 def _propose_alias(

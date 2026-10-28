@@ -68,6 +68,10 @@ SOURCES = (SOURCE_FORM, SOURCE_PASTE, SOURCE_SCREENSHOT)
 ANSWER_YES, ANSWER_OTHER, ANSWER_DIRECT = "yes", "other", "direct"
 MAX_NOTICES = 12
 HIDDEN_CLIP = 120  # the agency text and the reader warnings carried in hidden fields
+# The signed list of the other proposals of the same paste (``app/web/paste_batch.py``): carried
+# as is, never read here beyond its size.
+BATCH_FIELD = "paste_batch"
+MAX_BATCH_CHARS = 192 * 1024
 BAD_DAY = "La date doit être au format AAAA-MM-JJ."
 BAD_ISSUE = "La date d'émission est illisible : relisez le texte Amadeus."
 BAD_VERSION = "Version de la vente invalide : rechargez la page."
@@ -136,6 +140,7 @@ class SaleForm:
     ag_match: str = ""  # exact, packed, prefix, fp, close or none
     pb_read: str = ""  # the P.B the reader took from the RM line (to tell it from a typed one)
     notices: list[str] = field(default_factory=list)  # what the reader warned about
+    batch: str = ""  # the signed list of the paste's proposals (several passengers), or ""
 
     @property
     def issue_day(self) -> date | None:
@@ -154,7 +159,7 @@ class SaleForm:
         a prefilled sale; ``None`` when a ticket has no readable cost."""
         total = Decimal(0)
         for row in self.tickets:
-            amount = _amount_or_none(row.total_doc)
+            amount = amount_or_none(row.total_doc)
             if amount is None:
                 return None
             total += amount
@@ -163,7 +168,7 @@ class SaleForm:
     @property
     def pb_read_amount(self) -> Decimal | None:
         """The P.B the reader took from the RM line, as an amount (``None``: no RM price)."""
-        return _amount_or_none(self.pb_read)
+        return amount_or_none(self.pb_read)
 
     @property
     def hidden_pairs(self) -> list[tuple[str, str]]:
@@ -201,6 +206,8 @@ class SaleForm:
                 ]
             )
             pairs.extend(("pnr_warning", text) for text in self.notices)
+            if self.batch:
+                pairs.append((BATCH_FIELD, self.batch))
         return pairs
 
 
@@ -225,7 +232,7 @@ def _iso_or_none(raw: str) -> date | None:
     return None
 
 
-def _amount_or_none(text: str) -> Decimal | None:
+def amount_or_none(text: str) -> Decimal | None:
     try:
         return parse_amount(text)
     except MoneyError:
@@ -289,6 +296,9 @@ def read(source: FormData, *, new_sale: bool = True, signer: IssueSigner | None 
     )
     if form.from_paste:
         form.ag = answered_ag(form)
+        batch = source.get(BATCH_FIELD)
+        if isinstance(batch, str) and len(batch) <= MAX_BATCH_CHARS:
+            form.batch = batch.strip()  # only carried: checked by ``paste_batch.decode`` when used
     if signer is not None:
         for ticket in form.tickets:
             drop_unsigned_date(ticket, signer)

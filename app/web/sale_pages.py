@@ -445,7 +445,7 @@ def readback_page(
         notes=notes,
         ask=ask,
         answer=_answer_text(form, result) if ask is not None else "",
-        profit=sales.sale_profit(result),
+        profit=_profit_for(user, result),
         sign=sign,
         day=day,
         payment=_payment(result.payment_method),
@@ -469,6 +469,12 @@ def choose_page(
         items=items,
         reader_warnings=list(reader_warnings),
     )
+
+
+def _profit_for(user: User, sale: SaleView | ValidatedSale) -> Decimal | None:
+    """The profit of ``sale`` for a reader who may see it (the manager), else None: for the
+    accountant and staff it is not computed, so no page or fragment can carry it."""
+    return sales.sale_profit(sale) if permissions.can_see_profit(user) else None
 
 
 def _actors(db: Session, agency_id: int, ids: set[int]) -> dict[int, tuple[str | None, str]]:
@@ -510,7 +516,7 @@ def detail_page(
         headers=NO_STORE,
         **shell_context(db, auth, ACTIVE_SALES),
         s=view,
-        profit=sales.sale_profit(view),
+        profit=_profit_for(user, view),
         payment=_payment(view.payment_method),
         warnings=sales.view_warnings(db, user, view) if view.status != SALE_VOIDED else (),
         versions=[
@@ -559,6 +565,7 @@ def list_page(
     views: Sequence[SaleView],
     sign: str,
 ) -> Response:
+    show_profit = permissions.can_see_profit(auth.user)
     return page(
         "sales/list.html",
         headers=NO_STORE,
@@ -568,13 +575,14 @@ def list_page(
         rows=[
             {
                 "s": v,
-                "profit": sales.sale_profit(v),
+                "profit": _profit_for(auth.user, v),
                 "payment": _payment(v.payment_method),
                 "issued": latest_issue_date(v.tickets),
             }
             for v in views
         ],
-        totals=sales.day_totals(views),
+        totals=sales.day_totals(views, with_profit=show_profit),
+        show_profit=show_profit,
         sign=sign,
         known_signs=(
             sorted(sign_owners(db, auth.user.agency_id))

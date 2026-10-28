@@ -71,6 +71,17 @@ Sur la page d'un jour :
 
 Ou dans la Discussion : « feuille du 19 septembre », « feuille d'hier ».
 
+La ligne de marge sous les totaux (« P.B − TOTAL DOC ») n'est que dans le fichier du gérant. Le
+fichier de la comptable a les mêmes lignes, colonnes et totaux (billets, TOTAL DOC, P.B), sans la
+marge ; la version enregistrée ne change pas et la comparaison avec votre feuille reste la même.
+
+### Le bénéfice : gérant seulement
+
+Le bénéfice (« Profit », P.B moins le coût) n'est montré qu'au **gérant** : colonnes et totaux des
+journées et des ventes, page d'une vente, relecture avant confirmation, marge du TJQ APRES. La
+comptable et les agents ne le voient nulle part, ni dans la Discussion. La comptable voit toujours
+le P.B, le coût Amadeus et les frais des partenaires (relevés des partenaires compris).
+
 ## 6. Partenaires et noms d'agence
 
 Menu « Partenaires ». Quand un agent associe un nom d'agence vu dans Amadeus à un partenaire, ce

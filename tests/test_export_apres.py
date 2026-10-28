@@ -597,11 +597,14 @@ def test_reopen_and_close_again_stores_version_2_and_v1_stays_downloadable(
     assert close(acc).status_code == 303
     v1, v2 = exports(env)
     assert (v1.version, v2.version) == (1, 2) and v1.content != v2.content
-    latest = acc.get(f"/days/{D20}/apres.xlsx")
+    # the manager gets the stored bytes; the accountant the same versions without the margin row
+    latest = m.get(f"/days/{D20}/apres.xlsx")
     assert latest.status_code == 200 and latest.content == v2.content
-    old = acc.get(f"/days/{D20}/apres.xlsx?v=1")
+    old = m.get(f"/days/{D20}/apres.xlsx?v=1")
     assert old.status_code == 200 and old.content == v1.content
-    assert acc.get(f"/days/{D20}/apres.xlsx?v=2").content == v2.content
+    assert m.get(f"/days/{D20}/apres.xlsx?v=2").content == v2.content
+    assert acc.get(f"/days/{D20}/apres.xlsx").content == export_apres.without_margin(v2.content)
+    assert acc.get(f"/days/{D20}/apres.xlsx?v=1").content == export_apres.without_margin(v1.content)
     assert acc.get(f"/days/{D20}/apres.xlsx?v=3").status_code == 404
     page = acc.get(f"/days/{D20}").text
     assert f"/days/{D20}/apres.xlsx?v=1" in page and f"/days/{D20}/apres.xlsx?v=2" in page

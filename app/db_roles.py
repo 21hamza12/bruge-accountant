@@ -80,6 +80,9 @@ GRANTS = {
     "partner_entries": "SELECT, INSERT",
     "partner_entry_decisions": "SELECT, INSERT",
     "partner_payments": "SELECT, INSERT",
+    # Phase F3 (migration 0018). The agency's details: one row, saved again by the manager (an
+    # UPDATE of the tenant's own row); never deleted.
+    "agency_details": "SELECT, INSERT, UPDATE",
 }
 # The tables migration 0003 grants on, frozen. 0003 passes this to ``apply_grants`` instead of
 # relying on GRANTS, which later phases extend: a fresh ``alembic upgrade head`` runs 0003 before

@@ -1,0 +1,32 @@
+{% extends "base.html" %}
+{% block title %}{{ _("Coordonnées de l'agence") }}{% endblock %}
+{% block content %}
+{% if error %}<p class="error-box" id="form-error" role="alert" tabindex="-1" autofocus>{{ error }}</p>{% endif %}
+{% if notice %}<p class="notice" id="saved-notice" role="status">{{ notice }}</p>{% endif %}
+<section class="card" aria-labelledby="details-title">
+  <h2 class="card-title" id="details-title">{{ _("Coordonnées de l'agence") }}</h2>
+  <p class="help">{{ _("Imprimées en tête des relevés envoyés aux partenaires. Chaque champ est facultatif : un champ vide n'apparaît pas.") }}</p>
+  {% if can_edit %}
+  <form class="form" method="post" action="/agency-details">
+    {% include "_csrf.html" %}
+    <input type="hidden" name="request_key" value="{{ form.request_key }}">
+    {% for name, label, limit in fields %}
+    <div class="field">
+      <label for="{{ name }}">{{ label }}</label>
+      <input id="{{ name }}" name="{{ name }}" type="{{ 'email' if name == 'email' else 'text' }}" maxlength="{{ limit }}" value="{{ form[name] or '' }}"{% if name == "name_ar" %} lang="ar" dir="rtl"{% elif name in ("phones", "bankily", "masrvi", "sedad") %} inputmode="tel" dir="ltr"{% endif %}{% if error %} aria-describedby="form-error"{% endif %}>
+      {% if name == "phones" %}<p class="help">{{ _("Plusieurs numéros séparés par « / », par exemple +222 45 00 00 00 / 22 00 00 00.") }}</p>{% endif %}
+    </div>
+    {% endfor %}
+    <button class="btn btn-primary" type="submit">{{ _("Enregistrer les coordonnées") }}</button>
+  </form>
+  {% else %}
+  <dl class="kv">
+    {% for name, label, limit in fields %}
+    <dt>{{ label }}</dt>
+    <dd{% if name == "name_ar" %} lang="ar" dir="rtl"{% endif %}>{{ form[name] or "-" }}</dd>
+    {% endfor %}
+  </dl>
+  <p class="muted">{{ _("Seul le gérant modifie ces coordonnées.") }}</p>
+  {% endif %}
+</section>
+{% endblock %}

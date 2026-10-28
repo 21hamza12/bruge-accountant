@@ -87,6 +87,13 @@ PARTNER_ACCOUNT_WRITE_USER = Limit("partner_account_write_user", 120, 3600)
 PARTNER_ACCOUNT_READ_USER = Limit("partner_account_read_user", 600, 3600)
 # Closing a partner period: twice a month per partner, so 30 an hour for each user is plenty.
 PARTNER_PERIOD_CLOSE_USER = Limit("partner_period_close_user", 30, 3600)
+# Downloads of a partner statement (Excel, F3): each one reads a period and builds a workbook;
+# a few dozen a day is normal, 60 an hour for each user stops a script.
+PARTNER_STATEMENT_USER = Limit("partner_statement_user", 60, 3600)
+# Saving the agency's details (F3): a handful of times a year; 20 an hour for each user.
+AGENCY_DETAILS_WRITE_USER = Limit("agency_details_write_user", 20, 3600)
+# Reading the agency's details: a person opens the page now and then; 300 an hour per user.
+AGENCY_DETAILS_READ_USER = Limit("agency_details_read_user", 300, 3600)
 # Guesses at the current password of a logged-in account (stolen-session brute force).
 PASSWORD_CHANGE_USER = Limit("password_change_user", 5, 15 * 60)
 

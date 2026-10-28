@@ -72,7 +72,12 @@ HEADER_ROW: Final = 5
 XLSX_MEDIA_TYPE: Final = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 MONEY_FORMAT: Final = "#,##0.00"
 FORMULA_STARTS: Final = frozenset("=+-@\t\r\n\x0b\x0c\xa0")
-LEADING_BLANKS: Final = " \t\r\n\x0b\x0c\xa0"
+# Blanks a spreadsheet may skip before a formula: ASCII ones, the no-break space, the typographic
+# spaces U+2000 to U+200A, the zero-width space U+200B, the ideographic space U+3000 and the
+# byte-order mark U+FEFF (review of F3, 27 Oct).
+LEADING_BLANKS: Final = (
+    " \t\r\n\x0b\x0c\xa0" + "".join(chr(c) for c in range(0x2000, 0x200C)) + "　﻿"
+)
 PHONE_E164: Final = re.compile(r"\+[0-9]{8,15}")
 MARK_COLUMN: Final = 24  # where the report prints "(CHD)" / "(INF)" in PAX NAME (0-based index)
 MAX_LINES: Final = 50_000  # the parser's limit

@@ -23,6 +23,7 @@ from app.db import make_engine, make_session_factory
 from app.models import (
     Agency,
     AgencyAiSettings,
+    AgencyDetails,
     AiUsage,
     AmadeusLine,
     AuditEvent,
@@ -92,6 +93,7 @@ SCOPED_MODELS: list[Any] = [
     PartnerEntry,
     PartnerEntryDecision,
     PartnerPayment,
+    AgencyDetails,
 ]
 
 
@@ -376,6 +378,9 @@ def rows_for_agency_b(b: Tenant) -> dict[str, Any]:
             received_by_user_id=b.user_id,
             recorded_by_user_id=b.user_id,
         ),
+        "agency_details": AgencyDetails(
+            agency_id=b.agency_id, name_fr="Forged", updated_by_user_id=b.user_id
+        ),
         "uploads": Upload(
             agency_id=b.agency_id,
             filename="x.xlsx",
@@ -416,6 +421,7 @@ def rows_for_agency_b(b: Tenant) -> dict[str, Any]:
         "partner_entries",
         "partner_entry_decisions",
         "partner_payments",
+        "agency_details",
     ],
 )
 def test_insert_for_another_agency_is_rejected(world: World, table: str) -> None:
@@ -1505,5 +1511,76 @@ def test_the_exact_policies_installed(world: World) -> None:
         ("partner_entry_decisions", "tenant_insert", "INSERT"),
         ("partner_payments", "tenant_read", "SELECT"),
         ("partner_payments", "tenant_insert", "INSERT"),
+        ("agency_details", "tenant_read", "SELECT"),
+        ("agency_details", "tenant_insert", "INSERT"),
+        ("agency_details", "tenant_update", "UPDATE"),
     }
     assert installed == expected
+
+
+# --- the agency's details (migration 0018) ----------------------------------------------
+
+
+def test_agency_details_grants(app_role_world: World) -> None:
+    db, _, _ = app_role_world
+    engine = create_engine(db.owner_url)
+    try:
+        with engine.connect() as conn:
+            privileges = set(
+                conn.execute(
+                    text(
+                        "SELECT privilege_type FROM information_schema.role_table_grants "
+                        "WHERE table_name = 'agency_details' AND grantee = :g"
+                    ),
+                    {"g": make_url(db.app_url).username},
+                ).scalars()
+            )
+    finally:
+        engine.dispose()
+    assert privileges == {"SELECT", "INSERT", "UPDATE"}
+
+
+def test_the_tenant_updates_its_own_details_only(world: World) -> None:
+    db, a, b = world
+    with app_session(db) as s:
+        bind_tenant(s, a.agency_id)
+        assert affected(s.execute(update(AgencyDetails).values(nif="11111111"))) == 1
+        assert (
+            affected(
+                s.execute(
+                    update(AgencyDetails)
+                    .where(AgencyDetails.agency_id == b.agency_id)
+                    .values(name_fr="Forged")
+                )
+            )
+            == 0
+        )  # b's row is invisible to a
+        s.commit()
+    with app_session(db) as s:
+        bind_tenant(s, a.agency_id)
+        with pytest.raises(DBAPIError) as info:
+            s.execute(update(AgencyDetails).values(agency_id=b.agency_id))
+        assert violates_rls(info.value) or "foreign key" in str(info.value)
+    with app_session(db) as s:
+        bind_tenant(s, b.agency_id)
+        assert s.execute(select(AgencyDetails.name_fr, AgencyDetails.nif)).all() == [
+            ("Agence Test", "00000000")
+        ]
+    with app_session(db) as s:
+        bind_tenant(s, a.agency_id)
+        assert s.scalars(select(AgencyDetails.nif)).all() == ["11111111"]
+
+
+def test_the_details_are_never_deleted(world: World) -> None:
+    db, a, _ = world
+    with app_session(db) as s:
+        bind_tenant(s, a.agency_id)
+        if db.mode == "app-role":
+            with pytest.raises(ProgrammingError, match="permission denied"):
+                s.execute(delete(AgencyDetails))
+            s.rollback()
+            bind_tenant(s, a.agency_id)
+        else:  # the owner: no DELETE policy, so nothing matches
+            assert affected(s.execute(delete(AgencyDetails))) == 0
+            s.commit()
+        assert count(s, AgencyDetails) == 1

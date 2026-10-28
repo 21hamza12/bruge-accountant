@@ -223,7 +223,7 @@ def test_0017_follows_0016_and_is_the_head() -> None:
     script = ScriptDirectory.from_config(alembic_config("sqlite://"))
     revision = script.get_revision("0017")
     assert revision is not None and revision.down_revision == "0016"
-    assert script.get_heads() == ["0017"]
+    assert len(script.get_heads()) == 1  # 0018 is the head now: see test_migration_0018
 
 
 def test_grants_follow_the_design() -> None:

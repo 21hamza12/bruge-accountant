@@ -16,8 +16,8 @@ import pytest
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app import partner_book, partner_refunds, partners, sales
-from app.models import AuditEvent, Partner, PartnerEntry, ReportDay
+from app import audit, partner_book, partner_refunds, partners, sales
+from app.models import AuditEvent, ComparisonRun, Partner, PartnerEntry, ReportDay
 from app.partner_refunds import proposal_date, propose_refunds, request_key
 from app.sales import SaleInput, TicketInput
 from tests.builders import amadeus_line
@@ -25,6 +25,7 @@ from tests.flag_support import NOW, FlagWorld
 
 D3 = date(2026, 10, 3)
 D14 = date(2026, 10, 14)
+D16 = date(2026, 10, 16)
 D20 = date(2026, 10, 20)
 OCT_1 = date(2026, 10, 1)
 A_DOC, DIRECT_DOC, B_DOC, POSITIVE_DOC, EMPTY_DOC = (
@@ -94,9 +95,15 @@ class RefundWorld(FlagWorld):
     def refund_report(self, lines: list[dict[str, Any]], range_raw: str = "20OCT") -> bytes:
         return self.report(lines, range_raw)
 
+    def compare(self, day: date = D20) -> list[PartnerEntry]:
+        """What the upload and « Relancer » do: the comparison, committed, then the proposals in
+        a transaction of their own."""
+        self.run(day)
+        return partner_refunds.propose_after_comparison(self.db, self.manager, day, now=NOW)
+
     def import_and_compare(self, data: bytes, day: date = D20) -> None:
         self.upload(data, name=f"{day.isoformat()}.xlsx")
-        self.run(day)
+        self.compare(day)
 
     def proposals(self) -> list[PartnerEntry]:
         return list(
@@ -206,7 +213,7 @@ def test_reimporting_and_recomparing_never_proposes_twice(mixed: RefundWorld) ->
     w.import_and_compare(mixed_report(w))
     first = [(e.id, e.doc_number) for e in w.proposals()]
     w.import_and_compare(mixed_report(w))  # the same bytes again
-    w.run(D20)  # and the comparison once more
+    w.compare(D20)  # and the comparison once more
     changed = w.refund_report([refund(A_DOC, -9999, "000001")])  # a new upload, another amount
     w.import_and_compare(changed)
     assert [(e.id, e.doc_number) for e in w.proposals()] == first
@@ -220,7 +227,7 @@ def test_a_rejected_proposal_is_never_proposed_again(mixed: RefundWorld) -> None
         w.db, w.accountant, w.partner_a.id, entry.id, decision="reject", note="déjà remboursé"
     )
     w.db.commit()
-    w.run(D20)
+    w.compare(D20)
     assert [e.doc_number for e in w.proposals()].count(A_DOC) == 1
 
 
@@ -328,3 +335,93 @@ def test_proposals_stay_in_the_agency_of_the_report(mixed: RefundWorld) -> None:
     )
     assert other == []
     assert all(e.agency_id == w.agency_id for e in w.proposals())
+
+
+# --- after the comparison, in a transaction of its own (review, 28 Oct) -------------------------
+
+
+def test_the_comparison_itself_proposes_nothing(mixed: RefundWorld) -> None:
+    """The run never takes a partner's advisory lock while it holds the day locks: it writes no
+    proposal; the caller proposes once the run is committed."""
+    w = mixed
+    w.upload(mixed_report(w), name="20OCT.xlsx")
+    w.run(D20)
+    assert w.proposals() == []
+    written = partner_refunds.propose_after_comparison(w.db, w.manager, D20, now=NOW)
+    assert {e.doc_number for e in written} == {A_DOC, B_DOC}
+    w.db.rollback()  # nothing left to roll back: the proposals were committed
+    assert {e.doc_number for e in w.proposals()} == {A_DOC, B_DOC}
+
+
+def test_a_failed_proposal_leaves_the_comparison_and_logs_ids_only(
+    mixed: RefundWorld, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    w = mixed
+    w.upload(mixed_report(w), name="20OCT.xlsx")
+    run = w.run(D20)
+
+    def boom(*args: Any, **kwargs: Any) -> list[PartnerEntry]:
+        raise RuntimeError("Partenaire Test 1990000001 -2505")
+
+    monkeypatch.setattr(partner_refunds, "propose_refunds", boom)
+    with caplog.at_level(logging.ERROR, logger="app.partner_refunds"):
+        assert partner_refunds.propose_after_comparison(w.db, w.manager, D20, now=NOW) == []
+    assert w.db.get(ComparisonRun, run.id) is not None  # the committed run stays
+    assert w.day(D20).status in ("compared", "approved")
+    (record,) = [r for r in caplog.records if r.getMessage() == "amadeus refunds not proposed"]
+    assert record.error == "RuntimeError"  # type: ignore[attr-defined]
+    assert "Partenaire" not in str(record.__dict__) and "2505" not in str(record.__dict__)
+    monkeypatch.undo()
+    assert {e.doc_number for e in w.compare(D20)} == {A_DOC, B_DOC}  # the next run retries
+
+
+def test_a_day_without_a_report_proposes_nothing(w: RefundWorld) -> None:
+    assert partner_refunds.propose_after_comparison(w.db, w.manager, D20, now=NOW) == []
+
+
+def test_the_audit_event_name_is_registered() -> None:
+    assert partner_refunds.PROPOSED == audit.PARTNER_REFUND_PROPOSED == "partner_refund_proposed"
+    names = [v for k, v in vars(audit).items() if k.isupper() and isinstance(v, str)]
+    assert names.count("partner_refund_proposed") == 1
+
+
+def test_the_reason_says_it_comes_from_the_amadeus_report(mixed: RefundWorld) -> None:
+    w = mixed
+    w.import_and_compare(mixed_report(w))
+    entry = next(e for e in w.proposals() if e.doc_number == A_DOC)
+    assert entry.reason == (
+        "Remboursement du billet 1990000001 proposé depuis le rapport Amadeus du 20 octobre 2026 "
+        ": montant Amadeus, à vérifier"
+    )
+
+
+# --- a refund or a cancellation never moves a sale (review, 28 Oct) -----------------------------
+
+D14_SALE_DOC = "1990000021"
+
+
+@pytest.mark.parametrize("trnc", ["RFND", "CANX"])
+def test_a_refund_or_cancellation_line_never_moves_a_sale(w: RefundWorld, trnc: str) -> None:
+    """A partner sale filed on 14 October (an open day without a report); the 16 October report
+    lists its ticket as RFND / CANX: the sale stays on the 14th (its partner period), the line is
+    ELSEWHERE, and an RFND is still proposed."""
+    sale_id = w.partner_sale(w.partner_a, D14_SALE_DOC, D14)
+    w.upload(w.refund_report([refund(D14_SALE_DOC, -2505)], "16OCT") if trnc == "RFND" else
+             w.refund_report([amadeus_line(doc=D14_SALE_DOC, total=-2505, trnc="CANX")], "16OCT"),
+             name="16OCT.xlsx")  # fmt: skip
+    proposed = w.compare(D16)
+    view = sales.agency_sales_by_id(w.db, w.agency_id, [sale_id])[0]
+    assert view.day == D14
+    assert [(f.kind, f.doc_number) for f in w.live(D16)] == [("elsewhere", D14_SALE_DOC)]
+    assert [e.doc_number for e in proposed] == ([D14_SALE_DOC] if trnc == "RFND" else [])
+
+
+@pytest.mark.parametrize("trnc", ["TKTT", "EMDA"])
+def test_an_issue_line_still_moves_the_sale(w: RefundWorld, trnc: str) -> None:
+    sale_id = w.partner_sale(w.partner_a, D14_SALE_DOC, D14)
+    w.upload(
+        w.refund_report([amadeus_line(doc=D14_SALE_DOC, total=21368, trnc=trnc)], "16OCT"),
+        name="16OCT.xlsx",
+    )
+    w.compare(D16)
+    assert sales.agency_sales_by_id(w.db, w.agency_id, [sale_id])[0].day == D16

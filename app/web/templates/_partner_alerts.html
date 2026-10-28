@@ -33,6 +33,7 @@
         <span class="pill pill-amber">{{ _("à confirmer") }}</span>
         <a href="/partner-accounts/{{ r.partner_id }}">{{ r.name }}</a>
         <span class="num">{{ r.amount | money_fr }} {{ agency.currency }}</span>
+        <span class="help amadeus-amount">{{ _("montant Amadeus (à vérifier)") }}</span>
         <span class="muted">{% if r.doc_number %}{{ _("billet %(doc)s", doc=r.doc_number) }} · {% endif %}{{ r.entry_date | date_fr }}</span>
       </li>
       {% endfor %}

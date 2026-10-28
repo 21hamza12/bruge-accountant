@@ -331,28 +331,46 @@ left room:
   counts, ISO dates, a level among `overdue` / `due_soon` / `none`, amounts as `-?digits.dd`
   strings); names stay in the lines. `grounded` is unchanged, so a model sentence with « MRU » or
   a reformatted amount is replaced by « Voici ce que j'ai trouvé : » and the lookup's own lines.
-- **RFND proposals are made by the comparison** (`flags.run_comparison`, after every upload and
-  every run again), in its transaction, from the lines it compared: one hook covers the import
-  (the upload runs the comparison) and re-comparisons alike. A report imported without a
-  comparison (the CLI) proposes at its first comparison. `created_by_user_id` is the person whose
-  upload or run proposed the line (possibly an agent: the decision is still the accountant's or
-  the manager's).
-- **Idempotency:** a ticket that already has an Amadeus `RFND` line in the agency (pending,
-  confirmed or rejected) is skipped, and the row carries the deterministic `request_key`
-  `amadeus-rfnd-<ticket>`, unique per agency in the database; a racing second insert is rolled
-  back to its savepoint and the comparison goes on.
+- **RFND proposals are made right after the comparison, in a transaction of their own**
+  (`partner_refunds.propose_after_comparison`, review, 28 Oct). The upload and « Relancer la
+  comparaison » commit the comparison first, then propose from the latest report of the day.
+  The proposal takes the partner's shared advisory lock; inside the comparison (which holds the
+  day locks) it could deadlock with a period close (advisory lock, then the days `FOR SHARE`).
+  A failure there is rolled back and logged with ids only (agency, report day, error class); the
+  comparison stays, and the next upload or run proposes again (idempotent). The reruns of the
+  validation screens (`approvals`) do not propose: their report is the one already compared. A
+  report imported without a comparison (the CLI) proposes at its first comparison.
+  `created_by_user_id` is the person whose upload or run proposed the line (possibly an agent: the
+  decision is still the accountant's or the manager's).
+- **A deadlock or a serialization failure** (SQLSTATE `40P01` / `40001`, `errors.is_lock_conflict`)
+  of the period close or of « Relancer la comparaison » is « Une autre opération était en cours au
+  même moment : rien n'a été changé, réessayez. » (409), never a 500. The upload already logs any
+  failure of its comparison and says it must be run again.
+- **Idempotency, once per ticket for ever:** a ticket that already has an Amadeus `RFND` line in
+  the agency (pending, confirmed or rejected) is skipped, and the row carries the deterministic
+  `request_key` `amadeus-rfnd-<ticket>`, unique per agency in the database; a racing second
+  insert is rolled back to its savepoint. So a later partial refund of the same ticket, or a
+  corrected amount, is never proposed: the accountant enters it by hand (a manual `RFND`, or an
+  `AJUSTEMENT` approved by the manager), and rejects a proposal whose amount is wrong.
 - **No backdating:** under the partner's shared advisory lock, the line is dated on the report day
   when it is after the latest closed period's end and not after today, else today (a closed
   period always ends before today). A report day before the switch-over day proposes nothing. A
-  database refusal is logged (ids only) and the comparison goes on.
+  database refusal is logged (ids only).
 - **Amount:** the report line's TOTAL DOC, negative with two decimals at most; missing, zero,
-  positive or odd: nothing proposed, a warning with ids only (report day, sale, partner).
+  positive or odd: nothing proposed, a warning with ids only (report day, sale, partner). It is
+  shown as « montant Amadeus (à vérifier) » with the ticket number wherever the line waits for a
+  decision (the account page, the home alerts), and the reason says « … proposé depuis le rapport
+  Amadeus du <jour> : montant Amadeus, à vérifier ».
+- **A refund or a cancellation never moves a sale** (review, 28 Oct): a report line with TRNC
+  `RFND` or `CANX` whose ticket is held by a sale of an earlier open day is ELSEWHERE (blocking,
+  naming the sale's day), as for an earlier closed day, never a move: the sale keeps its filing
+  day and its partner period (`comparison.NEVER_MOVES`, used by `compare` and by
+  `flags._other_days`). Issue lines (`TKTT`, `EMDA`, `EMDS`, any other) move as before. Before
+  this, a `CANX` line moved the sale and then flagged a TRNC difference.
+- **Audit:** `partner_refund_proposed` is `audit.PARTNER_REFUND_PROPOSED`, with the other event
+  names.
 
-Postgres-only (left to CI): the shared advisory lock taken by the proposal inside the comparison's
-transaction (after the day locks, as F2's sale corrections do), the unique request key under two
-truly concurrent comparisons, and the closed-period trigger refusing a proposal.
-
-Seen while building, not changed: an `RFND` line whose ticket is held by a sale of an earlier
-**open** day is, like any reported ticket, a candidate for the comparison's move of that sale to
-the report day (`flags` step 3). A refund normally arrives after the sale's day is closed (then it
-is an ELSEWHERE flag), but the comparison should probably leave `RFND` lines out of the moves.
+Postgres-only (left to CI): the proposal's shared advisory lock, now taken after the comparison's
+commit; the real deadlock and serialization refusals (the tests raise a simulated 40P01 / 40001);
+the unique request key under two truly concurrent comparisons; and the closed-period trigger
+refusing a proposal.

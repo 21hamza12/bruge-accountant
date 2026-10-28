@@ -54,7 +54,7 @@ from starlette.concurrency import run_in_threadpool
 from starlette.datastructures import UploadFile
 from starlette.responses import RedirectResponse, Response
 
-from app import audit, days, flags, permissions
+from app import audit, days, flags, partner_refunds, permissions
 from app.auth import ratelimit
 from app.clock import Clock
 from app.errors import UserError
@@ -319,13 +319,15 @@ def _compare_quietly(
 ) -> None:
     """Compare the day with the report that was just stored, in a transaction of its own: the
     upload is committed already and stays whatever happens here. A failure is logged; the result
-    page then says the comparison has to be run again."""
+    page then says the comparison has to be run again. Once the comparison is committed, the
+    refunds of partner tickets are proposed in a transaction of their own (phase F4)."""
     try:
         now = clock()
         ip = client_ip(request)
         report_day = days.get_or_open_day(db, auth.user, result.report_date, now=now, ip=ip)
         flags.run_comparison(db, auth.user, report_day, now=now, ip=ip)
         db.commit()
+        partner_refunds.propose_after_comparison(db, auth.user, result.report_date, now=now, ip=ip)
     except UserError as exc:  # no report lines, a closed or changed day: expected, not a bug
         log.warning(
             "comparison after upload not run: %s",

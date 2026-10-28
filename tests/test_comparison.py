@@ -389,10 +389,21 @@ def test_moved_ticket_is_still_compared() -> None:
     assert len(r.moves) == 1
 
 
-def test_moved_ticket_that_is_canx_in_amadeus_is_a_trnc_difference() -> None:
-    r = run([], [amd(trnc="CANX")], {DOC: app_t(report_day=EARLIER)})
-    assert len(r.moves) == 1 and r.cancelled == ()
-    assert [(f.kind, f.field) for f in r.flags] == [(KIND_DIFFERENT, "trnc")]
+@pytest.mark.parametrize("trnc", ["CANX", "RFND", "canx ", "rfnd"])
+def test_a_canx_or_rfnd_line_never_moves_a_sale_of_an_earlier_day(trnc: str) -> None:
+    """Review of F4: a refund or a cancellation is about a ticket sold before; moving its sale
+    would change the sale's filing day and its partner period. It is ELSEWHERE instead."""
+    r = run([], [amd(trnc=trnc, seq_order=3)], {DOC: app_t(report_day=EARLIER, sale_id=7)})
+    assert r.moves == () and r.cancelled == ()
+    assert [(f.kind, f.sale_id, f.app_value) for f in r.flags] == [
+        (KIND_ELSEWHERE, 7, EARLIER.isoformat())
+    ]
+
+
+@pytest.mark.parametrize("trnc", ["TKTT", "EMDA", "EMDS"])
+def test_an_issue_line_still_moves_a_sale_of_an_earlier_day(trnc: str) -> None:
+    r = run([], [amd(trnc=trnc)], {DOC: app_t(report_day=EARLIER, trnc=trnc)})
+    assert len(r.moves) == 1
 
 
 def test_other_days_keys_are_normalised() -> None:

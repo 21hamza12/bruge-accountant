@@ -33,7 +33,9 @@ Rules, all deliberate:
 * ``other_days_app`` holds app tickets found outside the day (``active_ticket_lookup``). **The
   caller must leave out tickets of closed days.** A report line whose ticket is there with an
   earlier day is a ``Move`` (and is compared as usual); with the same or a later day it is an
-  ``ELSEWHERE`` flag (re-sending it would be refused as a duplicate).
+  ``ELSEWHERE`` flag (re-sending it would be refused as a duplicate). A refund or a cancellation
+  line (TRNC ``RFND`` / ``CANX``, ``NEVER_MOVES``) never moves a sale: it is ``ELSEWHERE`` too,
+  so the sale keeps its filing day and its partner period (phase F4).
 """
 
 from __future__ import annotations
@@ -76,6 +78,9 @@ KNOWN_KINDS: Final = frozenset(
 )
 
 TRNC_CANX: Final = "CANX"
+TRNC_RFND: Final = "RFND"
+# A report line of these kinds tells about a ticket sold before: it never moves its sale.
+NEVER_MOVES: Final = frozenset({TRNC_CANX, TRNC_RFND})
 DOC_DIGITS: Final = 10
 # Fields whose correction moves money, the ticket itself, its attribution or its fare class: the
 # accountant or manager validates (decision 18, widened after the B9 review: the sign decides whose
@@ -380,7 +385,11 @@ def compare(
         mine = app_by_doc.get(doc)
         if mine is None:
             other = other_by_doc.get(doc)
-            if other is not None and other.report_day < day:
+            if (
+                other is not None
+                and other.report_day < day
+                and amd.trnc.strip().upper() not in NEVER_MOVES
+            ):
                 mine = other
                 moves.append(Move(doc, other.sale_id, other.report_day, day, amd.seq_order))
             elif other is not None:

@@ -4,8 +4,12 @@ writes an ``RFND`` line on that partner's account, ``source = amadeus``, with th
 the refund amount of the report (negative) and no decision. It counts only once the accountant or
 the manager confirms it (``partner_book.decide_line``); until then it is « à confirmer ».
 
-Called by ``flags.run_comparison`` (after every upload, and on every comparison run again), in
-the comparison's transaction, with the report lines it compared.
+``propose_after_comparison`` is called by whoever ran ``flags.run_comparison`` (the upload and
+« Relancer la comparaison »), AFTER the comparison was committed, in a transaction of its own:
+the proposal takes the partner's shared advisory lock, and a period close takes that lock before
+the day locks a comparison holds; taking it inside the comparison could deadlock. Any failure
+there is rolled back and logged with ids only; the comparison stays, and the next upload or run
+proposes again (idempotent).
 
 * **Which lines.** ``TRNC = RFND``, a usable ticket number (``comparison.normalise_doc``), held by
   an ACTIVE sale whose current version is a PARTNER sale (``sales.active_ticket_lookup``): the
@@ -14,8 +18,9 @@ the comparison's transaction, with the report lines it compared.
 * **Amount.** The line's TOTAL DOC, which must be negative with at most two decimals; a missing,
   zero, positive or odd amount proposes nothing and is logged with ids only (no amount, no name).
 * **Once per ticket, ever.** A ticket that already has an Amadeus ``RFND`` line in the agency
-  (pending, confirmed or rejected) is skipped, and the row carries the deterministic
-  ``request_key`` ``amadeus-rfnd-<ticket>``, unique per agency in the database
+  (pending, confirmed or rejected) is skipped: a later partial refund, or a corrected amount, of
+  the same ticket is entered by hand (a manual ``RFND`` or an ``AJUSTEMENT``). The row carries
+  the deterministic ``request_key`` ``amadeus-rfnd-<ticket>``, unique per agency in the database
   (``ix_partner_entries_request_key``): two comparisons racing still write one row, the loser's
   savepoint is rolled back and it moves on.
 * **Never backdated.** Under the partner's shared advisory lock (migration 0017's insert guard),
@@ -27,7 +32,9 @@ the comparison's transaction, with the report lines it compared.
 * **Who.** ``created_by_user_id`` is the person whose upload or comparison run proposed the line;
   the decision is the accountant's or the manager's, as for every Amadeus ``RFND``.
 
-Audit: ``partner_refund_proposed`` with ids, the amount and the date only. Never commits.
+Audit: ``partner_refund_proposed`` (``audit.PARTNER_REFUND_PROPOSED``) with ids, the amount and
+the date only. ``propose_refunds`` never commits; ``propose_after_comparison`` commits or rolls
+back its own transaction.
 """
 
 from __future__ import annotations
@@ -43,7 +50,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from app import audit, sales
+from app import audit, days, flags, sales
 from app.comparison import normalise_doc
 from app.formatting import date_fr
 from app.models import (
@@ -65,8 +72,11 @@ log = logging.getLogger(__name__)
 
 TRNC_REFUND = "RFND"
 KEY_PREFIX = "amadeus-rfnd-"
-PROPOSED = "partner_refund_proposed"  # audit event: ids, amount and date only
-REASON = "Remboursement du billet {doc} vu dans le rapport Amadeus du {day}, à vérifier"
+PROPOSED = audit.PARTNER_REFUND_PROPOSED  # ids, amount and date only
+REASON = (
+    "Remboursement du billet {doc} proposé depuis le rapport Amadeus du {day} : montant Amadeus, "
+    "à vérifier"
+)
 
 # why a line proposed nothing (logged, with ids only)
 SKIP_AMOUNT = "amount"
@@ -276,4 +286,39 @@ def propose_refunds(
         row = _propose(db, actor, candidate, amount, report_day, report_day_id, now, ip)
         if row is not None:
             written.append(row)
+    return written
+
+
+def propose_after_comparison(
+    db: Session,
+    actor: User,
+    report_day: date,
+    *,
+    now: datetime,
+    ip: str | None = None,
+) -> list[PartnerEntry]:
+    """Propose the refunds of the latest report of ``report_day``, in a transaction of its own:
+    call it once the comparison is COMMITTED. Commits what it wrote; on any error rolls back,
+    logs ids only and returns ``[]`` (the comparison is not touched; the next run retries)."""
+    agency_id = actor.agency_id
+    day_id: int | None = None
+    try:
+        found = days.get_day(db, agency_id, report_day)
+        day_id = None if found is None else found.id
+        lines = flags.report_lines_for_day(db, agency_id, report_day)
+        written = propose_refunds(
+            db, actor, report_day, lines, now=now, report_day_id=day_id, ip=ip
+        )
+        db.commit()
+    except Exception as exc:
+        db.rollback()
+        log.error(
+            "amadeus refunds not proposed",
+            extra={
+                "agency_id": agency_id,
+                "report_day_id": day_id,
+                "error": type(exc).__name__,
+            },
+        )
+        return []
     return written

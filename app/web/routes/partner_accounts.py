@@ -23,12 +23,14 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy import select
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.orm import Session
 from starlette.responses import RedirectResponse, Response
 
 from app import partner_book, permissions
 from app.auth import ratelimit
 from app.clock import Clock
+from app.errors import RETRY_LATER, is_lock_conflict
 from app.models import PARTNER_PAYMENT_METHODS, User
 from app.partner_book import (
     Account,
@@ -455,6 +457,11 @@ def period_close(
         db.rollback()
         status = _status(exc)
         return _account_page(db, auth, clock, partner_id, error=str(exc), status_code=status)
+    except DBAPIError as exc:  # a deadlock or a serialization failure: try again, never a 500
+        if not is_lock_conflict(exc):
+            raise
+        db.rollback()
+        return _account_page(db, auth, clock, partner_id, error=RETRY_LATER, status_code=409)
     again = "" if written.created else "?deja=cloture"
     return RedirectResponse(
         f"/partner-accounts/{partner_id}/periods/{day.isoformat()}{again}", status_code=303

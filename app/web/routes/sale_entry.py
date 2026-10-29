@@ -30,6 +30,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from contextlib import aclosing
 from datetime import UTC, datetime, timedelta
 from typing import Annotated
@@ -99,6 +100,7 @@ UNREADABLE = (
 )
 
 DOUBLE_SUBMIT_WINDOW = timedelta(seconds=120)
+_INDEX = re.compile(r"\d{1,3}", re.ASCII)  # a proposal's index on the list page
 LIST_GONE = (
     "La liste des ventes de ce texte n'est plus disponible : collez le texte à nouveau "
     "(les ventes déjà saisies seront signalées)."
@@ -232,6 +234,27 @@ def sale_paste_list(
     if batch is None:
         return form_page(db, auth, clock, SaleForm(), paste_error=LIST_GONE, status_code=400)
     return choose_page(db, auth, batch.forms, batch.reader_warnings)
+
+
+@router.post("/paste/open")
+def sale_paste_open(
+    request: Request,
+    db: Db,
+    clock: Now,
+    auth: Auth,
+    posted: Posted,
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> Response:
+    """« Saisir cette vente » on the list: the prefilled form of proposal ``proposal`` of the
+    signed list (the page carries the list once, each button only its index). The form is
+    re-derived here from the verified list, never posted by the page; nothing is written."""
+    throttle(db, request, auth, clock, write=False)
+    batch = _batch_of(settings, auth, clock, posted.get(paste_batch.FIELD))
+    raw = posted.get("proposal")
+    index = int(raw) if isinstance(raw, str) and _INDEX.fullmatch(raw) else -1
+    if batch is None or not 0 <= index < len(batch.forms):
+        return form_page(db, auth, clock, SaleForm(), paste_error=LIST_GONE, status_code=400)
+    return form_page(db, auth, clock, batch.forms[index])
 
 
 def _after_save(

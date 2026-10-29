@@ -5,15 +5,19 @@ agent opens one, confirms it, and comes back to the list of the same paste: the 
 saved are « déjà saisie », the others keep their button. The pasted text (or the screenshot) is
 NOT kept for that (docs/design/02-open-decisions.md, decision 3): what travels is the list of
 proposed forms the server already sent to the browser, in ONE hidden field (``paste_batch``) of
-the proposals page, the sale form and the read-back, and nowhere else:
+the proposals page (once for the page: each « Saisir cette vente » button posts it with its
+proposal's index to ``POST /sales/paste/open``, which re-derives that form from the verified list),
+the sale form and the read-back, and nowhere else:
 
 * never a URL or query string, never the database, never a log line, never a server-side store:
   the browser already holds every value of it in the proposals page, so carrying it adds nothing
   the agent does not already have, and it is gone when the tab is closed;
 * **signed**, ``base64url(json) "." HMAC-SHA256(issue key, "paste-batch|agency|user|" + body)``
   with the server's issue-signing key (``Settings.issue_key()``): only a list this server made for
-  this very user is shown again. A list that is tampered with, garbled, another user's, older than
-  ``MAX_AGE`` or larger than ``MAX_TOKEN_BYTES`` is dropped (``decode`` returns None). It is
+  this very user is shown again. A list that is tampered with, garbled, another user's, made on an
+  earlier (UTC) day, older than ``MAX_AGE`` or larger than ``MAX_TOKEN_BYTES`` is dropped
+  (``decode`` returns None; a list too large to make is not made, and each proposal is then
+  posted on its own, as before the list existed). It is
   integrity only, not secrecy: the values are the agent's own page;
 * never believed: a proposal opened from it is read with ``sale_forms.read`` like any posted form
   (issue dates re-verified for staff with ``app/issue_sig.py``) and validated again by the service
@@ -29,7 +33,7 @@ import hashlib
 import hmac
 import json
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 
 from starlette.datastructures import FormData, UploadFile
 
@@ -130,11 +134,14 @@ def decode(
     if not isinstance(stamp, int) or not isinstance(warnings, list):
         return None
     try:
-        age = now - datetime.fromtimestamp(stamp, tz=now.tzinfo)
+        made = datetime.fromtimestamp(stamp, tz=UTC)
     except (OverflowError, OSError, ValueError):
         return None
+    age = now - made
     if age > MAX_AGE or age < -timedelta(minutes=5):
         return None
+    if made.date() < now.astimezone(UTC).date():
+        return None  # made on an earlier day: its "today" (the old tickets dropped) is stale
     if not isinstance(proposals, list) or not 2 <= len(proposals) <= MAX_PROPOSALS:
         return None
     forms: list[SaleForm] = []

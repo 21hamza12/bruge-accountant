@@ -71,7 +71,7 @@ HIDDEN_CLIP = 120  # the agency text and the reader warnings carried in hidden f
 # The signed list of the other proposals of the same paste (``app/web/paste_batch.py``): carried
 # as is, never read here beyond its size.
 BATCH_FIELD = "paste_batch"
-MAX_BATCH_CHARS = 192 * 1024
+MAX_BATCH_CHARS = 48 * 1024  # the list once per page; larger lists are not made
 BAD_DAY = "La date doit être au format AAAA-MM-JJ."
 BAD_ISSUE = "La date d'émission est illisible : relisez le texte Amadeus."
 BAD_VERSION = "Version de la vente invalide : rechargez la page."

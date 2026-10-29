@@ -22,8 +22,8 @@ import pytest
 from app.parsing.pnr import parse_pnr_text
 from tests.page_support import Env
 from tests.test_sale_pages import SIGN, text_of
-from tests.test_sale_paste import paste
-from tests.test_sale_paste_batch import offered, offered_docs
+from tests.test_sale_paste import paste, values
+from tests.test_sale_paste_batch import offered, offered_docs, open_proposal
 from tests.web_support import WebDb
 
 FIXTURE = Path(__file__).parent / "fixtures" / "pnr" / "exchange_split_links.txt"
@@ -69,6 +69,43 @@ def test_a_real_difference_between_two_screens_still_warns() -> None:
     assert "élément 36 différent entre deux écrans : vérifier" in reading.warnings
 
 
+def test_the_cut_item_is_completed_with_a_soft_notice() -> None:
+    reading = parse_pnr_text(booking())
+    assert "élément 36 complété depuis l'écran suivant" in reading.warnings
+
+
+def _two_screens(first: str, second: str, *, end: str = ">") -> str:
+    head = "--- TST RLR ---\nRP/NKC262374/NKC262374            AB/SU  27OCT26/1517Z   ZQ9TST\n"
+    return f"{head}{first}\n{end}\n{head}{second}\n>\n"
+
+
+def test_two_complete_items_that_differ_by_a_last_digit_still_warn() -> None:
+    # neither screen was cut after element 16: EUR100 and EUR1000 are a real conflict
+    first = " 16 FE PAX VALID ON ET ONLY/EUR100\n 17 FV PAX ET/S3-4/P1-2"
+    second = " 16 FE PAX VALID ON ET ONLY/EUR1000\n 17 FV PAX ET/S3-4/P1-2"
+    for end in (">", ")>"):
+        reading = parse_pnr_text(_two_screens(first, second, end=end))
+        assert "élément 16 différent entre deux écrans : vérifier" in reading.warnings
+        assert not any("complété" in w for w in reading.warnings)
+    # the last item of a screen closed by ">" (the end of the display) was not cut either
+    last = parse_pnr_text(_two_screens(" 16 FE PAX X/EUR100", " 16 FE PAX X/EUR1000"))
+    assert "élément 16 différent entre deux écrans : vérifier" in last.warnings
+
+
+def test_only_the_last_item_of_a_screen_cut_by_the_prompt_is_completed() -> None:
+    first = " 15 FV PAX ET/S3-4/P1-2\n 16 FE PAX VALID ON ET ONLY/EUR10"
+    second = " 16 FE PAX VALID ON ET ONLY/EUR1000\n 17 RM TEST"
+    reading = parse_pnr_text(_two_screens(first, second, end=")>"))
+    assert "élément 16 complété depuis l'écran suivant" in reading.warnings
+    assert not any("différent" in w for w in reading.warnings)
+    # the end of the pasted text cuts the last item too (here the later, shorter copy)
+    head = "RP/NKC262374/NKC262374            AB/SU  27OCT26/1517Z   ZQ9TST\n"
+    text = f"{head} 16 FE PAX X/EUR1000\n 17 RM TEST\n>\n{head} 16 FE PAX X/EUR1"
+    reading = parse_pnr_text(text)
+    assert "élément 16 complété depuis l'écran suivant" in reading.warnings
+    assert not any("différent" in w for w in reading.warnings)
+
+
 def test_a_blank_line_that_does_not_fit_the_grammar_is_not_rejoined() -> None:
     # the middle piece is not a ticket number: nothing is glued, the ticket is reported unread
     text = booking().replace("\n071-3940281552\n", "\nTEST 3940281552\n")
@@ -92,11 +129,12 @@ def env(web_db: WebDb) -> Env:
 
 
 def test_both_new_tickets_are_proposed_and_the_old_exchanged_ones_are_not(env: Env) -> None:
-    r = paste(env.staff_a(), booking())
+    c = env.staff_a()
+    r = paste(c, booking())
     assert r.status_code == 200, text_of(r.text)[:1500]
     assert offered_docs(r.text) == list(NEW)
     text = text_of(r.text)
     assert f"2 billet(s) émis avant aujourd'hui ignoré(s) : {', '.join(OLD)}" in text
     assert "différent entre deux écrans" not in text
-    for form in offered(r.text):
-        assert not set(OLD) & set(form["doc_number"])
+    for proposal, doc in zip(offered(r.text), NEW, strict=True):
+        assert values(open_proposal(c, proposal).text, "doc_number") == [doc]

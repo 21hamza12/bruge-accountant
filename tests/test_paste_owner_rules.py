@@ -25,8 +25,8 @@ from tests.acceptance_support import fields_of, override
 from tests.ai_support import png
 from tests.page_support import Env
 from tests.test_sale_pages import SIGN, accountant, enter, make_partner, table, text_of, tk
-from tests.test_sale_paste import one_passenger, paste, pnr, values
-from tests.test_sale_paste_batch import offered, offered_docs, save
+from tests.test_sale_paste import on_today, one_passenger, paste, pnr, values
+from tests.test_sale_paste_batch import offered, offered_docs, open_proposal, save
 from tests.web_support import WebDb, csrf_for
 
 DOCS = ("3940299481", "3940299482", "3940299483")
@@ -132,6 +132,22 @@ def test_a_paste_without_a_client_is_prefilled_and_stored_as_client(env: Env) ->
     assert stored_clients(env) == ["CLIENT"]
 
 
+def test_client_is_prefilled_only_for_a_booking_read_as_a_direct_sale(env: Env) -> None:
+    c = env.staff_a()
+    # an agency nobody knows: the agent may still answer "partner", so nothing is prefilled
+    unknown = without_client(one_passenger()).replace("- BRUGE -", "- TEST AGENCE INCONNUE -")
+    r = paste(c, unknown)
+    assert r.status_code == 200
+    assert values(r.text, "clt") == [""]
+    # a partner booking: a partner sale needs no client
+    make_partner(env, "TEST PARTENAIRE", "500")
+    partner = without_client(one_passenger()).replace("- BRUGE -", "- TEST PARTENAIRE -")
+    assert values(paste(c, partner).text, "clt") == [""]
+    # answered "direct" on the form anyway: the server still stores « CLIENT »
+    assert confirm_form(c, r.text, ag_answer="direct").status_code == 303
+    assert stored_clients(env) == ["CLIENT"]
+
+
 def test_a_paste_with_a_client_keeps_it(env: Env) -> None:
     c = env.staff_a()
     r = paste(c, one_passenger())
@@ -174,6 +190,27 @@ def test_the_deja_saisie_flow_works_on_the_filtered_list(env: Env) -> None:
     r2 = save(c, offered(r1.text)[0])
     assert "Toutes les ventes de ce texte sont saisies" in text_of(r2.text)
     assert sorted(t.doc_number for t in table(env, SaleTicket)) == list(DOCS[1:])
+
+
+PB_WHOLE = "P.B lu sur la réservation entière : vérifiez qu'il ne compte pas les billets ignorés"
+
+
+def test_a_proposal_that_lost_an_old_ticket_warns_about_its_rm_price(env: Env) -> None:
+    # passenger 1 of the layover has two tickets for one RM price; one of them is old
+    text = on_today(pnr("layover_two_pages")).replace(
+        "199-3940299469/ETTU/MRU21368.00/21OCT26", "199-3940299469/ETTU/MRU21368.00/19OCT26"
+    )
+    c = env.staff_a()
+    r = paste(c, text)
+    assert r.status_code == 200
+    page = text_of(r.text)
+    assert "1 billet(s) émis avant aujourd'hui ignoré(s) : 3940299469" in page
+    assert page.count(PB_WHOLE) == 1  # only the proposal that lost a ticket
+    opened = open_proposal(c, offered(r.text)[0])
+    assert values(opened.text, "doc_number") == ["3940299471"]
+    assert PB_WHOLE in text_of(opened.text)
+    # nothing dropped, no such notice
+    assert PB_WHOLE not in text_of(paste(c, on_today(pnr("layover_two_pages"))).text)
 
 
 def test_an_all_old_paste_proposes_nothing_and_only_says_so(env: Env) -> None:

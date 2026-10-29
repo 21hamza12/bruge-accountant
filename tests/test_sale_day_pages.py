@@ -474,7 +474,19 @@ def test_the_manager_sees_the_day_field_prefilled_and_signatures_are_harmless(en
 def test_a_forged_date_on_the_choice_screen_flow_is_ignored_too(env: Env) -> None:
     c = env.staff_a()
     html = paste(c, todays(pnr("layover_two_pages"))).text
-    assert html.count('name="issue_sig"') >= 2  # each proposal carries signed rows
+    from tests.test_sale_paste_batch import offered, open_proposal
+
+    # the list carries the proposals signed; each one opens with its rows' signed dates
+    for proposal in offered(html):
+        opened = open_proposal(c, proposal).text
+        assert values(opened, "issue_date") == [TODAY, TODAY]
+        assert all(values(opened, "issue_sig"))
+    # a date forged on the opened form loses its signature: the sale goes to today
+    form = values_to_form(open_proposal(c, offered(html)[0]).text)
+    form.update({"issue_date": [TWO_DAYS_AGO, TWO_DAYS_AGO], "ag_answer": "direct"})
+    r = post(c, "/sales/preview", form)
+    assert r.status_code == 200, text_of(r.text)[:900]
+    assert one_sale_day(env, confirm_with(c, r.text, "/sales")) == TODAY
 
 
 # --- reasons and kept dates on edit ----------

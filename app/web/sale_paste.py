@@ -36,6 +36,9 @@ W_NO_ISSUE_DATE = (
 # Tickets issued before today are not read (owner, 29 Oct 2026: decision 25): a late ticket is
 # typed by hand. One notice names them; it replaces the old "Date d'émission ancienne" notice.
 W_OLD_TICKETS = "{n} billet(s) émis avant aujourd'hui ignoré(s) : {docs}"
+W_PB_PARTIAL = (
+    "P.B lu sur la réservation entière : vérifiez qu'il ne compte pas les billets ignorés"
+)
 W_SOME_NO_ISSUE_DATE = "Billet {doc} : date d'émission illisible (ignorée pour la journée)."
 
 
@@ -105,7 +108,9 @@ def form_from_sale(
         ]
         or [TicketForm()],
         pb=money(sale.pb) if sale.pb is not None else "",
-        clt=sale.clt or ("" if sale.ag_kind == "partner" else DEFAULT_CLIENT),
+        # « CLIENT » only for a booking read as a direct sale: an unknown agency may still be
+        # answered "partner" (no client needed); the server stores « CLIENT » for any direct sale
+        clt=sale.clt or (DEFAULT_CLIENT if sale.ag_kind == "direct" else ""),
         ap=sale.ap or "",
         staff_sign=sale.staff_sign or "",
         source=source,
@@ -132,14 +137,21 @@ def _issued_today_or_later(
     sales: list[ProposedSale], today: date
 ) -> tuple[list[ProposedSale], list[str]]:
     """The proposals without their tickets issued before ``today``, and the numbers of those
-    tickets. A proposal left without tickets is dropped; a ticket with no readable date stays."""
+    tickets. A proposal left without tickets is dropped; a ticket with no readable date stays. A
+    proposal that lost some tickets but keeps the RM price of the booking says the price may count
+    them (``W_PB_PARTIAL``)."""
     kept: list[ProposedSale] = []
     old: list[str] = []
     for sale in sales:
         recent = tuple(t for t in sale.tickets if t.issue_date is None or t.issue_date >= today)
         old.extend(t.doc_number for t in sale.tickets if t not in recent)
-        if recent:
-            kept.append(sale if len(recent) == len(sale.tickets) else replace(sale, tickets=recent))
+        if not recent:
+            continue
+        if len(recent) == len(sale.tickets):
+            kept.append(sale)
+            continue
+        warnings = (*sale.warnings, W_PB_PARTIAL) if sale.pb is not None else sale.warnings
+        kept.append(replace(sale, tickets=recent, warnings=warnings))
     return kept, list(dict.fromkeys(old))
 
 

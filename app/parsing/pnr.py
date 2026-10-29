@@ -24,9 +24,11 @@ Rules:
   ``/ETET/...``). ``_rejoin_links`` glues such an FA or FO item back into one line before anything
   else, and only when the three pieces fit that grammar (head, ``ddd-dddddddddd[-dd]``, ``/...``).
   FE lines carry no ticket number and are left alone.
-* An item cut at the end of a screen (``.../512`` then ``)>``) and shown whole on the next screen
-  is the same item: when one version is the start of the other, the longer one is kept. Two
-  versions that really differ are still a warning.
+* An item cut at the end of a screen (``.../512`` then ``)>``, or the end of the text) and shown
+  whole on another screen is the same item: when the cut version is not empty and is the start of
+  the other, the longer one is kept, with the notice « élément N complété depuis l'écran
+  suivant ». Only the last item of a screen that ends that way can be cut; anywhere else two
+  versions that differ, even by a final digit (``EUR100`` / ``EUR1000``), are still a warning.
 * Conjunction tickets (``071-3940281214-15``: one ticket on two booklets) are read in FA and FO
   lines by their first number (``3940281214``), the one the sale records; the booklet suffix
   (``-15``) is not recorded.
@@ -218,6 +220,9 @@ class _Screen:
     rp: str | None = None
     elements: dict[int, list[str]] = field(default_factory=dict)
     pax: dict[int, str] = field(default_factory=dict)
+    last: int | None = None  # the element being read, while nothing else came after it
+    closed: bool = False  # a prompt (``>`` or ``)>``) ended the screen
+    cut: int | None = None  # the element the screen ended on (``)>`` or the end of the text)
 
 
 def strip_accents(value: str) -> str:
@@ -274,8 +279,14 @@ def _split_screens(lines: list[str], *, transcript: bool = False) -> list[_Scree
     for raw in lines:
         indent, text = _indent_and_text(raw)
         screen = screens[-1]
-        if not text or text.startswith((">", ")>", "---", "```", "~~~")):
-            current = None  # blank, prompt, header or Markdown fence: ends the element
+        if text.startswith(")>") and not screen.closed:
+            screen.closed, screen.cut = True, screen.last  # "more follows": maybe cut mid-item
+            current = None
+        elif text.startswith(">"):
+            screen.closed = True  # the end of the display: nothing was cut
+            current = None
+        elif not text or text.startswith((")>", "---", "```", "~~~")):
+            current = None  # blank, header or Markdown fence: ends the element
         elif text.startswith("RP/") and indent < 3:
             screens.append(_Screen(rp=text))
             current = None
@@ -283,17 +294,21 @@ def _split_screens(lines: list[str], *, transcript: bool = False) -> list[_Scree
             for number, chunk in _pax_chunks(text):
                 screen.pax.setdefault(number, chunk)
             current = []  # a wrapped name is not supported; swallow its continuation
+            screen.last = None
         elif indent <= 2 and (m := _ELEMENT_RE.fullmatch(text)):
             number = int(m.group(1))
             if number in screen.elements:
                 current = []
+                screen.last = None
             else:
                 current = [m.group(2)]
                 screen.elements[number] = current
+                screen.last = number
             separator = ""
         elif indent <= 2 and text.startswith("*"):
             current = []
             separator = " "
+            screen.last = None
         elif current is not None and (indent >= 3 or (transcript and not _is_prose(text))):
             # Indented as Amadeus wraps (3 or more), a line always continues the element above,
             # lowercase e-mails and remarks included. Only in a transcript (the indentation may be
@@ -301,6 +316,9 @@ def _split_screens(lines: list[str], *, transcript: bool = False) -> list[_Scree
             current.append(separator + text)
         else:
             current = None
+            screen.last = None
+    if not screens[-1].closed:
+        screens[-1].cut = screens[-1].last  # the text stops right after this element
     return screens
 
 
@@ -583,18 +601,26 @@ def parse_pnr_text(text: str, *, transcript: bool = False) -> PnrReading:
         warnings.append(W_NO_RP)
 
     elements: dict[int, str] = {}
+    cut_short: dict[int, bool] = {}  # the kept version was the last item of a screen cut there
     pax: dict[int, str] = {}
     for s in chosen:
         for number, parts in s.elements.items():
             joined = "".join(parts)
+            cut_here = number == s.cut
             if number not in elements:
-                elements[number] = joined
+                elements[number], cut_short[number] = joined, cut_here
                 continue
             known, other = _collapse(elements[number]), _collapse(joined)
-            if known == other or known.startswith(other):
-                continue  # the same, or a version cut at the end of a screen: keep the whole one
-            if other.startswith(known):
-                elements[number] = joined
+            if known == other:
+                continue
+            # A screen that ends with ")>" (or the text that ends) may cut its last item: the
+            # whole version on the other screen is kept. Anything else that differs, even by a
+            # digit at the end (EUR100 / EUR1000), is a conflict.
+            if known and cut_short[number] and other.startswith(known):
+                elements[number], cut_short[number] = joined, cut_here
+                warnings.append(f"élément {number} complété depuis l'écran suivant")
+            elif other and cut_here and known.startswith(other):
+                warnings.append(f"élément {number} complété depuis l'écran suivant")
             else:
                 warnings.append(f"élément {number} différent entre deux écrans : vérifier")
         for number, chunk in s.pax.items():

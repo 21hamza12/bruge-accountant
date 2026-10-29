@@ -156,17 +156,13 @@ def test_three_adults_give_three_proposals_each_opens_a_prefilled_form(env: Env)
     for doc in ("3940299481", "3940299482", "3940299483"):
         assert doc in text
     assert fr(5400) in text
-    # each button carries its proposal; pressing the second one opens that passenger's form
-    forms = re.findall(
-        r'<form class="inline-form" method="post" action="/sales/new">.*?</form>', r.text, re.S
-    )
-    assert len(forms) == 3
-    second = forms[1]
-    fields = re.findall(r'<input type="hidden" name="([^"]+)" value="([^"]*)">', second)
-    data: dict[str, list[str]] = {}
-    for key, value in fields:
-        data.setdefault(key, []).append(value)
-    opened = c.post("/sales/new", data=data, follow_redirects=False)
+    # each button names its proposal in the page's one signed list; the second one opens that
+    # passenger's form
+    from tests.test_sale_paste_batch import offered, open_proposal
+
+    proposals = offered(r.text)
+    assert len(proposals) == 3
+    opened = open_proposal(c, proposals[1])
     assert opened.status_code == 200
     assert values(opened.text, "doc_number") == ["3940299482"]
     assert values(opened.text, "pax_name") == ["SYNTHB/TWO"]

@@ -73,23 +73,69 @@ def forms_to(html: str, action: str) -> list[dict[str, list[str]]]:
     return parser.forms
 
 
+OPEN = "/sales/paste/open"
+
+
+class _Proposals(HTMLParser):
+    """The proposals page: per card, its ticket numbers and the value of its « Saisir cette
+    vente » button (None when the card has none: « déjà saisie »)."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.cards: list[tuple[list[str], str | None]] = []
+        self._in_mono = False
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        a = {k: v or "" for k, v in attrs}
+        if tag == "section" and a.get("aria-labelledby", "").startswith("proposal-"):
+            self.cards.append(([], None))
+        elif tag == "span" and a.get("class") == "mono" and self.cards:
+            self._in_mono = True
+        elif tag == "button" and a.get("name") == "proposal" and self.cards:
+            docs, _ = self.cards[-1]
+            self.cards[-1] = (docs, a.get("value", ""))
+
+    def handle_data(self, data: str) -> None:
+        if self._in_mono:
+            self.cards[-1][0].append(data.strip())
+            self._in_mono = False
+
+
+def _cards(html: str) -> list[tuple[list[str], str | None]]:
+    parser = _Proposals()
+    parser.feed(html)
+    return parser.cards
+
+
 def offered(html: str) -> list[dict[str, list[str]]]:
-    """The « Saisir cette vente » forms of the proposals page, in page order."""
-    return forms_to(html, "/sales/new")
+    """What each « Saisir cette vente » button posts, in page order: the page's one form (the
+    CSRF token and the signed list) plus that button's proposal index."""
+    shared = forms_to(html, OPEN)
+    if not shared:
+        return []
+    (fields,) = shared
+    return [{**fields, "proposal": [value]} for _, value in _cards(html) if value is not None]
 
 
 def offered_docs(html: str) -> list[str]:
-    return [form["doc_number"][0] for form in offered(html)]
+    return [docs[0] for docs, value in _cards(html) if value is not None]
 
 
-def save(c: TestClient, proposal: dict[str, list[str]]) -> httpx.Response:
-    """Open one proposal, answer the agency question, read back, confirm (as a browser would)."""
-    opened = c.post("/sales/new", data=proposal, follow_redirects=False)
+def open_proposal(c: TestClient, proposal: dict[str, list[str]]) -> httpx.Response:
+    opened: httpx.Response = c.post(OPEN, data=proposal, follow_redirects=False)
+    return opened
+
+
+def save(c: TestClient, proposal: dict[str, list[str]], **typed: str) -> httpx.Response:
+    """Open one proposal, answer the agency question, read back, confirm (as a browser would).
+    ``typed`` replaces fields of the opened form (what an agent, or a forger, could post)."""
+    opened = open_proposal(c, proposal)
     assert opened.status_code == 200, text_of(opened.text)[:1500]
     data = override(
         fields_of(opened.text, "/sales/preview"),
         ag_answer="direct",
         payment_method="cash",
+        **typed,
     )
     readback = c.post("/sales/preview", data=data, follow_redirects=False)
     assert readback.status_code == 200, text_of(readback.text)[:1500]
@@ -164,7 +210,7 @@ def test_a_three_sale_screenshot_is_entered_without_calling_the_ai_again(env: En
         follow_redirects=False,
     )
     assert len(fake.calls) == 1
-    assert offered(first.text)[0]["source"] == ["screenshot"]
+    assert values(open_proposal(c, offered(first.text)[0]).text, "source") == ["screenshot"]
     walk_three(env, c, first)
     assert len(fake.calls) == 1  # the proposals came back from the page, not from the AI
     sources = {v.source for v in table(env, SaleVersion)}
@@ -174,7 +220,7 @@ def test_a_three_sale_screenshot_is_entered_without_calling_the_ai_again(env: En
 def test_the_form_of_a_proposal_leads_back_to_the_list(env: Env) -> None:
     c = env.staff_a()
     first = paste(c, pnr("three_adults_rm"))
-    opened = c.post("/sales/new", data=offered(first.text)[1], follow_redirects=False)
+    opened = open_proposal(c, offered(first.text)[1])
     assert opened.status_code == 200
     assert values(opened.text, "pax_name") == [NAMES[1]]
     assert values(opened.text, "staff_sign") == [SIGN]  # their own sign, as before
@@ -236,13 +282,13 @@ def test_a_proposal_already_saved_cannot_be_saved_twice(env: Env) -> None:
     c = env.staff_a()
     first = paste(c, pnr("three_adults_rm"))
     stale = offered(first.text)[0]
-    opened = c.post("/sales/new", data=stale, follow_redirects=False)
+    opened = open_proposal(c, stale)
     data = override(fields_of(opened.text, "/sales/preview"), ag_answer="direct")
     readback = c.post("/sales/preview", data=override(data, payment_method="cash"))
     confirm = fields_of(readback.text, "/sales")
     assert c.post("/sales", data=confirm).status_code == 200
     # an old copy of the page still has the button: the read-back refuses it
-    again = c.post("/sales/new", data=stale, follow_redirects=False)
+    again = open_proposal(c, stale)
     data = override(fields_of(again.text, "/sales/preview"), ag_answer="direct")
     refused = c.post("/sales/preview", data=override(data, payment_method="cash"))
     assert refused.status_code == 409 and "déjà enregistré" in text_of(refused.text)
@@ -256,7 +302,7 @@ def test_a_proposal_already_saved_cannot_be_saved_twice(env: Env) -> None:
 def test_a_double_submit_of_the_confirm_shows_the_list_again(env: Env) -> None:
     c = env.staff_a()
     first = paste(c, pnr("three_adults_rm"))
-    opened = c.post("/sales/new", data=offered(first.text)[0], follow_redirects=False)
+    opened = open_proposal(c, offered(first.text)[0])
     data = override(fields_of(opened.text, "/sales/preview"), ag_answer="direct")
     readback = c.post("/sales/preview", data=override(data, payment_method="cash"))
     confirm = fields_of(readback.text, "/sales")
@@ -282,14 +328,50 @@ def test_a_tampered_list_is_dropped_and_the_sale_is_still_validated(env: Env) ->
     first = paste(c, pnr("three_adults_rm"))
     proposal = offered(first.text)[0]
     forged = _tamper(proposal[BATCH][0])
-    # the list page refuses it
-    listed = c.post("/sales/paste/list", data=override(proposal, paste_batch=forged))
-    assert listed.status_code == 400
-    assert "SYNTHX/EVIL" not in listed.text
-    # the sale itself is the agent's own, validated as always; without a valid list it redirects
-    r = save(c, override(proposal, paste_batch=forged))
+    # the list page and the open button refuse it
+    for path in ("/sales/paste/list", OPEN):
+        refused = c.post(path, data=override(proposal, paste_batch=forged))
+        assert refused.status_code == 400, path
+        assert "SYNTHX/EVIL" not in refused.text
+        assert "n'est plus disponible" in text_of(refused.text)
+    # a forged list carried by the sale form: the sale is the agent's own, validated as always;
+    # without a valid list the confirm redirects to the sale
+    r = save(c, proposal, paste_batch=forged)
     assert r.status_code == 303 and re.fullmatch(r"/sales/\d+", r.headers["location"])
     assert "SYNTHX/EVIL" not in str([v.tickets for v in table(env, SaleVersion)])
+
+
+def test_a_proposal_index_out_of_the_list_is_refused(env: Env) -> None:
+    c = env.staff_a()
+    first = paste(c, pnr("three_adults_rm"))
+    proposal = offered(first.text)[0]
+    for bad in ("3", "-1", "x", "", "1.0", "99999999999999999999"):
+        r = c.post(OPEN, data=override(proposal, proposal=bad))
+        assert r.status_code == 400, bad
+    assert table(env, Sale) == []
+
+
+def test_the_signed_list_is_on_the_page_once_whatever_the_number_of_proposals(env: Env) -> None:
+    c = env.staff_a()
+    r = paste(c, pnr("three_adults_rm"))
+    token = offered(r.text)[0][BATCH][0]
+    assert r.text.count(token) == 1
+    assert r.text.count('name="proposal"') == 3
+    assert len(token) < 48 * 1024
+    # after a save, still once
+    r1 = save(c, offered(r.text)[0])
+    assert r1.text.count(token) == 1
+
+
+def test_a_list_made_on_an_earlier_day_is_gone(env: Env) -> None:
+    env.clock.now = datetime(2026, 10, 21, 23, 50, tzinfo=UTC)
+    c = env.staff_a()
+    proposal = offered(paste(c, pnr("three_adults_rm")).text)[0]
+    env.clock.now = datetime(2026, 10, 22, 0, 10, tzinfo=UTC)  # twenty minutes later, next day
+    for path in ("/sales/paste/list", OPEN):
+        r = c.post(path, data=proposal, follow_redirects=False)
+        assert r.status_code == 400
+        assert "n'est plus disponible" in text_of(r.text)
 
 
 def test_a_garbled_or_oversized_list_is_ignored(env: Env) -> None:
@@ -318,10 +400,9 @@ def test_the_list_of_one_agent_is_useless_to_another(env: Env) -> None:
 def test_a_forged_issue_date_in_a_proposal_is_dropped_for_staff(env: Env) -> None:
     c = env.staff_a()
     first = paste(c, pnr("three_adults_rm"))
-    proposal = override(offered(first.text)[0], issue_date="2026-10-01")
-    r = save(c, proposal)
+    r = save(c, offered(first.text)[0], issue_date="2026-10-20")
     assert r.status_code == 200
-    # the signature did not match the date: the sale goes to today, never to the 1st
+    # the signature did not match the date: the sale goes to today, never to the 20th
     assert {d.day for d in table(env, ReportDay)} == {ISSUED}  # today, the 21st
 
 
@@ -330,6 +411,7 @@ def test_every_post_needs_the_csrf_token(env: Env) -> None:
     first = paste(c, pnr("three_adults_rm"))
     proposal = {k: v for k, v in offered(first.text)[0].items() if k != "csrf_token"}
     assert c.post("/sales/paste/list", data=proposal).status_code == 403
+    assert c.post(OPEN, data=proposal).status_code == 403
 
 
 # --- privacy ------------------------------------------------------------------------------------

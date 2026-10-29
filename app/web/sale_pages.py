@@ -543,6 +543,7 @@ def choose_page(
         left=sum(1 for item in items if not item["done"]),
         saved=saved,
         reader_warnings=list(reader_warnings),
+        batch=forms[0].batch if forms else "",  # once for the page; "" when none could be made
     )
 
 

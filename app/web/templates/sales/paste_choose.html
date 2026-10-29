@@ -22,6 +22,15 @@
 </div>
 {% endif %}
 
+{% if batch %}
+{# The signed list of the proposals, once for the page: each « Saisir cette vente » button posts
+   it with its own index (app/web/paste_batch.py). #}
+<form id="paste-proposals" class="inline-form" method="post" action="/sales/paste/open">
+  {% include "_csrf.html" %}
+  <input type="hidden" name="paste_batch" value="{{ batch }}">
+</form>
+{% endif %}
+
 {% for item in items %}
 <section class="card" aria-labelledby="proposal-{{ loop.index }}">
   <h2 class="card-title" id="proposal-{{ loop.index }}">{{ _("Vente %(n)s", n=loop.index) }} : {{ item.pax or _("passager non identifié") }}</h2>
@@ -43,11 +52,16 @@
     <ul class="list-plain">{% for warning in item.warnings %}<li>{{ warning }}</li>{% endfor %}</ul>
   </div>
   {% endif %}
+  {% if batch %}
+  <button class="btn btn-primary" type="submit" form="paste-proposals" name="proposal" value="{{ loop.index0 }}">{{ _("Saisir cette vente") }}</button>
+  {% else %}
+  {# a list too large to carry: each proposal opens on its own, as before #}
   <form class="inline-form" method="post" action="/sales/new">
     {% include "_csrf.html" %}
     {{ hidden_fields(item.pairs) }}
     <button class="btn btn-primary" type="submit">{{ _("Saisir cette vente") }}</button>
   </form>
+  {% endif %}
   {% endif %}
 </section>
 {% endfor %}

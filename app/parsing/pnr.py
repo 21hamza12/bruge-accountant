@@ -19,6 +19,17 @@ Rules:
   or prompt) continues the element too, unless it is prose (a lowercase word of three letters or
   more). Markdown code fences end the element. The ``*`` line and its
   continuation are consumed and ignored. Prompt lines (``>``, ``)>``, ``>|``) end an element.
+* Linked ticket numbers: Amadeus shows a ticket number as a link, and copying it can break the
+  line around it with blank lines (`` 36 FA PAX `` / blank / ``071-3940281552`` / blank /
+  ``/ETET/...``). ``_rejoin_links`` glues such an FA or FO item back into one line before anything
+  else, and only when the three pieces fit that grammar (head, ``ddd-dddddddddd[-dd]``, ``/...``).
+  FE lines carry no ticket number and are left alone.
+* An item cut at the end of a screen (``.../512`` then ``)>``) and shown whole on the next screen
+  is the same item: when one version is the start of the other, the longer one is kept. Two
+  versions that really differ are still a warning.
+* Conjunction tickets (``071-3940281214-15``: one ticket on two booklets) are read in FA and FO
+  lines by their first number (``3940281214``), the one the sale records; the booklet suffix
+  (``-15``) is not recorded.
 * Passengers: ``1.SURNAME/FIRST(CHD)`` and ``(INFSURNAME/FIRST)``. An infant is a separate
   ``INF`` passenger placed right after its adult; its ``number`` is the **adult's number** (that is
   what ``FA INF ... /P1`` refers to) and ``adult_number`` links it.
@@ -79,7 +90,7 @@ _RP_SIGN_RE = re.compile(r"[A-Z0-9]{2}/[A-Z0-9]{2,3}", re.ASCII)
 _RP_DATE_RE = re.compile(r"(\d{2}[A-Z]{3}\d{2})/\d{4}Z", re.ASCII)
 _RP_RLOC_RE = re.compile(r"[A-Z0-9]{5,8}", re.ASCII)
 _FA_RE = re.compile(
-    r"FA\s+(?:(PAX|INF|CHD)\s+)?(\d{3})-(\d{10})/(ET|DT)([A-Z0-9]{2})/([A-Z]{3})([^/]*)"
+    r"FA\s+(?:(PAX|INF|CHD)\s+)?(\d{3})-(\d{10})(?:-\d{2})?/(ET|DT)([A-Z0-9]{2})/([A-Z]{3})([^/]*)"
     r"/(\d{2}[A-Z]{3}\d{2})/([A-Z0-9]+)/(\d{8})((?:/[^/]*)*)",
     re.ASCII,
 )
@@ -91,7 +102,10 @@ _BIRTH_DATE_RE = re.compile(r"/\d{2}[A-Z]{3}\d{2}$", re.ASCII)
 _FE_NONREF_RE = re.compile(r"([A-Z]{3})([^/\s]*)\s+NONREF", re.ASCII)
 _FE_PREFIX_RE = re.compile(r"FE\s+(?:(?:PAX|INF|CHD)\s+)?", re.ASCII)
 _FE_SUFFIX_RE = re.compile(r"(?:S[0-9,\-]+|P\d{1,2})", re.ASCII)
-_FO_RE = re.compile(r"(\d{3})-(\d{10})", re.ASCII)
+_FO_RE = re.compile(r"(\d{3})-(\d{10})", re.ASCII)  # a conjunction "-15" after it is ignored
+# A ticket number copied as a link: the item head, the number, the rest (see ``_rejoin_links``).
+_LINK_HEAD_RE = re.compile(r" {0,2}\d{1,3} +F[AO](?: +(?:PAX|INF|CHD))? *", re.ASCII)
+_LINK_NUMBER_RE = re.compile(r"\d{3}-\d{10}(?:-\d{2})?(?:/\S.*)?", re.ASCII)
 _AP_CITY_RE = re.compile(r"[A-Z]{3}\s+(?=[+\d])", re.ASCII)
 _AP_PHONE_RE = re.compile(r"\+?[0-9][0-9 /\-]*", re.ASCII)
 _FP_RE = re.compile(r"NONREF\s*(.*)", re.IGNORECASE)
@@ -215,6 +229,42 @@ def _indent_and_text(line: str) -> tuple[int, str]:
     cleaned = clean_text("|" + line)[1:]  # the sentinel keeps clean_text from eating the indent
     text = cleaned.lstrip(" ")
     return len(cleaned) - len(text), text
+
+
+def _next_filled(lines: list[str], start: int) -> int:
+    """The index of the first non-blank line at or after ``start`` (``len(lines)`` if none)."""
+    while start < len(lines) and not lines[start].strip():
+        start += 1
+    return start
+
+
+def _rejoin_links(lines: list[str]) -> list[str]:
+    """``lines`` with each FA/FO item that a copied link broke apart glued back into one line:
+    `` 36 FA PAX `` / (blank lines) / ``071-3940281552`` / (blank lines) / ``/ETET/...``. Nothing
+    else is touched: the head must end right after ``FA``/``FO`` (and ``PAX``/``INF``/``CHD``), the
+    next filled line must be a ticket number alone (or followed by its ``/...``), and when it is
+    alone the filled line after it must start with ``/``."""
+    out: list[str] = []
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        if _LINK_HEAD_RE.fullmatch(line):
+            j = _next_filled(lines, i + 1)
+            number = lines[j].strip() if j < len(lines) else ""
+            if _LINK_NUMBER_RE.fullmatch(number):
+                if "/" in number:
+                    out.append(f"{line.rstrip()} {number}")
+                    i = j + 1
+                    continue
+                k = _next_filled(lines, j + 1)
+                tail = lines[k].strip() if k < len(lines) else ""
+                if tail.startswith("/"):
+                    out.append(f"{line.rstrip()} {number}{tail}")
+                    i = k + 1
+                    continue
+        out.append(line)
+        i += 1
+    return out
 
 
 def _split_screens(lines: list[str], *, transcript: bool = False) -> list[_Screen]:
@@ -513,7 +563,7 @@ def parse_pnr_text(text: str, *, transcript: bool = False) -> PnrReading:
         return _empty(W_NO_TEXT)
 
     warnings: list[str] = []
-    screens = _split_screens(lines, transcript=transcript)
+    screens = _split_screens(_rejoin_links(lines), transcript=transcript)
     with_rp = [s for s in screens if s.rp]
     office = sign = rloc = None
     created: date | None = None
@@ -539,7 +589,13 @@ def parse_pnr_text(text: str, *, transcript: bool = False) -> PnrReading:
             joined = "".join(parts)
             if number not in elements:
                 elements[number] = joined
-            elif _collapse(elements[number]) != _collapse(joined):
+                continue
+            known, other = _collapse(elements[number]), _collapse(joined)
+            if known == other or known.startswith(other):
+                continue  # the same, or a version cut at the end of a screen: keep the whole one
+            if other.startswith(known):
+                elements[number] = joined
+            else:
                 warnings.append(f"élément {number} différent entre deux écrans : vérifier")
         for number, chunk in s.pax.items():
             if number not in pax:

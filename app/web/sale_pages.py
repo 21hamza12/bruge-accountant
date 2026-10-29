@@ -455,19 +455,95 @@ def readback_page(
     )
 
 
+@dataclass(frozen=True)
+class ProposalTicket:
+    doc: str
+    pax_type: str
+    cost: Decimal | None
+
+
+DIRECT_LABEL = "BRUGE (vente directe)"
+
+
+def _proposal_agency(form: SaleForm, names: dict[int, str]) -> str:
+    """The agency a proposal suggests, in words (the agent confirms it on the form)."""
+    if form.ag_proposed == sale_forms.DIRECT:
+        return DIRECT_LABEL
+    partner_id = parse_db_id(form.ag_proposed)
+    if partner_id is None or partner_id not in names:
+        return "à choisir"
+    if form.ag_match == "close":
+        return f"suggestion : {names[partner_id]}"
+    return names[partner_id]
+
+
+def _row_numbers(form: SaleForm) -> list[str]:
+    """The ticket numbers of a form as the service stores them, in row order."""
+    found: list[str] = []
+    for row in form.tickets:
+        if row.is_blank:
+            continue
+        number, _ = ticket_number(row.doc_number, row.airline.strip().upper())
+        if number is not None and number not in found:
+            found.append(number)
+    return found
+
+
 def choose_page(
     db: Session,
     auth: AuthContext,
-    items: Sequence[dict[str, object]],
+    forms: Sequence[SaleForm],
     reader_warnings: Sequence[str],
+    *,
+    saved: int | None = None,
 ) -> Response:
-    """Several passengers in one pasted booking: one proposed sale each, to open prefilled."""
+    """Several passengers in one pasted booking: one proposed sale each, to open prefilled.
+
+    A proposal whose tickets are already in an active sale of the agency is « déjà saisie »
+    (decided here, from the stored ticket numbers, never from the page) and has no button; the
+    sale is linked only when the actor may see it (staff: their own signs). ``saved`` is the sale
+    just confirmed from this list."""
+    user = auth.user
+    names = {p.id: p.name for p in partners.list_active(db, user.agency_id)}
+    numbers = [_row_numbers(form) for form in forms]
+    stored = sales.active_ticket_lookup(db, user.agency_id, [n for row in numbers for n in row])
+    visible: dict[int, bool] = {}
+    items: list[dict[str, object]] = []
+    warned = set(reader_warnings)
+    for form, docs in zip(forms, numbers, strict=True):
+        done = next((stored[d][0] for d in docs if d in stored), None)
+        if done is not None and done not in visible:
+            visible[done] = sales.get_sale_for(db, user, done) is not None
+        pax = next((row.pax_name for row in form.tickets if row.pax_name.strip()), "")
+        items.append(
+            {
+                "pax": pax,
+                "tickets": [
+                    ProposalTicket(
+                        row.doc_number, row.pax_type, sale_forms.amount_or_none(row.total_doc)
+                    )
+                    for row in form.tickets
+                    if not row.is_blank
+                ],
+                "day": form.issue_day,
+                "agency": _proposal_agency(form, names),
+                "agency_text": form.ag_text,
+                "pb": form.pb_read_amount,
+                "warnings": [n for n in form.notices if n not in warned],
+                "pairs": form.hidden_pairs,
+                "done": done is not None,
+                "done_link": done if done is not None and visible[done] else None,
+            }
+        )
     return page(
         "sales/paste_choose.html",
         headers=NO_STORE,
         **shell_context(db, auth, ACTIVE_SALE_NEW),
         items=items,
+        left=sum(1 for item in items if not item["done"]),
+        saved=saved,
         reader_warnings=list(reader_warnings),
+        batch=forms[0].batch if forms else "",  # once for the page; "" when none could be made
     )
 
 

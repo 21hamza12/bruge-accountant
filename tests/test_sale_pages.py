@@ -447,10 +447,10 @@ def test_a_manager_is_warned_about_a_sign_nobody_has(env: Env) -> None:
 
 def test_field_errors_are_in_french_next_to_the_fields(env: Env) -> None:
     c = env.staff_a()
-    r = post(c, "/sales/preview", form(clt="", pb="", payment_method="", ap="12"))
+    r = post(c, "/sales/preview", form(clt="x" * 121, pb="", payment_method="", ap="12"))
     assert r.status_code == 400
     for message in (
-        "Le nom du client est obligatoire",
+        "Ce champ ne peut pas dépasser 120 caractères",
         "Saisissez le prix P.B",
         "Choisissez un mode de paiement",
     ):
@@ -1105,6 +1105,8 @@ def test_manager_can_void_any_sale_with_a_reason(env: Env) -> None:
 
 ALL_POSTS = [
     "/sales/paste",
+    "/sales/paste/list",
+    "/sales/paste/open",
     "/sales/screenshot",
     "/sales/preview",
     "/sales/new",

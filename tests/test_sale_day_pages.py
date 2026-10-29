@@ -101,20 +101,33 @@ def close_day(env: Env, day: str) -> None:
 # --- the paste prefills the date ----------
 
 
+def todays(text: str) -> str:
+    """A booking fixture re-dated to today: a paste only reads today's tickets (decision 25)."""
+    return text.replace("21OCT26/NKC", "22OCT26/NKC").replace("20OCT26/NKC", "22OCT26/NKC")
+
+
 def test_a_pasted_booking_carries_its_issue_date_and_says_the_day(env: Env) -> None:
-    html = paste(env.staff_a(), one_passenger()).text
-    assert values(html, "issue_date") == [YESTERDAY]
+    html = paste(env.staff_a(), todays(one_passenger())).text
+    assert values(html, "issue_date") == [TODAY]
     text = text_of(html)
-    assert "Émis le 21 octobre 2026" in text
-    assert "Vente du 21 octobre 2026" in text
+    assert "Émis le 22 octobre 2026" in text
+    assert "Vente du 22 octobre 2026" in text
     assert values(html, "day") == []  # staff do not pick the day
 
 
 def test_the_managers_day_field_is_prefilled_with_the_issue_date(env: Env) -> None:
-    html = paste(env.manager_a(), one_passenger()).text
-    assert values(html, "day") == [YESTERDAY]
-    assert values(html, "issue_date") == [YESTERDAY]
-    assert "Vente du 21 octobre 2026" in text_of(html)
+    html = paste(env.manager_a(), todays(one_passenger())).text
+    assert values(html, "day") == [TODAY]
+    assert values(html, "issue_date") == [TODAY]
+    assert "Vente du 22 octobre 2026" in text_of(html)
+
+
+def test_a_pasted_ticket_of_yesterday_is_not_read_even_for_the_manager(env: Env) -> None:
+    for c in (env.staff_a(), env.manager_a()):
+        r = paste(c, one_passenger())  # issued on the 21st, today is the 22nd
+        assert r.status_code == 400
+        assert "1 billet(s) émis avant aujourd'hui ignoré(s) : 3940299481" in text_of(r.text)
+        assert values(r.text, "doc_number") == [""]
 
 
 def test_an_unreadable_issue_date_falls_back_to_today_with_a_notice(env: Env) -> None:
@@ -274,9 +287,9 @@ def test_removing_a_ticket_row_after_the_readback_gives_the_new_day_without_erro
 
 
 def test_the_choice_screen_shows_each_proposals_issue_date(env: Env) -> None:
-    html = paste(env.staff_a(), pnr("layover_two_pages")).text
+    html = paste(env.staff_a(), todays(pnr("layover_two_pages"))).text
     text = text_of(html)
-    assert text.count("Émis le 20 octobre 2026") == 2
+    assert text.count("Émis le 22 octobre 2026") == 2
 
 
 def test_a_tampered_hidden_day_on_the_readback_is_refused_at_the_confirm(env: Env) -> None:
@@ -421,15 +434,15 @@ def test_a_pasted_booking_is_signed_and_the_signature_survives_readback_and_conf
     env: Env,
 ) -> None:
     c = env.staff_a()
-    html = paste(c, one_passenger()).text
+    html = paste(c, todays(one_passenger())).text
     assert values(html, "issue_sig") != [""]
     (doc,) = values(html, "doc_number")
-    assert values(html, "issue_sig") == [sig(env, doc, YESTERDAY)]
+    assert values(html, "issue_sig") == [sig(env, doc, TODAY)]  # today's tickets are still signed
     r = post(c, "/sales/preview", {**values_to_form(html), "ag_answer": "direct"})
     assert r.status_code == 200, text_of(r.text)[:900]
-    assert "Vente du 21 octobre 2026" in text_of(r.text)
+    assert "Vente du 22 octobre 2026" in text_of(r.text)
     done = confirm_with(c, r.text, "/sales")
-    assert one_sale_day(env, done) == YESTERDAY
+    assert one_sale_day(env, done) == TODAY
 
 
 def test_an_edited_date_on_the_readback_loses_its_signature_and_goes_today(env: Env) -> None:
@@ -454,14 +467,26 @@ def test_the_manager_keeps_the_day_field_and_needs_no_signature(env: Env) -> Non
 
 
 def test_the_manager_sees_the_day_field_prefilled_and_signatures_are_harmless(env: Env) -> None:
-    html = paste(env.manager_a(), one_passenger()).text
-    assert values(html, "day") == [YESTERDAY]
+    html = paste(env.manager_a(), todays(one_passenger())).text
+    assert values(html, "day") == [TODAY]
 
 
 def test_a_forged_date_on_the_choice_screen_flow_is_ignored_too(env: Env) -> None:
     c = env.staff_a()
-    html = paste(c, pnr("layover_two_pages")).text
-    assert html.count('name="issue_sig"') >= 2  # each proposal carries signed rows
+    html = paste(c, todays(pnr("layover_two_pages"))).text
+    from tests.test_sale_paste_batch import offered, open_proposal
+
+    # the list carries the proposals signed; each one opens with its rows' signed dates
+    for proposal in offered(html):
+        opened = open_proposal(c, proposal).text
+        assert values(opened, "issue_date") == [TODAY, TODAY]
+        assert all(values(opened, "issue_sig"))
+    # a date forged on the opened form loses its signature: the sale goes to today
+    form = values_to_form(open_proposal(c, offered(html)[0]).text)
+    form.update({"issue_date": [TWO_DAYS_AGO, TWO_DAYS_AGO], "ag_answer": "direct"})
+    r = post(c, "/sales/preview", form)
+    assert r.status_code == 200, text_of(r.text)[:900]
+    assert one_sale_day(env, confirm_with(c, r.text, "/sales")) == TODAY
 
 
 # --- reasons and kept dates on edit ----------
@@ -530,19 +555,11 @@ def test_staff_void_of_an_earlier_day_still_needs_a_reason(env: Env) -> None:
     assert r.status_code == 400 and not latest(env, sale_id).voided
 
 
-# --- an old issue date is flagged ----------
+# --- an old issue date is not read (decision 25 replaced the "ancienne" notice) ----------
 
 
-def test_an_issue_date_more_than_31_days_back_adds_a_notice(env: Env) -> None:
-    old = one_passenger().replace("21OCT26/NKC", "25JUN19/NKC")
-    html = paste(env.staff_a(), old).text
-    assert "Date d'émission ancienne : 25 juin 2019, vérifiez" in text_of(html)
-
-
-def test_a_recent_issue_date_adds_no_old_date_notice(env: Env) -> None:
-    html = paste(env.staff_a(), one_passenger()).text
-    assert "Date d'émission ancienne" not in text_of(html)
-    edge = one_passenger().replace("21OCT26/NKC", "21SEP26/NKC")  # 31 days before the 22nd
-    assert "Date d'émission ancienne" not in text_of(paste(env.staff_a(), edge).text)
-    over = one_passenger().replace("21OCT26/NKC", "20SEP26/NKC")  # 32 days
-    assert "Date d'émission ancienne" in text_of(paste(env.staff_a(), over).text)
+def test_a_very_old_issue_date_is_ignored_like_any_earlier_day(env: Env) -> None:
+    old = one_passenger().replace("21OCT26/NKC", "25JUN19/NKC")  # a typo such as 25JUN19
+    text = text_of(paste(env.staff_a(), old).text)
+    assert "1 billet(s) émis avant aujourd'hui ignoré(s) : 3940299481" in text
+    assert "Date d'émission ancienne" not in text

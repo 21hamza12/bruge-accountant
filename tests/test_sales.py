@@ -191,12 +191,14 @@ def test_a_direct_sale_takes_the_typed_price() -> None:
     assert v.fee_applied is None and v.partner_fee_id is None
 
 
-def test_a_direct_sale_needs_a_client_and_a_price() -> None:
-    assert set(errors(direct(clt=None))) == {"clt"}
-    assert set(errors(direct(clt="   "))) == {"clt"}
+def test_a_direct_sale_needs_a_price_and_a_nameless_client_is_client() -> None:
+    # decision 25 (owner, 29 Oct): no client name is « CLIENT », never an error
+    assert ok(direct(clt=None)).clt == "CLIENT"
+    assert ok(direct(clt="   ")).clt == "CLIENT"
+    assert ok(direct(clt="Client Synth")).clt == "Client Synth"
     assert set(errors(direct(pb=None))) == {"pb"}
     assert set(errors(direct(pb=""))) == {"pb"}
-    assert set(errors(direct(clt=None, pb=None))) == {"clt", "pb"}
+    assert set(errors(direct(clt=None, pb=None))) == {"pb"}
 
 
 @pytest.mark.parametrize("bad", ["-1", "abc", "1,500", "1.234", 1.5, True, "1e3", "٣٠٠"])
@@ -396,7 +398,7 @@ def test_an_unknown_kind_of_sale_is_refused() -> None:
 
 
 def test_several_mistakes_are_reported_together() -> None:
-    found = errors(direct(ticket(doc="x"), clt="", pb="-1", payment_method="nope", ap="1"))
+    found = errors(direct(ticket(doc="x"), clt="x" * 121, pb="-1", payment_method="nope", ap="1"))
     assert set(found) == {"tickets[0].doc_number", "clt", "pb", "payment_method", "ap"}
 
 

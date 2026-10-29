@@ -189,7 +189,9 @@ def test_the_error_summary_comes_first_and_links_to_the_fields(env: Env) -> None
     assert r.text.index('id="form-error"') < r.text.index('<form class="form form-wide"')
     assert "autofocus" not in r.text
     links = re.findall(r'<a href="#([^"]+)">', r.text)
-    assert {"total_doc_0", "clt", "pb"} <= set(links)
+    # A blank client name is no error any more: it is stored as « CLIENT » (decision 25).
+    assert {"total_doc_0", "pb"} <= set(links)
+    assert "clt" not in links
     for target in links:
         assert target in dom.ids, target
 

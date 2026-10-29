@@ -19,6 +19,19 @@ Rules:
   or prompt) continues the element too, unless it is prose (a lowercase word of three letters or
   more). Markdown code fences end the element. The ``*`` line and its
   continuation are consumed and ignored. Prompt lines (``>``, ``)>``, ``>|``) end an element.
+* Linked ticket numbers: Amadeus shows a ticket number as a link, and copying it can break the
+  line around it with blank lines (`` 36 FA PAX `` / blank / ``071-3940281552`` / blank /
+  ``/ETET/...``). ``_rejoin_links`` glues such an FA or FO item back into one line before anything
+  else, and only when the three pieces fit that grammar (head, ``ddd-dddddddddd[-dd]``, ``/...``).
+  FE lines carry no ticket number and are left alone.
+* An item cut at the end of a screen (``.../512`` then ``)>``, or the end of the text) and shown
+  whole on another screen is the same item: when the cut version is not empty and is the start of
+  the other, the longer one is kept, with the notice « élément N complété depuis l'écran
+  suivant ». Only the last item of a screen that ends that way can be cut; anywhere else two
+  versions that differ, even by a final digit (``EUR100`` / ``EUR1000``), are still a warning.
+* Conjunction tickets (``071-3940281214-15``: one ticket on two booklets) are read in FA and FO
+  lines by their first number (``3940281214``), the one the sale records; the booklet suffix
+  (``-15``) is not recorded.
 * Passengers: ``1.SURNAME/FIRST(CHD)`` and ``(INFSURNAME/FIRST)``. An infant is a separate
   ``INF`` passenger placed right after its adult; its ``number`` is the **adult's number** (that is
   what ``FA INF ... /P1`` refers to) and ``adult_number`` links it.
@@ -79,7 +92,7 @@ _RP_SIGN_RE = re.compile(r"[A-Z0-9]{2}/[A-Z0-9]{2,3}", re.ASCII)
 _RP_DATE_RE = re.compile(r"(\d{2}[A-Z]{3}\d{2})/\d{4}Z", re.ASCII)
 _RP_RLOC_RE = re.compile(r"[A-Z0-9]{5,8}", re.ASCII)
 _FA_RE = re.compile(
-    r"FA\s+(?:(PAX|INF|CHD)\s+)?(\d{3})-(\d{10})/(ET|DT)([A-Z0-9]{2})/([A-Z]{3})([^/]*)"
+    r"FA\s+(?:(PAX|INF|CHD)\s+)?(\d{3})-(\d{10})(?:-\d{2})?/(ET|DT)([A-Z0-9]{2})/([A-Z]{3})([^/]*)"
     r"/(\d{2}[A-Z]{3}\d{2})/([A-Z0-9]+)/(\d{8})((?:/[^/]*)*)",
     re.ASCII,
 )
@@ -91,7 +104,10 @@ _BIRTH_DATE_RE = re.compile(r"/\d{2}[A-Z]{3}\d{2}$", re.ASCII)
 _FE_NONREF_RE = re.compile(r"([A-Z]{3})([^/\s]*)\s+NONREF", re.ASCII)
 _FE_PREFIX_RE = re.compile(r"FE\s+(?:(?:PAX|INF|CHD)\s+)?", re.ASCII)
 _FE_SUFFIX_RE = re.compile(r"(?:S[0-9,\-]+|P\d{1,2})", re.ASCII)
-_FO_RE = re.compile(r"(\d{3})-(\d{10})", re.ASCII)
+_FO_RE = re.compile(r"(\d{3})-(\d{10})", re.ASCII)  # a conjunction "-15" after it is ignored
+# A ticket number copied as a link: the item head, the number, the rest (see ``_rejoin_links``).
+_LINK_HEAD_RE = re.compile(r" {0,2}\d{1,3} +F[AO](?: +(?:PAX|INF|CHD))? *", re.ASCII)
+_LINK_NUMBER_RE = re.compile(r"\d{3}-\d{10}(?:-\d{2})?(?:/\S.*)?", re.ASCII)
 _AP_CITY_RE = re.compile(r"[A-Z]{3}\s+(?=[+\d])", re.ASCII)
 _AP_PHONE_RE = re.compile(r"\+?[0-9][0-9 /\-]*", re.ASCII)
 _FP_RE = re.compile(r"NONREF\s*(.*)", re.IGNORECASE)
@@ -204,6 +220,9 @@ class _Screen:
     rp: str | None = None
     elements: dict[int, list[str]] = field(default_factory=dict)
     pax: dict[int, str] = field(default_factory=dict)
+    last: int | None = None  # the element being read, while nothing else came after it
+    closed: bool = False  # a prompt (``>`` or ``)>``) ended the screen
+    cut: int | None = None  # the element the screen ended on (``)>`` or the end of the text)
 
 
 def strip_accents(value: str) -> str:
@@ -217,6 +236,42 @@ def _indent_and_text(line: str) -> tuple[int, str]:
     return len(cleaned) - len(text), text
 
 
+def _next_filled(lines: list[str], start: int) -> int:
+    """The index of the first non-blank line at or after ``start`` (``len(lines)`` if none)."""
+    while start < len(lines) and not lines[start].strip():
+        start += 1
+    return start
+
+
+def _rejoin_links(lines: list[str]) -> list[str]:
+    """``lines`` with each FA/FO item that a copied link broke apart glued back into one line:
+    `` 36 FA PAX `` / (blank lines) / ``071-3940281552`` / (blank lines) / ``/ETET/...``. Nothing
+    else is touched: the head must end right after ``FA``/``FO`` (and ``PAX``/``INF``/``CHD``), the
+    next filled line must be a ticket number alone (or followed by its ``/...``), and when it is
+    alone the filled line after it must start with ``/``."""
+    out: list[str] = []
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        if _LINK_HEAD_RE.fullmatch(line):
+            j = _next_filled(lines, i + 1)
+            number = lines[j].strip() if j < len(lines) else ""
+            if _LINK_NUMBER_RE.fullmatch(number):
+                if "/" in number:
+                    out.append(f"{line.rstrip()} {number}")
+                    i = j + 1
+                    continue
+                k = _next_filled(lines, j + 1)
+                tail = lines[k].strip() if k < len(lines) else ""
+                if tail.startswith("/"):
+                    out.append(f"{line.rstrip()} {number}{tail}")
+                    i = k + 1
+                    continue
+        out.append(line)
+        i += 1
+    return out
+
+
 def _split_screens(lines: list[str], *, transcript: bool = False) -> list[_Screen]:
     screens = [_Screen()]
     current: list[str] | None = None
@@ -224,8 +279,14 @@ def _split_screens(lines: list[str], *, transcript: bool = False) -> list[_Scree
     for raw in lines:
         indent, text = _indent_and_text(raw)
         screen = screens[-1]
-        if not text or text.startswith((">", ")>", "---", "```", "~~~")):
-            current = None  # blank, prompt, header or Markdown fence: ends the element
+        if text.startswith(")>") and not screen.closed:
+            screen.closed, screen.cut = True, screen.last  # "more follows": maybe cut mid-item
+            current = None
+        elif text.startswith(">"):
+            screen.closed = True  # the end of the display: nothing was cut
+            current = None
+        elif not text or text.startswith((")>", "---", "```", "~~~")):
+            current = None  # blank, header or Markdown fence: ends the element
         elif text.startswith("RP/") and indent < 3:
             screens.append(_Screen(rp=text))
             current = None
@@ -233,17 +294,21 @@ def _split_screens(lines: list[str], *, transcript: bool = False) -> list[_Scree
             for number, chunk in _pax_chunks(text):
                 screen.pax.setdefault(number, chunk)
             current = []  # a wrapped name is not supported; swallow its continuation
+            screen.last = None
         elif indent <= 2 and (m := _ELEMENT_RE.fullmatch(text)):
             number = int(m.group(1))
             if number in screen.elements:
                 current = []
+                screen.last = None
             else:
                 current = [m.group(2)]
                 screen.elements[number] = current
+                screen.last = number
             separator = ""
         elif indent <= 2 and text.startswith("*"):
             current = []
             separator = " "
+            screen.last = None
         elif current is not None and (indent >= 3 or (transcript and not _is_prose(text))):
             # Indented as Amadeus wraps (3 or more), a line always continues the element above,
             # lowercase e-mails and remarks included. Only in a transcript (the indentation may be
@@ -251,6 +316,9 @@ def _split_screens(lines: list[str], *, transcript: bool = False) -> list[_Scree
             current.append(separator + text)
         else:
             current = None
+            screen.last = None
+    if not screens[-1].closed:
+        screens[-1].cut = screens[-1].last  # the text stops right after this element
     return screens
 
 
@@ -513,7 +581,7 @@ def parse_pnr_text(text: str, *, transcript: bool = False) -> PnrReading:
         return _empty(W_NO_TEXT)
 
     warnings: list[str] = []
-    screens = _split_screens(lines, transcript=transcript)
+    screens = _split_screens(_rejoin_links(lines), transcript=transcript)
     with_rp = [s for s in screens if s.rp]
     office = sign = rloc = None
     created: date | None = None
@@ -533,13 +601,27 @@ def parse_pnr_text(text: str, *, transcript: bool = False) -> PnrReading:
         warnings.append(W_NO_RP)
 
     elements: dict[int, str] = {}
+    cut_short: dict[int, bool] = {}  # the kept version was the last item of a screen cut there
     pax: dict[int, str] = {}
     for s in chosen:
         for number, parts in s.elements.items():
             joined = "".join(parts)
+            cut_here = number == s.cut
             if number not in elements:
-                elements[number] = joined
-            elif _collapse(elements[number]) != _collapse(joined):
+                elements[number], cut_short[number] = joined, cut_here
+                continue
+            known, other = _collapse(elements[number]), _collapse(joined)
+            if known == other:
+                continue
+            # A screen that ends with ")>" (or the text that ends) may cut its last item: the
+            # whole version on the other screen is kept. Anything else that differs, even by a
+            # digit at the end (EUR100 / EUR1000), is a conflict.
+            if known and cut_short[number] and other.startswith(known):
+                elements[number], cut_short[number] = joined, cut_here
+                warnings.append(f"élément {number} complété depuis l'écran suivant")
+            elif other and cut_here and known.startswith(other):
+                warnings.append(f"élément {number} complété depuis l'écran suivant")
+            else:
                 warnings.append(f"élément {number} différent entre deux écrans : vérifier")
         for number, chunk in s.pax.items():
             if number not in pax:

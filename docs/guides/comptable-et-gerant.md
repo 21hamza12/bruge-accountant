@@ -33,6 +33,13 @@ bloquants, billets annulés, billets déplacés.
 Pour information, sans blocage : les **billets annulés** (CANX, acceptés automatiquement) et les
 **billets partenaires absents du rapport** (émis dans un autre bureau).
 
+**Texte collé et photos : seulement les billets d'aujourd'hui** (décision du 29 octobre). La
+lecture d'un texte Amadeus ou d'une photo ignore les billets émis avant aujourd'hui, pour tout le
+monde, vous compris, et le dit : « N billet(s) émis avant aujourd'hui ignoré(s) : numéros ». Un
+billet en retard se saisit à la main dans le formulaire, où vous choisissez la journée (ou par
+« Saisir cette vente » d'un billet « Non envoyé »). Une vente directe sans nom de client est
+enregistrée au nom de **« CLIENT »**.
+
 Après des corrections, touchez « Relancer la comparaison ». Quand c'est vous qui la relancez et
 qu'il ne reste aucun écart bloquant, la journée passe à **« Approuvée »**.
 

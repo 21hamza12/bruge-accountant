@@ -26,7 +26,7 @@ from tests.acceptance_support import fields_of, override, preview_then_confirm, 
 from tests.ai_support import GPS_MARK, jpeg_with_exif, layover_pages, png, pnr
 from tests.page_support import Env, fr
 from tests.test_sale_pages import SIGN, counts, table, text_of
-from tests.test_sale_paste import one_passenger, values
+from tests.test_sale_paste import on_today, one_passenger, values
 from tests.web_support import WebDb, csrf_for, owner_session
 
 BUDGET_MESSAGE = "Budget IA du mois atteint : collez le texte Amadeus."
@@ -42,7 +42,7 @@ SONNET_COST = pricing.cost_micro_usd(SONNET, 650, 400)
 def env(web_db: WebDb) -> Env:
     e = Env(web_db)
     e.link(e.seeded.staff_a, SIGN)
-    e.clock.now = datetime(2026, 10, 22, 12, 0, tzinfo=UTC)  # after the booking's issue date
+    e.clock.now = datetime(2026, 10, 21, 12, 0, tzinfo=UTC)  # the booking's issue day (decision 25)
     return e
 
 
@@ -160,7 +160,7 @@ def test_three_adults_give_three_proposals(env: Env) -> None:
 
 
 def test_a_layover_of_two_pages_is_two_proposals_of_two_tickets_at_51300(env: Env) -> None:
-    first, second = layover_pages()
+    first, second = (on_today(page) for page in layover_pages())  # issued today (decision 25)
     fake = with_ai(env, [first, second])
     r = shoot(env.staff_a(), png(), png(color=(1, 1, 1)))
     text = text_of(r.text)

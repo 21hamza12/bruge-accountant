@@ -96,8 +96,10 @@ Hardening (security review, 26 Oct 2026):
 * **An edit cannot change an issue date.** For staff, each ticket already on the sale keeps the
   previous version's date (matched by ticket number); a ticket added in an edit has no date unless
   signed.
-* **A very old issue date is flagged**: more than 31 days before today, the prefilled form says
-  "Date d'émission ancienne : 25 juin 2019, vérifiez la date du billet" (a typo such as `25JUN19`).
+* **Tickets issued before today are not read** from a paste or a screenshot (decision 25 of
+  02-open-decisions.md, 29 Oct): one notice names them, « N billet(s) émis avant aujourd'hui
+  ignoré(s) : … »; a late ticket is typed by hand. This replaced the "Date d'émission ancienne"
+  notice (more than 31 days back).
 * A sale staff file on a day other than today is logged (agency, user, sale and day ids only).
 * **"Today" is the UTC date** (`utc_now().date()`). Mauritania is UTC+0 with no daylight saving,
   so the agency's calendar day and the app's day are the same; there is no offset to apply.

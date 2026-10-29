@@ -3,7 +3,7 @@ arguments, and the shape of each answer. Runs on SQLite through the services; sy
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Any
 
@@ -432,13 +432,22 @@ def test_the_sheet_of_another_agency_is_not_offered(w: ChatWorld) -> None:
 def test_a_pasted_screen_hands_off_to_the_paste_flow_and_stores_nothing(w: ChatWorld) -> None:
     text = (PNR_DIR / "three_adults_rm.txt").read_text(encoding="utf-8")
     before = _sales_count(w)
-    answer = route_message(w.ctx(w.staff), text)
+    issue_day = datetime(2026, 10, 21, 12, 0, tzinfo=UTC)  # only today's tickets are read
+    answer = route_message(w.ctx(w.staff, issue_day), text)
     assert answer.outcome == r.OK and answer.tool == "paste_sale"
     assert answer.data["sales"] >= 1 and answer.handoff_text == text
     assert hrefs(answer) == ["/sales/new"]
     assert "Rien n'est enregistré" in answer.plain
     assert text not in answer.stored() and "SYNTH" not in answer.stored()
     assert _sales_count(w) == before
+
+
+def test_a_paste_of_old_tickets_only_says_they_are_ignored(w: ChatWorld) -> None:
+    text = (PNR_DIR / "three_adults_rm.txt").read_text(encoding="utf-8")
+    later = datetime(2026, 10, 23, 9, 0, tzinfo=UTC)
+    answer = route_message(w.ctx(w.staff, later), text)
+    assert answer.handoff_text is None and answer.data == {"sales": 0}
+    assert texts(answer)[0].startswith("3 billet(s) émis avant aujourd'hui ignoré(s)")
 
 
 def _sales_count(w: ChatWorld) -> int:

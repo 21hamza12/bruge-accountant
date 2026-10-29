@@ -530,9 +530,9 @@ def paste_sale(ctx: ChatContext, args: Mapping[str, Any]) -> Reply:
     problem = sale_paste.check_text(text)
     if problem:
         return r.refuse(r.INVALID, r.say(problem), tool="paste_sale")
-    result = sale_paste.read_paste(ctx.db, ctx.user.agency_id, text)
+    result = sale_paste.read_paste(ctx.db, ctx.user.agency_id, text, today=ctx.today)
     if not result.proposals:
-        return r.reply("paste_sale", r.say(sale_paste.NOTHING), sales=0)
+        return r.reply("paste_sale", r.say(result.error or sale_paste.NOTHING), sales=0)
     count = len(result.proposals)
     return Reply(
         r.OK,

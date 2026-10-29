@@ -26,7 +26,15 @@ escale peut avoir deux billets pour un seul prix). Trois façons, de la meilleur
 **a) Coller le texte Amadeus (à préférer).** Dans Amadeus, sélectionnez tout l'écran de la
 réservation, copiez, puis collez dans « Coller le texte Amadeus » et touchez « Lire le texte ».
 C'est exact, immédiat et gratuit. Si la réservation a plusieurs passagers, l'application propose
-une vente par passager : touchez « Saisir cette vente » pour chacune.
+une vente par passager : touchez « Saisir cette vente » pour chacune. Après chaque vente
+confirmée, vous revenez à la liste : les ventes déjà saisies sont marquées « déjà saisie », les
+autres gardent leur bouton. Inutile de recoller le texte. « Terminé » quand tout est saisi.
+
+**Billets d'un jour passé.** La lecture du texte (ou de la photo) ignore les billets émis avant
+aujourd'hui et le dit : « 2 billet(s) émis avant aujourd'hui ignoré(s) : … ». Ce sont souvent les
+anciens billets d'un échange. Pour un vrai billet en retard, saisissez-le à la main (c) ou
+demandez au gérant ou à la comptable. Un billet dont la date d'émission est illisible est quand
+même proposé, pour la journée d'aujourd'hui.
 
 **b) Photo ou capture d'écran.** Si vous ne pouvez pas copier le texte : dans « Lire une photo de
 l'écran Amadeus », touchez « Prendre une photo », ou choisissez **jusqu'à 4 images** (une par page
@@ -49,7 +57,7 @@ s'affichent en haut.
 |---|---|
 | **AG** | « BRUGE (vente directe) » ou le partenaire (agence) |
 | **P.B** | le prix Bruge, pour une vente directe. Pour un partenaire, le prix est calculé : coût + frais du partenaire |
-| **CLT** | le nom du client |
+| **CLT** | le nom du client. Sans nom, la vente directe est enregistrée au nom de « CLIENT » |
 | **AP** | le téléphone du client (ex. +222 22 00 00 00). S'il refuse : cochez « Le client a refusé de donner son numéro » |
 | **Mode de paiement** | Espèces, Bankily, Masrvi, Sedad, Virement, Chèque ou Crédit |
 

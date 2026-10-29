@@ -18,9 +18,9 @@ from tests.web_support import csrf_for
 
 @pytest.fixture
 def env(base_env: Env) -> Env:  # noqa: F811
-    """The booking below was issued on 25 October: the clock must not be before that day (a sale
-    is filed under its issue date, which cannot be in the future)."""
-    base_env.clock.now = datetime(2026, 10, 26, 12, 0, tzinfo=UTC)
+    """The booking below was issued on 25 October, and a paste only reads the tickets issued today
+    (decision 25): the clock is that day."""
+    base_env.clock.now = datetime(2026, 10, 25, 12, 0, tzinfo=UTC)
     return base_env
 
 

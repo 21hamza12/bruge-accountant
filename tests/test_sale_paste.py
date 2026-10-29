@@ -47,9 +47,9 @@ REND = "REND TOURISME ET VOYAGES"
 def env(web_db: WebDb) -> Env:
     e = Env(web_db)
     e.link(e.seeded.staff_a, SIGN)
-    # the fixtures were issued on 21 October: a sale is filed under its issue date, which cannot be
-    # in the future, so the clock is the 22nd
-    e.clock.now = datetime(2026, 10, 22, 12, 0, tzinfo=UTC)
+    # the fixtures were issued on 21 October, and a paste only reads the tickets issued today
+    # (decision 25): the clock is that day
+    e.clock.now = datetime(2026, 10, 21, 12, 0, tzinfo=UTC)
     return e
 
 
@@ -173,8 +173,13 @@ def test_three_adults_give_three_proposals_each_opens_a_prefilled_form(env: Env)
     assert values(opened.text, "pb") == ["5400"]
 
 
+def on_today(text: str) -> str:
+    """A fixture re-dated to the clock's day (the 21st): a paste only reads today's tickets."""
+    return re.sub(r"/\d{2}(?:SEP|OCT)26/NKC", "/21OCT26/NKC", text)
+
+
 def test_a_layover_is_two_proposals_of_two_tickets_with_the_same_price(env: Env) -> None:
-    r = paste(env.staff_a(), pnr("layover_two_pages"))
+    r = paste(env.staff_a(), on_today(pnr("layover_two_pages")))
     text = text_of(r.text)
     assert text.count("Saisir cette vente") == 2
     assert text.count(fr(51300)) == 2
@@ -182,7 +187,7 @@ def test_a_layover_is_two_proposals_of_two_tickets_with_the_same_price(env: Env)
 
 
 def test_infants_have_their_own_proposals_with_the_infant_price(env: Env) -> None:
-    r = paste(env.staff_a(), pnr("adults_with_infants"))
+    r = paste(env.staff_a(), on_today(pnr("adults_with_infants")))
     text = text_of(r.text)
     assert text.count("Saisir cette vente") == 4
     assert text.count("SYNTHD/BABYONE") >= 1 and text.count("SYNTHE/BABYTWO") >= 1
@@ -191,10 +196,10 @@ def test_infants_have_their_own_proposals_with_the_infant_price(env: Env) -> Non
 
 def test_reader_warnings_are_shown_on_the_form(env: Env) -> None:
     c = env.staff_a()
-    exchange = paste(c, pnr("exchange"))
+    exchange = paste(c, pnr("exchange"))  # the original of 23 September is not read, the new one is
     assert exchange.status_code == 200
     assert "échange : vérifier le prix" in text_of(exchange.text)
-    emd = paste(c, pnr("emd"))
+    emd = paste(c, on_today(pnr("emd")))
     assert "EMD" in text_of(emd.text)
     assert "montant non remboursable" in text_of(emd.text)
 

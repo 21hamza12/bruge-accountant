@@ -41,7 +41,7 @@ ISSUED = date(2026, 10, 21)
 def env(web_db: WebDb) -> Env:
     e = Env(web_db)
     e.link(e.seeded.staff_a, SIGN)
-    e.clock.now = datetime(2026, 10, 22, 12, 0, tzinfo=UTC)  # the day after the issue date
+    e.clock.now = datetime(2026, 10, 21, 12, 0, tzinfo=UTC)  # the issue day (decision 25)
     return e
 
 
@@ -247,7 +247,7 @@ def test_a_proposal_already_saved_cannot_be_saved_twice(env: Env) -> None:
     refused = c.post("/sales/preview", data=override(data, payment_method="cash"))
     assert refused.status_code == 409 and "déjà enregistré" in text_of(refused.text)
     # and so does the confirm, once the double-submit window is over
-    env.clock.now = datetime(2026, 10, 22, 12, 30, tzinfo=UTC)
+    env.clock.now = datetime(2026, 10, 21, 12, 30, tzinfo=UTC)
     late = c.post("/sales", data=confirm, follow_redirects=False)
     assert late.status_code == 409 and "déjà enregistré" in text_of(late.text)
     assert len(table(env, Sale)) == 1
@@ -322,7 +322,7 @@ def test_a_forged_issue_date_in_a_proposal_is_dropped_for_staff(env: Env) -> Non
     r = save(c, proposal)
     assert r.status_code == 200
     # the signature did not match the date: the sale goes to today, never to the 1st
-    assert {d.day for d in table(env, ReportDay)} == {date(2026, 10, 22)}
+    assert {d.day for d in table(env, ReportDay)} == {ISSUED}  # today, the 21st
 
 
 def test_every_post_needs_the_csrf_token(env: Env) -> None:

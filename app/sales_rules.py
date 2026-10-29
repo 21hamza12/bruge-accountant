@@ -60,7 +60,9 @@ _AIRLINE = re.compile(r"[A-Z0-9]{2,3}", re.ASCII)
 _RLOC = re.compile(r"[A-Z0-9]{4,16}", re.ASCII)
 
 BAD_TEXT = "Texte invalide."
-CLT_REQUIRED = "Le nom du client est obligatoire pour une vente directe."
+# A direct sale whose client gave no name is stored under this name (owner, 29 Oct 2026:
+# docs/design/02-open-decisions.md, decision 25); a partner sale needs no client name.
+DEFAULT_CLIENT = "CLIENT"
 NAME_TOO_LONG = f"Ce champ ne peut pas dépasser {MAX_NAME_LENGTH} caractères."
 PB_REQUIRED = "Saisissez le prix P.B."
 TOO_LARGE = "Montant trop grand."
@@ -466,7 +468,7 @@ def _validate_contact(data: SaleInput, errs: list[FieldError]) -> tuple[str | No
     if clt_error:
         errs.append(FieldError("clt", clt_error))
     elif clt is None and data.ag_kind == AG_DIRECT:
-        errs.append(FieldError("clt", CLT_REQUIRED))
+        clt = DEFAULT_CLIENT
     ap: str | None = None
     if not isinstance(data.client_refused_phone, bool):
         errs.append(FieldError("client_refused_phone", BAD_FLAG))

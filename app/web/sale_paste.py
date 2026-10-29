@@ -5,21 +5,24 @@ active partners plus their **approved** aliases, and turns each proposed sale in
 (``source="paste"``). The agency of such a form is a question the agent must answer
 (``sale_forms.ASK_AGENCY``): the reader only suggests, and an unanswered question blocks the
 read-back and the confirm on the server. The pasted text is never stored, logged or audited; only
-what the agent confirms in the form is.
+what the agent confirms in the form is. Tickets issued before today are not proposed (a late
+ticket is typed by hand), and a proposal without a client name is prefilled « CLIENT » (owner,
+29 Oct 2026, decision 25 of docs/design/02-open-decisions.md).
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from datetime import date, timedelta
+from dataclasses import dataclass, replace
+from datetime import date
 
 from sqlalchemy.orm import Session
 
 from app import partner_aliases, partners
-from app.formatting import day_month_fr, money
+from app.formatting import money
 from app.issue_sig import IssueSigner
 from app.parsing.pnr import MAX_TEXT_BYTES, parse_pnr_text
 from app.parsing.pnr_sales import ProposedSale, proposed_sales
+from app.sales_rules import DEFAULT_CLIENT
 from app.web.sale_forms import DIRECT, SOURCE_PASTE, SOURCE_SCREENSHOT, SaleForm, TicketForm
 
 TEXT_FIELD = "pnr_text"
@@ -30,8 +33,9 @@ W_NO_ISSUE_DATE = (
     "Date d'émission illisible : la vente sera classée à la journée d'aujourd'hui, "
     "sauf si le gérant ou la comptable choisit une autre journée."
 )
-OLD_ISSUE_DAYS = 31  # an issue date further back than this is probably a typo (25JUN19)
-W_OLD_ISSUE_DATE = "Date d'émission ancienne : {date}, vérifiez la date du billet."
+# Tickets issued before today are not read (owner, 29 Oct 2026: decision 25): a late ticket is
+# typed by hand. One notice names them; it replaces the old "Date d'émission ancienne" notice.
+W_OLD_TICKETS = "{n} billet(s) émis avant aujourd'hui ignoré(s) : {docs}"
 W_SOME_NO_ISSUE_DATE = "Billet {doc} : date d'émission illisible (ignorée pour la journée)."
 
 
@@ -81,7 +85,6 @@ def form_from_sale(
     reader_warnings: tuple[str, ...] = (),
     source: str = SOURCE_PASTE,
     signer: IssueSigner | None = None,
-    today: date | None = None,
 ) -> SaleForm:
     proposed, match = _ag_fields(sale)
     day = sale.issue_day
@@ -102,7 +105,7 @@ def form_from_sale(
         ]
         or [TicketForm()],
         pb=money(sale.pb) if sale.pb is not None else "",
-        clt=sale.clt or "",
+        clt=sale.clt or ("" if sale.ag_kind == "partner" else DEFAULT_CLIENT),
         ap=sale.ap or "",
         staff_sign=sale.staff_sign or "",
         source=source,
@@ -111,21 +114,33 @@ def form_from_sale(
         pb_read=money(sale.pb) if sale.pb is not None else "",
         ag_match=match,
         day=day.isoformat() if day else "",
-        notices=[*reader_warnings, *sale.warnings, *_date_notices(sale, today)],
+        notices=[*reader_warnings, *sale.warnings, *_date_notices(sale)],
     )
 
 
-def _date_notices(sale: ProposedSale, today: date | None = None) -> list[str]:
-    """What the agent is told when a ticket's issue date could not be read, or is old."""
+def _date_notices(sale: ProposedSale) -> list[str]:
+    """What the agent is told when a ticket's issue date could not be read (the sale then goes to
+    today, as before)."""
     if sale.issue_day is None:
         return [W_NO_ISSUE_DATE] if sale.tickets else []
-    notices = [
+    return [
         W_SOME_NO_ISSUE_DATE.format(doc=t.doc_number) for t in sale.tickets if t.issue_date is None
     ]
-    if today is not None and sale.issue_day < today - timedelta(days=OLD_ISSUE_DAYS):
-        text = f"{day_month_fr(sale.issue_day)} {sale.issue_day.year}"
-        notices.append(W_OLD_ISSUE_DATE.format(date=text))
-    return notices
+
+
+def _issued_today_or_later(
+    sales: list[ProposedSale], today: date
+) -> tuple[list[ProposedSale], list[str]]:
+    """The proposals without their tickets issued before ``today``, and the numbers of those
+    tickets. A proposal left without tickets is dropped; a ticket with no readable date stays."""
+    kept: list[ProposedSale] = []
+    old: list[str] = []
+    for sale in sales:
+        recent = tuple(t for t in sale.tickets if t.issue_date is None or t.issue_date >= today)
+        old.extend(t.doc_number for t in sale.tickets if t not in recent)
+        if recent:
+            kept.append(sale if len(recent) == len(sale.tickets) else replace(sale, tickets=recent))
+    return kept, list(dict.fromkeys(old))
 
 
 def read_paste(
@@ -139,21 +154,29 @@ def read_paste(
 ) -> PasteResult:
     """Parse ``text`` (already checked with ``check_text``) for this agency. ``source`` labels the
     forms (``paste``, or ``screenshot`` for the transcript of an image). With ``signer`` every issue
-    date read is signed (see ``app/issue_sig.py``); ``today`` enables the old-date notice."""
+    date read is signed (see ``app/issue_sig.py``). With ``today`` (every caller passes it) the
+    tickets issued before it are not proposed, and one notice names them (owner, decision 25);
+    when every ticket is old, that notice is the whole answer."""
     reading = parse_pnr_text(text, transcript=source == SOURCE_SCREENSHOT)
     names = [(p.id, p.name) for p in partners.list_active(db, agency_id)]
     aliases = partner_aliases.approved_pairs(db, agency_id)
     sales = proposed_sales(reading, names, aliases)
+    warnings = reading.warnings
+    if today is not None and sales:
+        sales, old = _issued_today_or_later(sales, today)
+        if old:
+            notice = W_OLD_TICKETS.format(n=len(old), docs=", ".join(old))
+            if not sales:  # every ticket is old: that notice only
+                return PasteResult([], (), notice)
+            warnings = (notice, *warnings)
     if not sales:
-        return PasteResult([], reading.warnings, nothing)
+        return PasteResult([], warnings, nothing)
     return PasteResult(
         [
-            Proposal(
-                s, form_from_sale(s, reading.warnings, source, signer, today), reading.agent_sign
-            )
+            Proposal(s, form_from_sale(s, warnings, source, signer), reading.agent_sign)
             for s in sales
         ],
-        reading.warnings,
+        warnings,
     )
 
 

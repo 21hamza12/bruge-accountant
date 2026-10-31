@@ -244,8 +244,9 @@ class SaleView:
 class DayTotals:
     sales: int
     tickets: int
-    revenue: Decimal  # sum of P.B
-    cost: Decimal  # sum of TOTAL DOC
+    # sum of P.B / of TOTAL DOC; None when the reader may not see the totals (an agent)
+    revenue: Decimal | None
+    cost: Decimal | None
     profit: Decimal | None  # revenue - cost; None when the reader may not see it (the manager may)
 
 
@@ -571,9 +572,13 @@ def pb_per_line(sale: _HasTicketLines) -> list[tuple[str, Decimal]]:
     return [(t.doc_number, sale.pb if n == 0 else ZERO) for n, t in enumerate(ordered)]
 
 
-def day_totals(views: Iterable[SaleView], *, with_profit: bool = True) -> DayTotals:
+def day_totals(
+    views: Iterable[SaleView], *, with_profit: bool = True, with_money: bool = True
+) -> DayTotals:
     """Totals of the active sales among ``views``; voided sales never count. ``with_profit=False``
-    (a reader who may not see it, ``permissions.can_see_profit``) leaves the profit out: None."""
+    (a reader who may not see it, ``permissions.can_see_profit``) leaves the profit out: None.
+    ``with_money=False`` (an agent, ``permissions.can_see_totals``) leaves out the cost and P.B
+    totals, and so the profit too: only the counts are computed."""
     count = tickets = 0
     revenue = cost = ZERO
     for view in views:
@@ -581,8 +586,11 @@ def day_totals(views: Iterable[SaleView], *, with_profit: bool = True) -> DayTot
             continue
         count += 1
         tickets += len(view.tickets)
-        revenue += view.pb
-        cost += sale_cost(view)
+        if with_money:
+            revenue += view.pb
+            cost += sale_cost(view)
+    if not with_money:
+        return DayTotals(count, tickets, None, None, None)
     return DayTotals(count, tickets, revenue, cost, revenue - cost if with_profit else None)
 
 

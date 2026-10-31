@@ -19,7 +19,7 @@
   </section>
 {% else %}
   <p class="greeting-sub">{{ day|date_fr(weekday=True) }} · {% for sign in shell.my_signs %}<span class="mono">{{ sign }}</span>{% if not loop.last %}, {% endif %}{% endfor %} · <a href="/days/{{ day.isoformat() }}">{{ _("Voir la journée") }}</a></p>
-  {% if not summary.ticket_count %}
+  {% if not report_tickets %}
   <section class="card empty">
     <h2 class="empty-title">{{ _("Aucun billet pour cette date") }}</h2>
     <p class="muted">{{ _("Aucune de vos réservations n'est dans le rapport du %(date)s.", date=day|date_fr) }}</p>
@@ -32,7 +32,7 @@
     </div>
     <div class="todo-count">
       <span class="todo-number">{{ sale_count }}</span>
-      <span class="muted">{{ ngettext("vente saisie", "ventes saisies", sale_count) }} · {{ ticket_count(summary.ticket_count) }} {{ _("dans le rapport") }}</span>
+      <span class="muted">{{ ngettext("vente saisie", "ventes saisies", sale_count) }} · {{ ticket_count(report_tickets) }} {{ _("dans le rapport") }}</span>
     </div>
     <a class="btn btn-primary btn-lg btn-block" href="/sales/new">{{ icon("ticket", small=true) }}{{ _("Saisir une vente") }}</a>
     <p class="muted"><a class="card-link" href="/sales?date={{ day.isoformat() }}">{{ _("Mes ventes") }}</a></p>
@@ -42,8 +42,8 @@
   </section>
 
   <div class="mini-tiles">
-    <div class="card mini-tile"><span class="mini-label">{{ _("Coût de mes billets") }}</span><span class="mini-value">{{ summary.total_cost|money_fr }}</span></div>
     <div class="card mini-tile"><span class="mini-label">{{ _("Ventes saisies") }}</span><span class="mini-value">{{ sale_count }}</span></div>
+    <div class="card mini-tile"><span class="mini-label">{{ _("Billets à saisir") }}</span><span class="mini-value">{{ missing_count }}</span></div>
   </div>
 
   {% if missing_count %}

@@ -49,6 +49,15 @@ def can_see_profit(user: User) -> bool:
     return user.role in _MANAGER_ONLY
 
 
+def can_see_totals(user: User) -> bool:
+    """A total of cost (« Coût total ») or of P.B (« P.B total ») over several sales, anywhere in
+    the app (a day, a sign, the list of days, the home page): manager and accountant (owner's
+    decision, 30 Oct 2026). Agents could subtract one from the other and get the profit, so for
+    them the totals are not computed, and no page, fragment or chat answer carries them. They keep
+    the cost and the P.B of each sale; the counts of sales and tickets are not money and stay."""
+    return user.role in _MANAGER_OR_ACCOUNTANT
+
+
 def can_view_agency_details(user: User) -> bool:
     """Read « Coordonnées de l'agence », printed on the partner statements (phase F3)."""
     return user.role in _MANAGER_OR_ACCOUNTANT

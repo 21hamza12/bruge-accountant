@@ -106,6 +106,7 @@ def day_view(
     user = auth.user
     sees_all = permissions.sees_all_signs(user)
     show_profit = permissions.can_see_profit(user)  # the manager only: not computed for others
+    show_totals = permissions.can_see_totals(user)  # manager and accountant: not for staff
     report_day = days.get_day(db, user.agency_id, day)
     views = sales.sales_for_day_for(db, user, day)
     events = []
@@ -153,9 +154,10 @@ def day_view(
         if closed and report_day and report_day.closed_at
         else None,
         groups=day_page.groups_of(views),
-        totals=sales.day_totals(views, with_profit=show_profit),
-        signs=day_page.sign_totals(views, with_profit=show_profit),
+        totals=sales.day_totals(views, with_profit=show_profit, with_money=show_totals),
+        signs=day_page.sign_totals(views, with_profit=show_profit, with_money=show_totals),
         show_profit=show_profit,
+        show_totals=show_totals,
         received=received,
         comparison=counts,
         can_run_comparison=received and not closed and permissions.can_run_comparison(user),
@@ -186,6 +188,7 @@ def day_list(db: Db, auth: Viewer) -> Response:
             for row in day_page.recent_days(db, auth.user)
         ],
         show_profit=permissions.can_see_profit(auth.user),
+        show_totals=permissions.can_see_totals(auth.user),
     )
 
 
@@ -211,7 +214,12 @@ def day_confirm_close(day: str, db: Db, clock: Now, auth: Closer) -> Response:
         headers=NO_STORE,
         **shell_context(db, auth, ACTIVE_DAYS),
         day=chosen,
-        totals=sales.day_totals(views, with_profit=permissions.can_see_profit(auth.user)),
+        totals=sales.day_totals(
+            views,
+            with_profit=permissions.can_see_profit(auth.user),
+            with_money=permissions.can_see_totals(auth.user),
+        ),
+        show_totals=permissions.can_see_totals(auth.user),
         gate=approvals.gate_status(db, auth.user, report_day, check_stale=True),
     )
 

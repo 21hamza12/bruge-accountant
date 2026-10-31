@@ -737,9 +737,14 @@ def test_my_sales_lists_the_day_with_exact_totals(env: Env) -> None:
     text = text_of(r.text)
     assert "Mes ventes" in text and "Alpha Client" in text and "Beta Client" in text
     assert "Bankily" in text and "Espèces" in text
-    # totals: 2 sales, 3 tickets, cost 350.35, P.B 550.25 (the profit, 199.90, is the manager's)
-    assert "350,35" in text and "550,25" in text and "199,90" not in text
+    # counts: 2 sales, 3 tickets; the per-sale cost and P.B stay, but an agent gets no total of
+    # cost (350.35) or of P.B (550.25), decision 26, and no profit (199.90), decision 24
+    assert "100,10" in text and "150,25" in text and "250,25" in text and "400" in text
+    assert "350,35" not in text and "550,25" not in text and "199,90" not in text
+    assert "Coût total" not in text and "P.B total" not in text
     assert "3 billets" in text
+    acc = accountant(env).get(f"/sales?date={TODAY}")
+    assert "350,35" in text_of(acc.text) and "550,25" in text_of(acc.text)
     assert re.search(r'href="/sales/\d+"', r.text)
 
 

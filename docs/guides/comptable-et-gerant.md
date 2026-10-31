@@ -89,6 +89,14 @@ journées et des ventes, page d'une vente, relecture avant confirmation, marge d
 comptable et les agents ne le voient nulle part, ni dans la Discussion. La comptable voit toujours
 le P.B, le coût Amadeus et les frais des partenaires (relevés des partenaires compris).
 
+### Les totaux : gérant et comptable
+
+Les totaux de coût (« Coût total ») et de P.B (« P.B total ») de plusieurs ventes (une journée, un
+signe, la liste des journées, le tableau de bord) ne sont montrés qu'au gérant et à la comptable.
+Les agents gardent le coût et le P.B de chaque vente, et le nombre de ventes et de billets, mais
+aucun total : sinon ils pourraient calculer le bénéfice. Sur la page d'une vente, le coût
+s'appelle désormais « Coût de la vente ».
+
 ## 6. Partenaires et noms d'agence
 
 Menu « Partenaires ». Quand un agent associe un nom d'agence vu dans Amadeus à un partenaire, ce

@@ -642,6 +642,7 @@ def list_page(
     sign: str,
 ) -> Response:
     show_profit = permissions.can_see_profit(auth.user)
+    show_totals = permissions.can_see_totals(auth.user)  # not for staff: not even computed
     return page(
         "sales/list.html",
         headers=NO_STORE,
@@ -657,8 +658,9 @@ def list_page(
             }
             for v in views
         ],
-        totals=sales.day_totals(views, with_profit=show_profit),
+        totals=sales.day_totals(views, with_profit=show_profit, with_money=show_totals),
         show_profit=show_profit,
+        show_totals=show_totals,
         sign=sign,
         known_signs=(
             sorted(sign_owners(db, auth.user.agency_id))

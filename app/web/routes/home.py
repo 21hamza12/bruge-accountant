@@ -50,11 +50,12 @@ def _manager_context(db: Session, shell: Shell, day: date | None, today: date) -
 
 def _staff_context(db: Session, shell: Shell, day: date | None) -> dict[str, Any]:
     """The staff member's day: their tickets of the report, the sales they entered (the same
-    signs, the same day) and the report tickets that no sale holds yet."""
+    signs, the same day) and the report tickets that no sale holds yet. No total of cost: an
+    agent sees each ticket's cost, never their sum (``permissions.can_see_totals``, owner's
+    decision of 30 Oct 2026), so the day summary is not even computed here."""
     mine = (
         tickets_for_day(db, shell.agency.id, day, shell.my_signs) if day and shell.my_signs else []
     )
-    summary = summarize(mine) if day is not None and shell.my_signs else None
     my_sales = (
         sales.sales_for_day_within(db, shell.user, day, shell.my_signs)
         if day is not None and shell.my_signs
@@ -68,7 +69,7 @@ def _staff_context(db: Session, shell: Shell, day: date | None) -> dict[str, Any
     missing = [t for t, key in zip(issued, keys, strict=True) if key not in sold]
     return {
         "day": day,
-        "summary": summary,
+        "report_tickets": len(issued),  # a count, not money: cancelled lines left out
         "sale_count": len(my_sales),
         "missing": missing[:STAFF_LIST_LIMIT],
         "missing_count": len(missing),

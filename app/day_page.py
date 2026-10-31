@@ -5,8 +5,9 @@ Read-only. Staff only ever get the figures and lines of their own linked signs
 name, time, uploader and line counts are agency-wide and go to manager and accountant only
 (``permissions.sees_all_signs``), as do the day's events. The gate is here in Python: the data is
 not even read for staff. The profit is the manager's alone (``permissions.can_see_profit``): for
-anybody else it is not computed (None). Everything is computed with ``Decimal``. The comparison
-with the Amadeus report is not here (B8).
+anybody else it is not computed (None). The totals of cost and of P.B are manager's and
+accountant's (``permissions.can_see_totals``): for staff they are not computed either (None).
+Everything is computed with ``Decimal``. The comparison with the Amadeus report is not here (B8).
 """
 
 from __future__ import annotations
@@ -48,8 +49,8 @@ class DayRow:
     status: str
     sales: int
     tickets: int
-    cost: Decimal
-    revenue: Decimal
+    cost: Decimal | None  # None for staff (``permissions.can_see_totals``)
+    revenue: Decimal | None  # None for staff (``permissions.can_see_totals``)
     profit: Decimal | None  # None for whoever may not see it (``permissions.can_see_profit``)
     report_received: bool
 
@@ -59,8 +60,8 @@ class SignTotals:
     staff_sign: str
     sales: int
     tickets: int
-    cost: Decimal
-    revenue: Decimal
+    cost: Decimal | None  # None for staff (``permissions.can_see_totals``)
+    revenue: Decimal | None  # None for staff (``permissions.can_see_totals``)
     profit: Decimal | None  # None for whoever may not see it (``permissions.can_see_profit``)
 
 
@@ -121,8 +122,11 @@ def recent_days(db: Session, actor: User, *, limit: int = LIST_DAYS) -> list[Day
     rows: list[DayRow] = []
     own_only = not permissions.sees_all_signs(actor)
     with_profit = permissions.can_see_profit(actor)
+    with_money = permissions.can_see_totals(actor)
     for day in window:
-        totals = sales.day_totals(by_day.get(day, ()), with_profit=with_profit)
+        totals = sales.day_totals(
+            by_day.get(day, ()), with_profit=with_profit, with_money=with_money
+        )
         if own_only and totals.sales == 0:
             continue
         rows.append(
@@ -140,14 +144,17 @@ def recent_days(db: Session, actor: User, *, limit: int = LIST_DAYS) -> list[Day
     return rows
 
 
-def sign_totals(views: Sequence[SaleView], *, with_profit: bool) -> list[SignTotals]:
-    """Totals per staff sign, signs in alphabetical order (the profit only ``with_profit``)."""
+def sign_totals(
+    views: Sequence[SaleView], *, with_profit: bool, with_money: bool
+) -> list[SignTotals]:
+    """Totals per staff sign, signs in alphabetical order (the profit only ``with_profit``, the
+    cost and P.B only ``with_money``)."""
     grouped: dict[str, list[SaleView]] = defaultdict(list)
     for view in views:
         grouped[view.staff_sign].append(view)
     out: list[SignTotals] = []
     for sign in sorted(grouped):
-        t = sales.day_totals(grouped[sign], with_profit=with_profit)
+        t = sales.day_totals(grouped[sign], with_profit=with_profit, with_money=with_money)
         out.append(SignTotals(sign, t.sales, t.tickets, t.cost, t.revenue, t.profit))
     return out
 

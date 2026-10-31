@@ -4,7 +4,7 @@
 <p><a class="card-link card-link-back" href="/days/{{ day.isoformat() }}">{{ _("Retour à la journée") }}</a></p>
 <section class="card" aria-labelledby="close-title">
   <h2 class="card-title" id="close-title">{{ _("Clôturer la journée du %(date)s ?", date=day | date_fr) }}</h2>
-  <p>{{ ngettext("%(num)d billet", "%(num)d billets", totals.tickets) }} · {{ totals.revenue | money_fr }} {{ agency.currency }}</p>
+  <p>{{ ngettext("%(num)d billet", "%(num)d billets", totals.tickets) }}{% if show_totals %} · {{ totals.revenue | money_fr }} {{ agency.currency }}{% endif %}</p>
   {% if gate and gate.reasons %}
   <div class="notice" role="status">
     <p>{{ _("Pas encore possible :") }}</p>

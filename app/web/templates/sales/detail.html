@@ -27,7 +27,7 @@
     {% if s.fee_applied is not none %}
     <dt>{{ _("Frais du partenaire (par billet)") }}</dt><dd class="num">{{ s.fee_applied | money_fr }} {{ agency.currency }}{% if s.fee_override_reason %} · {{ _("tarif particulier") }} : {{ s.fee_override_reason }}{% endif %}</dd>
     {% endif %}
-    <dt>{{ _("Coût total") }}</dt><dd class="num">{{ s.cost_total | money_fr }} {{ agency.currency }}</dd>
+    <dt>{{ _("Coût de la vente") }}</dt><dd class="num">{{ s.cost_total | money_fr }} {{ agency.currency }}</dd>
     <dt>{{ _("P.B") }}</dt><dd class="num">{{ s.pb | money_fr }} {{ agency.currency }}</dd>
     {% if profit is not none %}<dt>{{ _("Profit") }}</dt><dd class="num">{{ profit | money_fr }} {{ agency.currency }}</dd>{% endif %}
     <dt>{{ _("Client") }}</dt><dd>{{ s.clt or "-" }}</dd>

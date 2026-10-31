@@ -256,7 +256,8 @@ def test_the_staff_home_shows_only_their_own_day(env: Env) -> None:
     assert "0 ventes saisies · 14 billets dans le rapport" in text
     assert re.search(r'<a class="btn btn-primary btn-lg btn-block" href="/sales/new">', html)
     assert 'href="/sales?date=2026-10-01"' in html and 'href="/days/2026-10-01"' in html
-    assert re.search(r"Coût de mes billets\s*</span>\s*<span[^>]*>" + fr(372434), html)
+    # no total of cost for an agent (decision 26): the tickets keep their own cost
+    assert "Coût de mes billets" not in html and fr(372434) not in html
     assert len(re.findall(r'<li class="my-row">', html)) == 14
     assert "0004SV" not in html and fr(746423) not in html
     assert 'class="card kpi"' not in html and 'class="chart-plot"' not in html

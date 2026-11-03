@@ -38,7 +38,7 @@
 <section class="card" aria-labelledby="summary-title">
   <h2 class="card-title" id="summary-title">{{ _("Vente") }}</h2>
   <dl class="kv">
-    <dt>{{ _("Coût total") }}</dt><dd class="num">{{ v.cost_total | money_fr }} {{ agency.currency }}</dd>
+    <dt>{{ _("Coût de la vente") }}</dt><dd class="num">{{ v.cost_total | money_fr }} {{ agency.currency }}</dd>
     <dt>{{ _("P.B") }}</dt><dd class="num">{{ v.pb | money_fr }} {{ agency.currency }}</dd>
     {% if profit is not none %}<dt>{{ _("Profit") }}</dt><dd class="num">{{ profit | money_fr }} {{ agency.currency }}</dd>{% endif %}
     <dt>{{ _("AG") }}</dt><dd>{{ v.ag_label }}</dd>

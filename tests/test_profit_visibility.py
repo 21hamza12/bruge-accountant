@@ -137,7 +137,9 @@ def test_the_day_list_shows_the_profit_to_the_manager_only(env: Env, role: str) 
     enter(c["staff"], tk(cost=COST), **sale_fields())
     r = c[role].get("/days")
     assert r.status_code == 200
-    assert f"21{NNBSP}368,40" in text_of(r.text) and fr(24000) in text_of(r.text)
+    # the day's cost and P.B: for manager and accountant only (decision 26)
+    shown = f"21{NNBSP}368,40" in text_of(r.text) and fr(24000) in text_of(r.text)
+    assert shown is (role != "staff")
     if role == "manager":
         assert_profit_shown(r.text)
     else:

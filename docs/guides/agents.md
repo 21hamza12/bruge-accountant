@@ -73,7 +73,13 @@ paiement), puis « **Confirmer la vente** ». **Rien n'est enregistré avant « 
 Une erreur ? « Modifier ».
 
 Le bénéfice (« Profit ») d'une vente ou d'une journée n'apparaît pas pour vous : seul le gérant le
-voit. Vous voyez toujours le coût, le P.B et les frais du partenaire.
+voit. Vous voyez toujours le coût, le P.B et les frais du partenaire **de chaque vente** : dans la
+liste « Mes ventes » (colonnes Coût et P.B), sur la page d'une vente et à la relecture.
+
+Les totaux de plusieurs ventes ne sont pas affichés pour vous : pas de « Coût total » ni de
+« P.B total » dans « Mes ventes », ni de colonnes Coût et P.B dans « Journées », ni de totaux par
+signe sur la page d'une journée, ni de « Coût de mes billets » sur le tableau de bord. Vous voyez
+toujours le nombre de ventes et de billets. Ces totaux sont réservés au gérant et à la comptable.
 
 Corriger plus tard : « Mes ventes », ouvrez la vente, « Modifier la vente » ou « Annuler la vente »
 (avec un motif). Vous ne pouvez saisir ou modifier que les ventes **d'aujourd'hui** ; après, et

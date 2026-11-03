@@ -75,8 +75,10 @@
   <dl class="kv">
     <dt>{{ _("Ventes") }}</dt><dd class="num">{{ totals.sales }}</dd>
     <dt>{{ _("Billets") }}</dt><dd class="num">{{ totals.tickets }}</dd>
+    {% if show_totals %}
     <dt>{{ _("Coût total") }}</dt><dd class="num">{{ totals.cost | money_fr }} {{ agency.currency }}</dd>
     <dt>{{ _("P.B total") }}</dt><dd class="num">{{ totals.revenue | money_fr }} {{ agency.currency }}</dd>
+    {% endif %}
     {% if show_profit %}<dt>{{ _("Profit") }}</dt><dd class="num">{{ totals.profit | money_fr }} {{ agency.currency }}</dd>{% endif %}
   </dl>
   {% if signs %}
@@ -88,8 +90,10 @@
           <th scope="col">{{ _("Signe") }}</th>
           <th scope="col" class="col-end">{{ _("Ventes") }}</th>
           <th scope="col" class="col-end">{{ _("Billets") }}</th>
+          {% if show_totals %}
           <th scope="col" class="col-end">{{ _("Coût") }}</th>
           <th scope="col" class="col-end">{{ _("P.B") }}</th>
+          {% endif %}
           {% if show_profit %}<th scope="col" class="col-end">{{ _("Profit") }}</th>{% endif %}
         </tr>
       </thead>
@@ -99,8 +103,10 @@
           <th scope="row" class="mono">{{ t.staff_sign }}</th>
           <td class="num col-end">{{ t.sales }}</td>
           <td class="num col-end">{{ t.tickets }}</td>
+          {% if show_totals %}
           <td class="num col-end">{{ t.cost | money_fr }}</td>
           <td class="num col-end">{{ t.revenue | money_fr }}</td>
+          {% endif %}
           {% if show_profit %}<td class="num col-end">{{ t.profit | money_fr }}</td>{% endif %}
         </tr>
       {% endfor %}

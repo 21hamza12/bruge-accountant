@@ -405,9 +405,10 @@ def test_a_whole_day_with_its_troubles(w: Bruge) -> None:
     assert_only_own(a2.get(f"/flags?date={DAY}").text, SIGN_ER)
     for path in (f"/days/{DAY}/apres.xlsx", f"/days/{DAY}/apres-preview.xlsx", "/flags/validate"):
         assert a2.get(path).status_code == 403, path
-    # the figures: the day total of agent 2 is the sum of his own tickets only
+    # the figures: an agent sees no day total, not even of his own tickets (decision 26)
     own_total = sum(cost(s) for s, sign in SIGN_OF.items() if sign == SIGN_ER)
-    assert f"{own_total:,}".replace(",", " ") in text_of(day_page.text)
+    assert f"{own_total:,}".replace(",", " ") not in text_of(day_page.text)
+    assert "Coût total" not in day_page.text
     # another agency sees nothing of this day
     other = w.other_manager()
     assert ROWS[2].doc not in other.get(f"/sales?date={DAY}").text

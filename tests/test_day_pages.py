@@ -284,8 +284,11 @@ def test_staff_see_only_their_own_lines_and_totals(env: Env) -> None:
     assert len(found) == 2 and all(row[5] == SIGN for _, rows in found for row in rows)
     assert D2 not in html and D3 not in html and SIGN2 not in html
     assert money_text(html, "Ventes") == "2" and money_text(html, "Billets") == "2"
-    assert money_text(html, "Coût total").startswith(fr(36368))
-    assert money_text(html, "P.B total").startswith(fr(39500))
+    # no total of cost or of P.B for an agent (decision 26): only the counts
+    totals = pairs(tree(html).find_all("dl", cls="kv")[0])
+    assert set(totals) == {"Ventes", "Billets"}
+    assert fr(36368) not in html and fr(39500) not in html
+    assert sign_rows(html) == {SIGN: ["2", "2"]}
     other = staff2_client(env).get(f"/days/{TODAY}").text
     assert D1 not in other and money_text(other, "Billets") == "2"
     assert "Clôturer" not in html and "Rouvrir" not in html
@@ -495,8 +498,8 @@ def test_the_list_gives_staff_only_their_own_figures_and_days(env: Env) -> None:
     html = env.staff_a().get("/days").text
     rows = list_rows(html)
     assert [row[0] for row in rows] == ["18 octobre 2026"]  # no own sale on the 17th or the 20th
-    assert rows[0][2:6] == ["2", "2", fr(36368), fr(39500)]
-    assert rows[0][-1] == "Non reçu"
+    assert rows[0][1:] == ["Ouverte", "2", "2", "Non reçu"]  # no cost or P.B total (decision 26)
+    assert fr(36368) not in html and fr(39500) not in html
     assert "20 octobre" not in html and "17 octobre" not in html
 
 
